@@ -10,6 +10,11 @@ use ska::io_utils::*;
 pub mod cli;
 use crate::cli::*;
 
+pub mod sketch;
+use crate::sketch::sketch_files;
+
+pub mod hashing;
+
 #[doc(hidden)]
 pub fn main() {
     let args = cli_args();
@@ -39,7 +44,7 @@ pub fn main() {
             // Build, merge
             let rc = !*single_strand;
 
-            todo!();
+            let sketches = sketch_files();
         }
         Commands::Dist {
             db1,
