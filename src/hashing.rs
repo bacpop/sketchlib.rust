@@ -1,5 +1,4 @@
-
-use std::path::Iter;
+use std::borrow::Cow;
 
 /// Table from bits 0-3 to ASCII (use [`decode_base()`] not this table).
 const LETTER_CODE: [u8; 4] = [b'A', b'C', b'T', b'G'];
@@ -22,6 +21,12 @@ pub fn rc_base(base: u8) -> u8 {
     base ^ 2
 }
 
+#[inline(always)]
+pub fn valid_base(mut base: u8) -> bool {
+    base |= 0x20; // to lower
+    matches!(base, b'a' | b'c' | b'g' | b't')
+}
+
 const HASH_LOOKUP: [u64; 4] = [
     0x3c8b_fbb3_95c6_0474,
     0x3193_c185_62a0_2b4c,
@@ -35,40 +40,78 @@ const RC_HASH_LOOKUP: [u64; 4] = [
     0x3193_c185_62a0_2b4c,
 ];
 
+// TODO aaHash for proteins
+
+// TODO generic hash for structure alphabet
+
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
 #[derive(Debug)]
-pub struct NtHashIterator {
+pub struct NtHashIterator<'a> {
     k: usize,
+    rc: bool,
     fh: u64,
     rh: Option<u64>,
     index: usize,
     seq: Cow<'a, [u8]>,
-    seq_len: usize,
+    seq_len: usize, // NB seq.len() - 1 due to terminating char
 }
 
-impl NtHashIterator {
+impl<'a> NtHashIterator<'a> {
     /// Creates a new iterator over a sequence with a given k-mer size
-    pub fn new(seq: &[u8], seq_len: usize, k: usize, rc: bool, ) -> NtHashIterator {
+    pub fn new(seq: &'a [u8], k: usize, rc: bool) -> NtHashIterator {
+        if let Some(new_it) = Self::new_iterator(0, seq, k, rc) {
+            Self {
+                k,
+                rc,
+                fh: new_it.0,
+                rh: new_it.1,
+                index: new_it.2 + k,
+                seq: Cow::Borrowed(seq),
+                seq_len: seq.len() - 1,
+            }
+        } else {
+            panic!("K-mer larger than smallest valid sequence");
+        }
+    }
+
+    fn new_iterator(
+        mut start: usize,
+        seq: &[u8],
+        k: usize,
+        rc: bool,
+    ) -> Option<(u64, Option<u64>, usize)> {
         let mut fh = 0;
-        for (i, v) in seq[0..k].iter().enumerate() {
-            fh ^= HASH_LOOKUP[encode_base(*v) as usize].rotate_left((k - i - 1) as u32);
+        while start < seq.len() {
+            for (i, v) in seq[start..(start + k)].iter().enumerate() {
+                // If invalid seq
+                if *v > 3 {
+                    start = i + 1;
+                    if start >= seq.len() {
+                        return None;
+                    }
+                    fh = 0;
+                    break;
+                }
+                fh ^= HASH_LOOKUP[*v as usize].rotate_left((k - i - 1) as u32);
+            }
+            break; // success
         }
 
         let rh = if rc {
             let mut h = 0;
-            for (i, v) in seq[0..k].iter().rev().enumerate() {
-                h ^= RC_HASH_LOOKUP[encode_base(*v) as usize].rotate_left((k - i - 1) as u32);
+            for (i, v) in seq[start..(start + k)].iter().rev().enumerate() {
+                h ^= RC_HASH_LOOKUP[*v as usize].rotate_left((k - i - 1) as u32);
             }
             Some(h)
         } else {
             None
         };
 
-        Self { k, fh, rh, index: 0, seq, seq_len }
+        Some((fh, rh, start + k))
     }
 
     /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
-    pub fn roll_fwd(&mut self, old_base: u8, new_base: u8) {
+    fn roll_fwd(&mut self, old_base: u8, new_base: u8) {
         self.fh = self.fh.rotate_left(1)
             ^ HASH_LOOKUP[old_base as usize].rotate_left(self.k as u32)
             ^ HASH_LOOKUP[new_base as usize];
@@ -92,19 +135,29 @@ impl NtHashIterator {
     }
 }
 
-impl Iterator for NtHashIterator {
+impl<'a> Iterator for NtHashIterator<'a> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index < seq_len {
+        if self.index < self.seq_len {
             let current = self.curr_hash();
-            self.roll_fwd(encode_base(self.seq[self.index]), encode_base(self.seq[self.index + k + 1]));
-            self.index += 1;
+            let new_base = self.seq[self.index];
+            // Restart hash if invalid base
+            if new_base > 3 {
+                if let Some(new_it) = Self::new_iterator(self.index, &self.seq, self.k, self.rc) {
+                    self.fh = new_it.0;
+                    self.rh = new_it.1;
+                    self.index = new_it.2;
+                } else {
+                    self.index = self.seq_len; // End of valid sequence
+                }
+            } else {
+                self.roll_fwd(self.seq[self.index - self.k - 1], new_base);
+                self.index += 1;
+            }
             Some(current)
         } else {
-            None
+            None // End of sequence
         }
     }
 }
-
-

@@ -1,17 +1,23 @@
-
 use std::collections::HashMap;
 
 extern crate needletail;
 use needletail::{parse_fastx_file, parser::Format};
-use ska::ska_dict::bloom_filter::KmerFilter;
+use ska::ska_dict::{bit_encoding::encode_base, bloom_filter::KmerFilter};
+
+use crate::hashing::valid_base;
 
 use super::hashing::NtHashIterator;
+
+pub const SEQSEP: u8 = 5;
+pub const QUALSEP: u8 = b'?';
 
 /// Bin bits
 pub const BBITS: u64 = 14;
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
-struct Sketch {
+// TODO need to check sketchsize vs sketchsize64 throughout
+
+pub struct Sketch {
     name: String,
     sketch_size: u64,
     kmer_sketches: HashMap<usize, Vec<u64>>,
@@ -21,10 +27,19 @@ struct Sketch {
     missing_bases: usize,
     densified: bool,
     kmer_filter: KmerFilter,
+    acgt: [usize; 4],
+    non_acgt: usize,
 }
 
 impl Sketch {
-    pub fn new(name: &str, files: (&str, Option<&String>), kmer_lengths: &[usize], sketch_size: u64, min_count: u16, rc: bool) -> Self {
+    pub fn new(
+        name: &str,
+        files: (&str, Option<&String>),
+        kmer_lengths: &[usize],
+        sketch_size: u64,
+        min_count: u16,
+        rc: bool,
+    ) -> Self {
         let mut sketch = Self {
             name: name.to_string(),
             sketch_size: sketch_size,
@@ -34,7 +49,9 @@ impl Sketch {
             seq_length: 0,
             missing_bases: 0,
             densified: false,
-            kmer_filter: KmerFilter::new(min_count)
+            kmer_filter: KmerFilter::new(min_count),
+            acgt: [0; 4],
+            non_acgt: 0,
         };
 
         // Check if we're working with reads, and initalise the CM filter if so
@@ -52,75 +69,201 @@ impl Sketch {
 
         // Read sequence into memory (as we go through multiple times)
         // TODO allow it to be streamed from disk
-        let mut sequence: Vec<Vec<u8>> = Vec::new();
-        let mut quals: Vec<Vec<u8>> = Vec::new();
+        let mut sequence: Vec<u8> = Vec::new();
+        let mut quals: Vec<u8> = Vec::new();
 
         sketch.add_seq(files.0, &mut sequence, &mut quals);
         if let Some(filename) = files.1 {
             sketch.add_seq(filename, &mut sequence, &mut quals);
         }
 
-        if sequence.len() == 0 {
+        sketch.seq_length = sketch.acgt.iter().sum();
+        if sketch.seq_length == 0 {
             panic!("{} has no valid sequence", files.0);
         }
 
         // Build the sketches across k-mer lengths
+        let mut minhash_sum = 0.0;
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
         let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
         for k in kmer_lengths {
-            let usigs = vec![0; (sketch_size * BBITS) as usize];
-            let signs = vec![u64::MAX, (sketch_size as u32 * u64::BITS) as u64];
-            for seq in &sequence {
-                let hash_it = NtHashIterator::new(seq, seq.len(), *k, rc);
-                for hash in hash_it {
-                    todo!()
-                }
+            // Calculate bin minima across all sequence
+            let mut signs = vec![u64::MAX, (sketch_size as u32 * u64::BITS) as u64];
+            let hash_it = NtHashIterator::new(&sequence, *k, rc);
+            for hash in hash_it {
+                Self::bin_sign(&mut signs, hash, bin_size);
             }
+
+            // Densify
+            sketch.densified |= Self::densify_bin(&mut signs);
+            minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
+
+            // Transpose the bins and save to the sketch map
+            let mut usigs = vec![0; (sketch_size * BBITS) as usize];
+            Self::fill_usigs(&mut usigs, &signs);
+            sketch.kmer_sketches.insert(*k, usigs);
         }
 
-        /*
-        if (sequence.nseqs() == 0) {
-            throw std::runtime_error(name + " contains no sequence");
-          }
-          _bases = sequence.get_composition();
-          _missing_bases = sequence.missing_bases();
-        
-          double minhash_sum = 0.0;
-          for (auto kmer_it = kmers.cbegin(); kmer_it != kmers.cend(); ++kmer_it) {
-            double minhash = 0;
-            bool densified;
-            std::tie(usigs[kmer_it->first], minhash, densified) =
-                sketch(sequence, sketchsize64, kmer_it->second, _bbits, codon_phased,
-                       _use_rc, min_count, exact);
-        
-            minhash_sum += minhash;
-            _densified |= densified; // Densified at any k-mer length
-          }
-        
-          // 1/N =~ 1/E(Y) where Yi = minhash in [0,1] for k-mer i
-          // See
-          // https://www.cs.princeton.edu/courses/archive/fall13/cos521/lecnotes/lec4final.pdf
-          if (sequence.is_reads()) {
-            _seq_size = static_cast<size_t>((double)usigs.size() / minhash_sum);
-          } else {
-            _seq_size = _bases.total;
-          }
-        */
+        // Estimate of sequence length from read data
+        if is_reads {
+            sketch.seq_length = ((kmer_lengths.len() as f64) / minhash_sum) as usize;
+        }
+
         sketch
     }
 
-    // TODO this can count Ns and base composition
-    // TODO would probably also make sense to encode the whole thing as 0/1/2/3 here
-    fn add_seq(&mut self, filename: &str, sequence: &mut Vec<Vec<u8>>, quals: &mut Vec<Vec<u8>>) {
+    pub fn jaccard_dist(&self, other: &Sketch, k: usize) -> f64 {
+        let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
+        let mut samebits: u32 = 0;
+        for i in 0..self.sketch_size {
+            let mut bits: u64 = !0; // TODO check this does bitwise NOT (and below). in cpp it is ~
+            for j in 0..BBITS {
+                bits &= !(self.kmer_sketches[&k][(i * BBITS + j) as usize]
+                    ^ other.kmer_sketches[&k][(i * BBITS + j) as usize]);
+            }
+            samebits += bits.count_ones(); // TODO check uses popcnt properly
+        }
+        let maxnbits = self.sketch_size as u32 * u64::BITS;
+        let expected_samebits = maxnbits >> BBITS;
+        if expected_samebits != 0 {
+            samebits as f64
+        } else {
+            let diff = samebits.saturating_sub(maxnbits);
+            let intersize = (diff * maxnbits / (maxnbits - maxnbits)) as f64;
+            intersize / unionsize
+        }
+    }
+
+    pub fn core_acc_dist(&self, other: &Sketch) -> (f64, f64) {
+        if self.kmer_sketches.len() < 2 {
+            panic!("Need at least two k-mer lengths to calculate core/accessory distances");
+        }
+        let mut xsum = 0.0;
+        let mut ysum = 0.0;
+        let mut xysum = 0.0;
+        let mut xsquaresum = 0.0;
+        let mut ysquaresum = 0.0;
+        let mut n = 0.0;
+        let tolerance = 5.0 / (self.sketch_size as f64);
+        for k in self.kmer_sketches.keys() {
+            let y = self.jaccard_dist(other, *k).exp();
+            if y < tolerance {
+                break;
+            }
+            let k_fl = *k as f64;
+            xsum += k_fl;
+            ysum += y;
+            xysum += k_fl * y;
+            xsquaresum += k_fl * k_fl;
+            ysquaresum += y * y;
+            n += 1.0;
+        }
+        Self::simple_linear_regression(xsum, ysum, xysum, xsquaresum, ysquaresum, n)
+    }
+
+    fn simple_linear_regression(
+        xsum: f64,
+        ysum: f64,
+        xysum: f64,
+        xsquaresum: f64,
+        ysquaresum: f64,
+        n: f64,
+    ) -> (f64, f64) {
+        let xbar = xsum / n;
+        let ybar = ysum / n;
+        let x_diff = xsquaresum - xsum * xsum / n;
+        let y_diff = ysquaresum - ysum * ysum / n;
+        let xstddev = ((xsquaresum - xsum * xsum / n) / n).sqrt();
+        let ystddev = ((ysquaresum - ysum * ysum / n) / n).sqrt();
+        let r = (xysum - xsum * ysum / n) / (x_diff * y_diff).sqrt();
+        let beta = r * ystddev / xstddev;
+        let alpha = -beta * xbar + ybar;
+
+        let (mut core, mut acc) = (0.0, 0.0);
+        if (beta < 0.0) {
+            core = 1.0 - beta.exp();
+        }
+        if alpha < 0.0 {
+            acc = 1.0 - alpha.exp();
+        }
+        (core, acc)
+    }
+
+    // TODO filter on count and quality
+    fn add_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, quals: &mut Vec<u8>) {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
         while let Some(record) = reader.next() {
             let seqrec = record.expect("Invalid FASTA/Q record");
-            self.seq_length += seqrec.num_bases();
-            sequence.push(seqrec.seq().to_vec());
-            if let Some(qual_scores) = seqrec.qual() {
-                quals.push(qual_scores.to_vec());
+            for base in seqrec.seq().iter() {
+                if valid_base(*base) {
+                    let encoded_base = encode_base(*base);
+                    self.acgt[encoded_base as usize] += 1;
+                    sequence.push(encoded_base)
+                } else {
+                    self.non_acgt += 1;
+                    sequence.push(SEQSEP);
+                }
             }
+            if let Some(qual_scores) = seqrec.qual() {
+                quals.extend(qual_scores);
+            }
+            sequence.push(SEQSEP);
+            quals.push(QUALSEP);
+        }
+    }
+
+    fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64) {
+        let binidx = (sign / binsize) as usize;
+        signs[binidx] = signs[binidx].min(sign);
+    }
+
+    #[inline(always)]
+    fn double_hash(hash1: u64, hash2: u64) -> u64 {
+        (hash1 + hash2) % SIGN_MOD
+    }
+
+    #[inline(always)]
+    fn bit_at_pos(x: u64, pos: u64) -> u64 {
+        x & (1 << pos) >> pos
+    }
+
+    #[inline(always)]
+    fn univeral_hash(s: u64, t: u64) -> u64 {
+        let x = (1009) * s + (1000 * 1000 + 3) * t;
+        (48271 * x + 11) % ((1 << 31) - 1)
+    }
+
+    fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
+        for (sign_index, sign) in signs.iter().enumerate() {
+            let leftshift = sign_index % (u64::BITS as usize);
+            for i in 0..BBITS {
+                let orval = Self::bit_at_pos(*sign, i) << leftshift;
+                usigs[sign_index / (u64::BITS as usize) * (BBITS + i) as usize] |= orval;
+            }
+        }
+    }
+
+    fn densify_bin(signs: &mut [u64]) -> bool {
+        let mut minval = u64::MAX;
+        let mut maxval = 0;
+        for sign in &mut *signs {
+            minval = minval.min(*sign);
+            maxval = maxval.max(*sign);
+        }
+        if maxval != u64::MAX {
+            false
+        } else {
+            for i in 0..signs.len() {
+                let mut j = i;
+                let mut n_attempts = 0;
+                while signs[j] == u64::MAX {
+                    j = (Self::univeral_hash(i as u64, n_attempts as u64) as usize) % signs.len();
+                    n_attempts += 1;
+                }
+                signs[i] = signs[j];
+            }
+            true
         }
     }
 }

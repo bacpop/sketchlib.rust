@@ -24,7 +24,7 @@ pub fn main() {
         simple_logger::init_with_level(log::Level::Warn).unwrap();
     }
 
-    eprintln!("sketchlib.rust: fast sketching at multiple k-mer lengths");
+    eprintln!("sketchlib.rust: fast biological distances at multiple k-mer lengths");
     let start = Instant::now();
     match &args.command {
         Commands::Sketch {
