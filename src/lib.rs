@@ -15,6 +15,9 @@ use crate::sketch::sketch_files;
 
 pub mod hashing;
 
+/// Default k-mer size for sketching
+pub const DEFAULT_KMER: usize = 17;
+
 #[doc(hidden)]
 pub fn main() {
     let args = cli_args();
@@ -31,7 +34,8 @@ pub fn main() {
             seq_files,
             file_list,
             output,
-            k,
+            k_vals,
+            mut sketch_size,
             single_strand,
             min_count,
             min_qual,
@@ -40,11 +44,23 @@ pub fn main() {
             check_threads(*threads);
 
             // Read input
+            log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
             // Build, merge
             let rc = !*single_strand;
+            // Set expected sketchsize
+            sketch_size /= u64::BITS as u64;
 
-            let sketches = sketch_files();
+            log::info!("Running sketching for k:{:?} and sketch size {}", k_vals, sketch_size * u64::BITS as u64);
+            let sketches = sketch_files(
+                &input_files,
+                k_vals,
+                sketch_size,
+                rc,
+                *min_count,
+                *min_qual,
+                *threads,
+            );
         }
         Commands::Dist {
             db1,

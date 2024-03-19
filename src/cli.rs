@@ -40,14 +40,14 @@ Options:
   --accessory  Use accessory distances rather than core to sparsify
 */
 
-/// Default split k-mer size
-pub const DEFAULT_KMER: usize = 17;
 /// Default single strand (which is equivalent to !rc)
 pub const DEFAULT_STRAND: bool = false;
 /// Default minimum k-mer count for FASTQ files
 pub const DEFAULT_MINCOUNT: u16 = 5;
 /// Default minimum base quality (PHRED score) for FASTQ files
 pub const DEFAULT_MINQUAL: u8 = 20;
+/// Default sketch size
+pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 
 #[doc(hidden)]
 fn valid_kmer(s: &str) -> Result<usize, String> {
@@ -105,6 +105,7 @@ pub enum Commands {
     ))]
     /// Create sketches from input data
     Sketch {
+        // TODO this doesn't work with k_vals
         /// List of input FASTA files
         #[arg(group = "input")]
         seq_files: Option<Vec<String>>,
@@ -117,9 +118,13 @@ pub enum Commands {
         #[arg(short)]
         output: String,
 
-        /// K-mer size
-        #[arg(short, value_parser = valid_kmer, default_value_t = DEFAULT_KMER)]
-        k: usize,
+        /// K-mer list
+        #[arg(short, long, required = true, num_args = 1.., value_delimiter = ',')]
+        k_vals: Vec<usize>,
+
+        /// Sketch size
+        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
+        sketch_size: u64,
 
         /// Ignore reverse complement (all contigs are oriented along same strand)
         #[arg(long, default_value_t = DEFAULT_STRAND)]

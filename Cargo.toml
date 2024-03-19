@@ -24,8 +24,6 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # i/o
 needletail = { version = "0.5", features = ["compression"] }
-hdf5 = "0.8"
-hdf5-sys = { version = "*", features = ["static"] }
 ska = "0.3.6"
 # logging
 log = "0.4"

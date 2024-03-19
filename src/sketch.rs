@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 
 extern crate needletail;
+use indicatif::{ProgressIterator, ProgressBar, ParallelProgressIterator};
 use needletail::{parse_fastx_file, parser::Format};
-use ska::ska_dict::{bit_encoding::encode_base, bloom_filter::KmerFilter};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use ska::{
+    merge_ska_dict::InputFastx,
+    ska_dict::{bit_encoding::encode_base, bloom_filter::KmerFilter},
+};
 
 use crate::hashing::valid_base;
 
@@ -72,6 +77,7 @@ impl Sketch {
         let mut sequence: Vec<u8> = Vec::new();
         let mut quals: Vec<u8> = Vec::new();
 
+        log::debug!("Preprocessing sequence");
         sketch.add_seq(files.0, &mut sequence, &mut quals);
         if let Some(filename) = files.1 {
             sketch.add_seq(filename, &mut sequence, &mut quals);
@@ -87,18 +93,23 @@ impl Sketch {
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
         let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
         for k in kmer_lengths {
+            log::debug!("Sketching {name} at k={k}");
             // Calculate bin minima across all sequence
-            let mut signs = vec![u64::MAX, (sketch_size as u32 * u64::BITS) as u64];
+            let mut signs = vec![u64::MAX; num_bins as usize];
             let hash_it = NtHashIterator::new(&sequence, *k, rc);
+            // let bar = ProgressBar::new(sequence.len() as u64);
             for hash in hash_it {
-                Self::bin_sign(&mut signs, hash, bin_size);
+                // bar.inc(1);
+                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size);
             }
+            // bar.finish();
 
             // Densify
             sketch.densified |= Self::densify_bin(&mut signs);
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
             // Transpose the bins and save to the sketch map
+            log::debug!("Transposing bins");
             let mut usigs = vec![0; (sketch_size * BBITS) as usize];
             Self::fill_usigs(&mut usigs, &signs);
             sketch.kmer_sketches.insert(*k, usigs);
@@ -116,12 +127,12 @@ impl Sketch {
         let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
         let mut samebits: u32 = 0;
         for i in 0..self.sketch_size {
-            let mut bits: u64 = !0; // TODO check this does bitwise NOT (and below). in cpp it is ~
+            let mut bits: u64 = !0;
             for j in 0..BBITS {
                 bits &= !(self.kmer_sketches[&k][(i * BBITS + j) as usize]
                     ^ other.kmer_sketches[&k][(i * BBITS + j) as usize]);
             }
-            samebits += bits.count_ones(); // TODO check uses popcnt properly
+            samebits += bits.count_ones();
         }
         let maxnbits = self.sketch_size as u32 * u64::BITS;
         let expected_samebits = maxnbits >> BBITS;
@@ -180,7 +191,7 @@ impl Sketch {
         let alpha = -beta * xbar + ybar;
 
         let (mut core, mut acc) = (0.0, 0.0);
-        if (beta < 0.0) {
+        if beta < 0.0 {
             core = 1.0 - beta.exp();
         }
         if alpha < 0.0 {
@@ -190,6 +201,8 @@ impl Sketch {
     }
 
     // TODO filter on count and quality
+    // TODO with reads it is better to only add to filter if putative minimum in the bin, which changes this processing
+    // i.e. we would just convert all the reads then filter count above
     fn add_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, quals: &mut Vec<u8>) {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
@@ -219,17 +232,12 @@ impl Sketch {
     }
 
     #[inline(always)]
-    fn double_hash(hash1: u64, hash2: u64) -> u64 {
-        (hash1 + hash2) % SIGN_MOD
-    }
-
-    #[inline(always)]
     fn bit_at_pos(x: u64, pos: u64) -> u64 {
         x & (1 << pos) >> pos
     }
 
     #[inline(always)]
-    fn univeral_hash(s: u64, t: u64) -> u64 {
+    fn universal_hash(s: u64, t: u64) -> u64 {
         let x = (1009) * s + (1000 * 1000 + 3) * t;
         (48271 * x + 11) % ((1 << 31) - 1)
     }
@@ -239,11 +247,14 @@ impl Sketch {
             let leftshift = sign_index % (u64::BITS as usize);
             for i in 0..BBITS {
                 let orval = Self::bit_at_pos(*sign, i) << leftshift;
-                usigs[sign_index / (u64::BITS as usize) * (BBITS + i) as usize] |= orval;
+                usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
             }
         }
     }
 
+    // TODO could use newer method
+    //  http://proceedings.mlr.press/v115/mai20a.html
+    // https://github.com/zhaoxiaofei/bindash/blob/eb4f81e50b3c42a1fdc00901290b35d0fa9a1e8d/src/hashutils.hpp#L109
     fn densify_bin(signs: &mut [u64]) -> bool {
         let mut minval = u64::MAX;
         let mut maxval = 0;
@@ -258,7 +269,7 @@ impl Sketch {
                 let mut j = i;
                 let mut n_attempts = 0;
                 while signs[j] == u64::MAX {
-                    j = (Self::univeral_hash(i as u64, n_attempts as u64) as usize) % signs.len();
+                    j = (Self::universal_hash(i as u64, n_attempts as u64) as usize) % signs.len();
                     n_attempts += 1;
                 }
                 signs[i] = signs[j];
@@ -269,6 +280,32 @@ impl Sketch {
 }
 
 // TODO may want to write these one by one rather than storing them all
-pub fn sketch_files() -> Vec<Sketch> {
-    todo!()
+pub fn sketch_files(
+    input_files: &[InputFastx],
+    k: &[usize],
+    sketch_size: u64,
+    rc: bool,
+    min_count: u16,
+    min_qual: u8,
+    threads: usize,
+) -> Vec<Sketch> {
+    /* Single threaded for easier debug
+    let sketches: Vec<Sketch> = input_files
+        .iter()
+        .progress()
+        .map(|i| Sketch::new(&i.0, (&i.1, i.2.as_ref()), k, sketch_size, min_count, rc))
+        .collect();
+    */
+    if threads > 1 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .unwrap();
+    }
+    let sketches: Vec<Sketch> = input_files
+        .par_iter()
+        .progress_count(input_files.len() as u64)
+        .map(|i| Sketch::new(&i.0, (&i.1, i.2.as_ref()), k, sketch_size, min_count, rc))
+        .collect();
+    sketches
 }

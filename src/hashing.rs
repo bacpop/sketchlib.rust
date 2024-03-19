@@ -81,11 +81,11 @@ impl<'a> NtHashIterator<'a> {
         rc: bool,
     ) -> Option<(u64, Option<u64>, usize)> {
         let mut fh = 0;
-        while start < seq.len() {
+        while start < (seq.len() - k) {
             for (i, v) in seq[start..(start + k)].iter().enumerate() {
                 // If invalid seq
                 if *v > 3 {
-                    start = i + 1;
+                    start += i + 1;
                     if start >= seq.len() {
                         return None;
                     }
@@ -95,6 +95,9 @@ impl<'a> NtHashIterator<'a> {
                 fh ^= HASH_LOOKUP[*v as usize].rotate_left((k - i - 1) as u32);
             }
             break; // success
+        }
+        if start >= (seq.len() - k) {
+            return None;
         }
 
         let rh = if rc {
@@ -107,7 +110,7 @@ impl<'a> NtHashIterator<'a> {
             None
         };
 
-        Some((fh, rh, start + k))
+        Some((fh, rh, start + k + 1))
     }
 
     /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
@@ -144,7 +147,7 @@ impl<'a> Iterator for NtHashIterator<'a> {
             let new_base = self.seq[self.index];
             // Restart hash if invalid base
             if new_base > 3 {
-                if let Some(new_it) = Self::new_iterator(self.index, &self.seq, self.k, self.rc) {
+                if let Some(new_it) = Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc) {
                     self.fh = new_it.0;
                     self.rh = new_it.1;
                     self.index = new_it.2;
