@@ -81,8 +81,8 @@ impl<'a> NtHashIterator<'a> {
         rc: bool,
     ) -> Option<(u64, Option<u64>, usize)> {
         let mut fh = 0;
-        while start < (seq.len() - k) {
-            for (i, v) in seq[start..(start + k)].iter().enumerate() {
+        'outer: while start < (seq.len() - k) {
+            '_inner: for (i, v) in seq[start..(start + k)].iter().enumerate() {
                 // If invalid seq
                 if *v > 3 {
                     start += i + 1;
@@ -90,11 +90,11 @@ impl<'a> NtHashIterator<'a> {
                         return None;
                     }
                     fh = 0;
-                    break;
+                    continue 'outer; // Try again from new start
                 }
                 fh ^= HASH_LOOKUP[*v as usize].rotate_left((k - i - 1) as u32);
             }
-            break; // success
+            break 'outer; // success
         }
         if start >= (seq.len() - k) {
             return None;
@@ -110,7 +110,7 @@ impl<'a> NtHashIterator<'a> {
             None
         };
 
-        Some((fh, rh, start + k + 1))
+        Some((fh, rh, start + k))
     }
 
     /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
@@ -155,7 +155,7 @@ impl<'a> Iterator for NtHashIterator<'a> {
                     self.index = self.seq_len; // End of valid sequence
                 }
             } else {
-                self.roll_fwd(self.seq[self.index - self.k - 1], new_base);
+                self.roll_fwd(self.seq[self.index - self.k], new_base);
                 self.index += 1;
             }
             Some(current)

@@ -79,6 +79,10 @@ pub fn check_threads(threads: usize) {
     if threads > max_threads {
         log::warn!("{threads} threads is greater than available cores {max_threads}");
     }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .unwrap();
 }
 
 /// Options that apply to all subcommands

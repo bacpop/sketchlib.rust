@@ -51,7 +51,7 @@ pub fn main() {
             // Set expected sketchsize
             sketch_size /= u64::BITS as u64;
 
-            log::info!("Running sketching for k:{:?} and sketch size {}", k_vals, sketch_size * u64::BITS as u64);
+            log::info!("Running sketching for k:{:?} and sketch size {} using {} threads", k_vals, sketch_size * u64::BITS as u64, threads);
             let sketches = sketch_files(
                 &input_files,
                 k_vals,
@@ -59,7 +59,6 @@ pub fn main() {
                 rc,
                 *min_count,
                 *min_qual,
-                *threads,
             );
         }
         Commands::Dist {

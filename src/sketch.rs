@@ -287,7 +287,6 @@ pub fn sketch_files(
     rc: bool,
     min_count: u16,
     min_qual: u8,
-    threads: usize,
 ) -> Vec<Sketch> {
     /* Single threaded for easier debug
     let sketches: Vec<Sketch> = input_files
@@ -296,12 +295,7 @@ pub fn sketch_files(
         .map(|i| Sketch::new(&i.0, (&i.1, i.2.as_ref()), k, sketch_size, min_count, rc))
         .collect();
     */
-    if threads > 1 {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .unwrap();
-    }
+
     let sketches: Vec<Sketch> = input_files
         .par_iter()
         .progress_count(input_files.len() as u64)
