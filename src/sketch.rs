@@ -1,5 +1,8 @@
-use std::ops::Mul;
 use std::{cmp::Ordering, collections::HashMap};
+use std::sync::{Arc};
+use std::mem;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 
 use serde::{Deserialize, Serialize};
 extern crate needletail;
@@ -12,6 +15,7 @@ use crate::bloom_filter::KmerFilter;
 use crate::hashing::valid_base;
 use crate::io::InputFastx;
 use crate::multisketch::MultiSketch;
+use crate::sketch_datafile::SketchArrayFile;
 
 pub const SEQSEP: u8 = 5;
 
@@ -24,8 +28,8 @@ pub struct Sketch {
     #[serde(skip)] // In Multisketch
     sketch_size: u64,
     #[serde(skip)]
-    kmer_sketches: HashMap<usize, Vec<u64>>,
-    index: usize,
+    usigs: Vec<u64>,
+    index: Option<usize>,
     rc: bool,
     reads: bool,
     seq_length: usize,
@@ -39,17 +43,16 @@ impl Sketch {
     pub fn new(
         files: (&str, Option<&String>),
         kmer_lengths: &[usize],
-        index: usize,
         sketch_size: u64,
         min_qual: u8,
         min_count: u16,
         rc: bool,
     ) -> Self {
         let mut sketch = Self {
-            sketch_size: sketch_size,
-            kmer_sketches: HashMap::with_capacity(kmer_lengths.len()),
-            index,
-            rc: rc,
+            sketch_size,
+            usigs: Vec::with_capacity((sketch_size * BBITS) as usize * kmer_lengths.len()),
+            index: None,
+            rc,
             reads: false,
             seq_length: 0,
             missing_bases: 0,
@@ -68,8 +71,6 @@ impl Sketch {
         if seq_peek.format() == Format::Fastq {
             sketch.reads = true;
         }
-        // TODO more efficient to pass the filter and init if reads, but maybe
-        // when multithreaded this is better?
         let mut filter = match sketch.reads {
             true => {
                 let mut kmer_filter = KmerFilter::new(min_count);
@@ -115,7 +116,7 @@ impl Sketch {
             log::debug!("Transposing bins");
             let mut usigs = vec![0; (sketch_size * BBITS) as usize];
             Self::fill_usigs(&mut usigs, &signs);
-            sketch.kmer_sketches.insert(*k, usigs);
+            sketch.usigs.append(&mut usigs);
         }
 
         // Estimate of sequence length from read data
@@ -126,91 +127,16 @@ impl Sketch {
         sketch
     }
 
-    // TODO: would be fun to try putting signs in a roaringbitmap then just
-    // doing intersection_len() as this function
-    pub fn jaccard_dist(&self, other: &Sketch, k: usize) -> f64 {
-        let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
-        let mut samebits: u32 = 0;
-        for i in 0..self.sketch_size {
-            let mut bits: u64 = !0;
-            for j in 0..BBITS {
-                bits &= !(self.kmer_sketches[&k][(i * BBITS + j) as usize]
-                    ^ other.kmer_sketches[&k][(i * BBITS + j) as usize]);
-            }
-            samebits += bits.count_ones();
-        }
-        let maxnbits = self.sketch_size as u32 * u64::BITS;
-        let expected_samebits = maxnbits >> BBITS;
-        if expected_samebits != 0 {
-            samebits as f64
-        } else {
-            let diff = samebits.saturating_sub(maxnbits);
-            let intersize = (diff * maxnbits / (maxnbits - maxnbits)) as f64;
-            intersize / unionsize
-        }
+    pub fn set_index(&mut self, index: usize) {
+        self.index = Some(index);
     }
 
-    pub fn core_acc_dist(&self, other: &Sketch) -> (f64, f64) {
-        if self.kmer_sketches.len() < 2 {
-            panic!("Need at least two k-mer lengths to calculate core/accessory distances");
-        }
-        let mut xsum = 0.0;
-        let mut ysum = 0.0;
-        let mut xysum = 0.0;
-        let mut xsquaresum = 0.0;
-        let mut ysquaresum = 0.0;
-        let mut n = 0.0;
-        let tolerance = 5.0 / (self.sketch_size as f64);
-        for k in self.kmer_sketches.keys() {
-            let y = self.jaccard_dist(other, *k).exp();
-            if y < tolerance {
-                break;
-            }
-            let k_fl = *k as f64;
-            xsum += k_fl;
-            ysum += y;
-            xysum += k_fl * y;
-            xsquaresum += k_fl * k_fl;
-            ysquaresum += y * y;
-            n += 1.0;
-        }
-        Self::simple_linear_regression(xsum, ysum, xysum, xsquaresum, ysquaresum, n)
+    pub fn get_index(&self) -> usize {
+        self.index.unwrap()
     }
 
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    pub fn get_usigs(&mut self) -> &HashMap<usize, Vec<u64>> {
-        &self.kmer_sketches
-    }
-
-    fn simple_linear_regression(
-        xsum: f64,
-        ysum: f64,
-        xysum: f64,
-        xsquaresum: f64,
-        ysquaresum: f64,
-        n: f64,
-    ) -> (f64, f64) {
-        let xbar = xsum / n;
-        let ybar = ysum / n;
-        let x_diff = xsquaresum - xsum * xsum / n;
-        let y_diff = ysquaresum - ysum * ysum / n;
-        let xstddev = ((xsquaresum - xsum * xsum / n) / n).sqrt();
-        let ystddev = ((ysquaresum - ysum * ysum / n) / n).sqrt();
-        let r = (xysum - xsum * ysum / n) / (x_diff * y_diff).sqrt();
-        let beta = r * ystddev / xstddev;
-        let alpha = -beta * xbar + ybar;
-
-        let (mut core, mut acc) = (0.0, 0.0);
-        if beta < 0.0 {
-            core = 1.0 - beta.exp();
-        }
-        if alpha < 0.0 {
-            acc = 1.0 - alpha.exp();
-        }
-        (core, acc)
+    pub fn get_usigs(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.usigs)
     }
 
     fn add_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, min_qual: u8) {
@@ -309,31 +235,39 @@ impl Sketch {
     }
 }
 
-// TODO may want to write these one by one rather than storing them all
 pub fn sketch_files(
-    sketch_container: &mut MultiSketch,
+    output_prefix: &str,
     input_files: &[InputFastx],
     k: &[usize],
     sketch_size: u64,
     rc: bool,
     min_count: u16,
     min_qual: u8,
-) {
-    input_files
+) -> Vec<Sketch> {
+    let bin_stride = 1;
+    let kmer_stride = (sketch_size * BBITS) as usize;
+    let sample_stride = kmer_stride * k.len();
+
+    let data_filename = format!("{output_prefix}.skd");
+    let serial_writer = Arc::new(SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride));
+
+    let sketches: Vec<Sketch> = input_files
         .par_iter()
-        .enumerate()
         .progress_count(input_files.len() as u64)
-        .map(|(idx, fastx)| {
+        .map(|(_name, fastx1, fastx2)| {
             let mut sketch = Sketch::new(
-                (&fastx.1, fastx.2.as_ref()),
+                (&fastx1, fastx2.as_ref()),
                 k,
-                idx,
                 sketch_size,
                 min_qual,
                 min_count,
                 rc,
             );
-            // TODO use name &fastx.0 to add to multisketch
-            sketch_container.add_sketch(&fastx.0, &mut sketch);
-        });
+            let writer = Arc::clone(&serial_writer);
+            let index = writer.write_sketch(&sketch.get_usigs());
+            sketch.set_index(index);
+            sketch
+        })
+        .collect();
+    sketches
 }

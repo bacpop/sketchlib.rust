@@ -14,6 +14,7 @@ use crate::sketch::sketch_files;
 
 pub mod multisketch;
 use crate::multisketch::MultiSketch;
+pub mod sketch_datafile;
 
 pub mod io;
 use crate::io::get_input_list;
@@ -52,47 +53,23 @@ pub fn main() {
             // Read input
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
+            // TODO this is very clunky, better replace fastx type
+            let names: Vec<String> = input_files.iter().map(|x| x.0.to_string()).collect();
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
             sketch_size /= u64::BITS as u64;
 
             log::info!(
-                "Running sketching: k:{:?}; sketch_size:{}; threads{}",
+                "Running sketching: k:{:?}; sketch_size:{}; threads:{}",
                 k_vals,
                 sketch_size * u64::BITS as u64,
                 threads
             );
-            let mut sketches = MultiSketch::new(input_files.len(), sketch_size, &k_vals, &output);
-            sketch_files(&mut sketches, &input_files, k_vals, sketch_size, rc, *min_count, *min_qual);
-            sketches.save();
-
-            // TODO FIRST
-            // Maybe the thing to do is not have usigs in the sketch class at all
-            // Write straight to a memmapped buffer.
-            // Use split_at_mut to safely create chunks of memory for each thread
-            // The multisketch class will then read parts of this buffer
-            // This does commit to having all in memory
-            // Alternative is to create a mutex on file and write out with index in the order
-            // sketched
-            // Then when reading, create a byte interval to read from and read
-            // the file in large chunks (so don't use memmap at all)
-            // memmap:
-            // basically would be an advantage with a random access pattern
-            // if we can write serially then no point
-
-            // TODO saving
-            // make a multisketch class which has a vec of sketchsize * n_samples * k-mer
-            // Can stride as you like, probably having a single sample's bins layed out next to each other
-            // then k-mers next to each other. So when reading can set a range sketchsize * n_kmers to read in a block
-            // Will want to make a nice class around access which deals with reading the right part of the [u8] (see u64::from_le_bytes())
-
-            // TODO metadata
-            // Probably serde with a no serialise option on the k-mer field would be ok, but maybe check performance for
-            // e.g. 2M of these (as otherwise will want to be able to get them via random access)
-
-            // TODO save on the fly
-            // Once this is done, just write the sketches out into that vec
+            let mut sketches = sketch_files(&output, &input_files, k_vals, sketch_size, rc, *min_count, *min_qual);
+            log::info!("Saving sketch metadata");
+            let sketch_vec = MultiSketch::new(&names, &mut sketches, sketch_size, &k_vals, &format!("{output}.skm"));
+            sketch_vec.save_metadata().expect("Error saving metadata");
         }
         Commands::Dist {
             db1,
