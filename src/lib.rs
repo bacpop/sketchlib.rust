@@ -5,7 +5,6 @@
 use std::time::Instant;
 
 extern crate num_cpus;
-use ska::io_utils::*;
 
 pub mod cli;
 use crate::cli::*;
@@ -13,6 +12,13 @@ use crate::cli::*;
 pub mod sketch;
 use crate::sketch::sketch_files;
 
+pub mod multisketch;
+use crate::multisketch::MultiSketch;
+
+pub mod io;
+use crate::io::get_input_list;
+
+pub mod bloom_filter;
 pub mod hashing;
 
 /// Default k-mer size for sketching
@@ -51,15 +57,42 @@ pub fn main() {
             // Set expected sketchsize
             sketch_size /= u64::BITS as u64;
 
-            log::info!("Running sketching for k:{:?} and sketch size {} using {} threads", k_vals, sketch_size * u64::BITS as u64, threads);
-            let sketches = sketch_files(
-                &input_files,
+            log::info!(
+                "Running sketching: k:{:?}; sketch_size:{}; threads{}",
                 k_vals,
-                sketch_size,
-                rc,
-                *min_count,
-                *min_qual,
+                sketch_size * u64::BITS as u64,
+                threads
             );
+            let mut sketches = MultiSketch::new(input_files.len(), sketch_size, &k_vals, &output);
+            sketch_files(&mut sketches, &input_files, k_vals, sketch_size, rc, *min_count, *min_qual);
+            sketches.save();
+
+            // TODO FIRST
+            // Maybe the thing to do is not have usigs in the sketch class at all
+            // Write straight to a memmapped buffer.
+            // Use split_at_mut to safely create chunks of memory for each thread
+            // The multisketch class will then read parts of this buffer
+            // This does commit to having all in memory
+            // Alternative is to create a mutex on file and write out with index in the order
+            // sketched
+            // Then when reading, create a byte interval to read from and read
+            // the file in large chunks (so don't use memmap at all)
+            // memmap:
+            // basically would be an advantage with a random access pattern
+            // if we can write serially then no point
+
+            // TODO saving
+            // make a multisketch class which has a vec of sketchsize * n_samples * k-mer
+            // Can stride as you like, probably having a single sample's bins layed out next to each other
+            // then k-mers next to each other. So when reading can set a range sketchsize * n_kmers to read in a block
+            // Will want to make a nice class around access which deals with reading the right part of the [u8] (see u64::from_le_bytes())
+
+            // TODO metadata
+            // Probably serde with a no serialise option on the k-mer field would be ok, but maybe check performance for
+            // e.g. 2M of these (as otherwise will want to be able to get them via random access)
+
+            // TODO save on the fly
+            // Once this is done, just write the sketches out into that vec
         }
         Commands::Dist {
             db1,
@@ -74,6 +107,6 @@ pub fn main() {
     let end = Instant::now();
 
     eprintln!("sketchlib done in {}s", end.duration_since(start).as_secs());
-    eprintln!("✍️🧬");
+    eprintln!("🧬🖋️");
     log::info!("Complete");
 }

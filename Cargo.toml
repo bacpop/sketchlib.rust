@@ -24,7 +24,14 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # i/o
 needletail = { version = "0.5", features = ["compression"] }
-ska = "0.3.6"
+# data structures
+hashbrown = "0.14"
+ahash = ">=0.8.7"
+# save/load
+serde = { version = "1.0", features = ["derive"] }
+ciborium = "0.2"
+snap = "1.1"
+memmap2 = "0.9"
 # logging
 log = "0.4"
 simple_logger = { version = "4", features = ["stderr"] }

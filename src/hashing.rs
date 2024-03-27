@@ -147,7 +147,8 @@ impl<'a> Iterator for NtHashIterator<'a> {
             let new_base = self.seq[self.index];
             // Restart hash if invalid base
             if new_base > 3 {
-                if let Some(new_it) = Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc) {
+                if let Some(new_it) = Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc)
+                {
                     self.fh = new_it.0;
                     self.rh = new_it.1;
                     self.index = new_it.2;

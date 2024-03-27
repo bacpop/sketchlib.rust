@@ -1,86 +1,90 @@
-use std::collections::HashMap;
+use std::ops::Mul;
+use std::{cmp::Ordering, collections::HashMap};
 
+use serde::{Deserialize, Serialize};
 extern crate needletail;
-use indicatif::{ProgressIterator, ProgressBar, ParallelProgressIterator};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use needletail::{parse_fastx_file, parser::Format};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use ska::{
-    merge_ska_dict::InputFastx,
-    ska_dict::{bit_encoding::encode_base, bloom_filter::KmerFilter},
-};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
+use super::hashing::{encode_base, NtHashIterator};
+use crate::bloom_filter::KmerFilter;
 use crate::hashing::valid_base;
-
-use super::hashing::NtHashIterator;
+use crate::io::InputFastx;
+use crate::multisketch::MultiSketch;
 
 pub const SEQSEP: u8 = 5;
-pub const QUALSEP: u8 = b'?';
 
 /// Bin bits
 pub const BBITS: u64 = 14;
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
-// TODO need to check sketchsize vs sketchsize64 throughout
-
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Sketch {
-    name: String,
+    #[serde(skip)] // In Multisketch
     sketch_size: u64,
+    #[serde(skip)]
     kmer_sketches: HashMap<usize, Vec<u64>>,
+    index: usize,
     rc: bool,
     reads: bool,
     seq_length: usize,
     missing_bases: usize,
     densified: bool,
-    kmer_filter: KmerFilter,
     acgt: [usize; 4],
     non_acgt: usize,
 }
 
 impl Sketch {
     pub fn new(
-        name: &str,
         files: (&str, Option<&String>),
         kmer_lengths: &[usize],
+        index: usize,
         sketch_size: u64,
+        min_qual: u8,
         min_count: u16,
         rc: bool,
     ) -> Self {
         let mut sketch = Self {
-            name: name.to_string(),
             sketch_size: sketch_size,
             kmer_sketches: HashMap::with_capacity(kmer_lengths.len()),
+            index,
             rc: rc,
             reads: false,
             seq_length: 0,
             missing_bases: 0,
             densified: false,
-            kmer_filter: KmerFilter::new(min_count),
             acgt: [0; 4],
             non_acgt: 0,
         };
 
-        // Check if we're working with reads, and initalise the CM filter if so
+        // Check if we're working with reads, and initalise the filter if so
         let mut reader_peek =
             parse_fastx_file(files.0).unwrap_or_else(|_| panic!("Invalid path/file: {}", files.0));
         let seq_peek = reader_peek
             .next()
             .expect("Invalid FASTA/Q record")
             .expect("Invalid FASTA/Q record");
-        let mut is_reads = false;
         if seq_peek.format() == Format::Fastq {
-            sketch.kmer_filter.init();
-            is_reads = true;
+            sketch.reads = true;
         }
+        // TODO more efficient to pass the filter and init if reads, but maybe
+        // when multithreaded this is better?
+        let mut filter = match sketch.reads {
+            true => {
+                let mut kmer_filter = KmerFilter::new(min_count);
+                kmer_filter.init();
+                Some(kmer_filter)
+            }
+            false => None,
+        };
 
         // Read sequence into memory (as we go through multiple times)
-        // TODO allow it to be streamed from disk
-        let mut sequence: Vec<u8> = Vec::new();
-        let mut quals: Vec<u8> = Vec::new();
-
         log::debug!("Preprocessing sequence");
-        sketch.add_seq(files.0, &mut sequence, &mut quals);
+        let mut sequence: Vec<u8> = Vec::new();
+        sketch.add_seq(files.0, &mut sequence, min_qual);
         if let Some(filename) = files.1 {
-            sketch.add_seq(filename, &mut sequence, &mut quals);
+            sketch.add_seq(filename, &mut sequence, min_qual);
         }
 
         sketch.seq_length = sketch.acgt.iter().sum();
@@ -93,14 +97,13 @@ impl Sketch {
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
         let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
         for k in kmer_lengths {
-            log::debug!("Sketching {name} at k={k}");
             // Calculate bin minima across all sequence
             let mut signs = vec![u64::MAX; num_bins as usize];
             let hash_it = NtHashIterator::new(&sequence, *k, rc);
             // let bar = ProgressBar::new(sequence.len() as u64);
             for hash in hash_it {
                 // bar.inc(1);
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size);
+                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut filter);
             }
             // bar.finish();
 
@@ -116,13 +119,15 @@ impl Sketch {
         }
 
         // Estimate of sequence length from read data
-        if is_reads {
+        if sketch.reads {
             sketch.seq_length = ((kmer_lengths.len() as f64) / minhash_sum) as usize;
         }
 
         sketch
     }
 
+    // TODO: would be fun to try putting signs in a roaringbitmap then just
+    // doing intersection_len() as this function
     pub fn jaccard_dist(&self, other: &Sketch, k: usize) -> f64 {
         let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
         let mut samebits: u32 = 0;
@@ -172,6 +177,14 @@ impl Sketch {
         Self::simple_linear_regression(xsum, ysum, xysum, xsquaresum, ysquaresum, n)
     }
 
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn get_usigs(&mut self) -> &HashMap<usize, Vec<u64>> {
+        &self.kmer_sketches
+    }
+
     fn simple_linear_regression(
         xsum: f64,
         ysum: f64,
@@ -200,46 +213,57 @@ impl Sketch {
         (core, acc)
     }
 
-    // TODO filter on count and quality
-    // TODO with reads it is better to only add to filter if putative minimum in the bin, which changes this processing
-    // i.e. we would just convert all the reads then filter count above
-    fn add_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, quals: &mut Vec<u8>) {
+    fn add_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, min_qual: u8) {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
         while let Some(record) = reader.next() {
             let seqrec = record.expect("Invalid FASTA/Q record");
-            for base in seqrec.seq().iter() {
-                if valid_base(*base) {
-                    let encoded_base = encode_base(*base);
-                    self.acgt[encoded_base as usize] += 1;
-                    sequence.push(encoded_base)
-                } else {
-                    self.non_acgt += 1;
-                    sequence.push(SEQSEP);
+            if let Some(quals) = seqrec.qual() {
+                for (base, qual) in seqrec.seq().iter().zip(quals) {
+                    if *qual >= min_qual {
+                        if valid_base(*base) {
+                            let encoded_base = encode_base(*base);
+                            self.acgt[encoded_base as usize] += 1;
+                            sequence.push(encoded_base)
+                        } else {
+                            self.non_acgt += 1;
+                            sequence.push(SEQSEP);
+                        }
+                    } else {
+                        sequence.push(SEQSEP);
+                    }
+                }
+            } else {
+                for base in seqrec.seq().iter() {
+                    if valid_base(*base) {
+                        let encoded_base = encode_base(*base);
+                        self.acgt[encoded_base as usize] += 1;
+                        sequence.push(encoded_base)
+                    } else {
+                        self.non_acgt += 1;
+                        sequence.push(SEQSEP);
+                    }
                 }
             }
-            if let Some(qual_scores) = seqrec.qual() {
-                quals.extend(qual_scores);
-            }
+
             sequence.push(SEQSEP);
-            quals.push(QUALSEP);
         }
     }
 
-    fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64) {
+    fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {
         let binidx = (sign / binsize) as usize;
-        signs[binidx] = signs[binidx].min(sign);
+        if let Some(filter) = read_filter {
+            if sign < signs[binidx] && filter.filter(sign) == Ordering::Equal {
+                signs[binidx] = sign;
+            }
+        } else {
+            signs[binidx] = signs[binidx].min(sign);
+        }
     }
 
     #[inline(always)]
     fn bit_at_pos(x: u64, pos: u64) -> u64 {
         x & (1 << pos) >> pos
-    }
-
-    #[inline(always)]
-    fn universal_hash(s: u64, t: u64) -> u64 {
-        let x = (1009) * s + (1000 * 1000 + 3) * t;
-        (48271 * x + 11) % ((1 << 31) - 1)
     }
 
     fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
@@ -250,6 +274,12 @@ impl Sketch {
                 usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
             }
         }
+    }
+
+    #[inline(always)]
+    fn universal_hash(s: u64, t: u64) -> u64 {
+        let x = (1009) * s + (1000 * 1000 + 3) * t;
+        (48271 * x + 11) % ((1 << 31) - 1)
     }
 
     // TODO could use newer method
@@ -281,25 +311,29 @@ impl Sketch {
 
 // TODO may want to write these one by one rather than storing them all
 pub fn sketch_files(
+    sketch_container: &mut MultiSketch,
     input_files: &[InputFastx],
     k: &[usize],
     sketch_size: u64,
     rc: bool,
     min_count: u16,
     min_qual: u8,
-) -> Vec<Sketch> {
-    /* Single threaded for easier debug
-    let sketches: Vec<Sketch> = input_files
-        .iter()
-        .progress()
-        .map(|i| Sketch::new(&i.0, (&i.1, i.2.as_ref()), k, sketch_size, min_count, rc))
-        .collect();
-    */
-
-    let sketches: Vec<Sketch> = input_files
+) {
+    input_files
         .par_iter()
+        .enumerate()
         .progress_count(input_files.len() as u64)
-        .map(|i| Sketch::new(&i.0, (&i.1, i.2.as_ref()), k, sketch_size, min_count, rc))
-        .collect();
-    sketches
+        .map(|(idx, fastx)| {
+            let mut sketch = Sketch::new(
+                (&fastx.1, fastx.2.as_ref()),
+                k,
+                idx,
+                sketch_size,
+                min_qual,
+                min_count,
+                rc,
+            );
+            // TODO use name &fastx.0 to add to multisketch
+            sketch_container.add_sketch(&fastx.0, &mut sketch);
+        });
 }
