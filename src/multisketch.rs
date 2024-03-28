@@ -2,7 +2,7 @@ use std::sync::{Arc};
 use std::{collections::HashMap, process::Output};
 use std::mem;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::error::Error;
 
 use serde::{Deserialize, Serialize};
@@ -19,12 +19,13 @@ pub struct MultiSketch {
     sketch_data_buffer: Vec<u8>, // reading only
     #[serde(skip)]
     flat_sketch_array: Vec<u64>,
+    flat_sketch_array_size: usize,
     #[serde(skip)]
-    metadata_filename: String,
+    file_prefix: String,
 }
 
 impl MultiSketch {
-    pub fn new(names: &[String], sketches: &mut [Sketch], sketch_size: u64, kmer_lengths: &[usize], metadata_filename: &str) -> Self {
+    pub fn new(names: &[String], sketches: &mut [Sketch], sketch_size: u64, kmer_lengths: &[usize], file_prefix: &str) -> Self {
         let mut sketch_metadata: HashMap<String, Sketch> = HashMap::with_capacity(sketches.len());
         for (name, sketch) in names.iter().zip(sketches) {
             sketch_metadata.insert(name.to_string(), mem::take(sketch));
@@ -36,28 +37,39 @@ impl MultiSketch {
             sketch_metadata,
             sketch_data_buffer: Vec::new(),
             flat_sketch_array: Vec::new(),
-            metadata_filename: metadata_filename.to_string(),
+            flat_sketch_array_size: (sketch_size * BBITS) as usize * kmer_lengths.len() * names.len(),
+            file_prefix: file_prefix.to_string(),
         }
     }
 
     /// Saves the metadata
     pub fn save_metadata(&self) -> Result<(), Box<dyn Error>> {
-        let serial_file = BufWriter::new(File::create(self.metadata_filename.as_str())?);
+        let filename = format!("{}.skm", self.file_prefix);
+        let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
         ciborium::ser::into_writer(self, &mut compress_writer)?;
         Ok(())
     }
 
-    pub fn load(filename: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn load(file_prefix: &str) -> Result<Self, Box<dyn Error>> {
         // Read the serde part
+        let filename = format!("{}.skm", file_prefix);
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
-        let skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        skm_obj.file_prefix = file_prefix.to_string();
         Ok(skm_obj)
     }
 
     pub fn read_all(&mut self) {
         // Just stream the whole file and convert to u64 vec
+        let filename = format!("{}.skd", self.file_prefix);
+        let mut reader = BufReader::new(File::open(filename).expect("Could not read from {filename}"));
+        let mut buffer = [0u8; mem::size_of::<u64>()];
+        self.flat_sketch_array.reserve_exact(self.flat_sketch_array_size);
+        while let Ok(_read) = reader.read_exact(&mut buffer) {
+            self.flat_sketch_array.push(u64::from_le_bytes(buffer));
+        }
     }
 
     pub fn read_block(&mut self, names: &[String]) {

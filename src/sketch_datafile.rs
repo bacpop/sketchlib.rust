@@ -11,26 +11,39 @@ pub struct SketchArrayFile {
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
-    current_index: AtomicUsize,
-    serial_writer: Arc<RwLock<BufWriter<File>>>,
+    serial_writer: Arc<RwLock<SketchWriter>>,
+}
+
+// Both the file and index are locked together
+#[derive(Debug)]
+pub struct SketchWriter {
+    writer: BufWriter<File>,
+    current_index: AtomicUsize
+}
+
+impl SketchWriter {
+    pub fn new(filename: &str) -> Self {
+        let current_index = AtomicUsize::new(0);
+        let writer = BufWriter::new(File::create(filename).expect("Couldn't write to {filename}"));
+        Self {writer, current_index}
+    }
 }
 
 impl SketchArrayFile {
     pub fn new(filename: &str, bin_stride: usize, kmer_stride: usize, sample_stride: usize) -> Self {
-        let current_index = AtomicUsize::new(0);
-        let serial_file = File::create(filename).expect("Couldn't write to {filename}");
-        let serial_writer = Arc::new(RwLock::new(BufWriter::new(serial_file)));
-        Self { bin_stride, kmer_stride, sample_stride, current_index, serial_writer }
+        let serial_writer = Arc::new(RwLock::new(SketchWriter::new(filename)));
+        Self { bin_stride, kmer_stride, sample_stride, serial_writer }
     }
 
     pub fn write_sketch(&self, usigs_flat: &[u64]) -> usize {
         let writer = Arc::clone(&self.serial_writer);
+        // Gets the lock. This will be dropped at the end of the function
         let mut writer = writer.write().unwrap();
-        Self::write_sketch_data(&mut writer.get_mut(), usigs_flat).unwrap();
-        self.current_index.fetch_add(1, Ordering::SeqCst)
+        Self::write_sketch_data(&mut writer.writer.get_mut(), usigs_flat).unwrap();
+        writer.current_index.fetch_add(1, Ordering::SeqCst)
     }
 
-    fn write_sketch_data<W: Write + Seek>(writer: &mut W, usigs_flat: &[u64]) -> Result<(), Box<dyn Error>>{
+    fn write_sketch_data<W: Write>(writer: &mut W, usigs_flat: &[u64]) -> Result<(), Box<dyn Error>>{
         for bin_val in usigs_flat {
             writer.write_all(&bin_val.to_le_bytes())?;
         }

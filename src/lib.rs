@@ -68,7 +68,7 @@ pub fn main() {
             );
             let mut sketches = sketch_files(&output, &input_files, k_vals, sketch_size, rc, *min_count, *min_qual);
             log::info!("Saving sketch metadata");
-            let sketch_vec = MultiSketch::new(&names, &mut sketches, sketch_size, &k_vals, &format!("{output}.skm"));
+            let sketch_vec = MultiSketch::new(&names, &mut sketches, sketch_size, &k_vals, output);
             sketch_vec.save_metadata().expect("Error saving metadata");
         }
         Commands::Dist {
@@ -83,7 +83,6 @@ pub fn main() {
     }
     let end = Instant::now();
 
-    eprintln!("sketchlib done in {}s", end.duration_since(start).as_secs());
-    eprintln!("🧬🖋️");
+    eprintln!("🧬🖋️ sketchlib done in {}s", end.duration_since(start).as_secs());
     log::info!("Complete");
 }
