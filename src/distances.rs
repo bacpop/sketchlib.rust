@@ -67,7 +67,7 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
             }
         } else {
             for (i, ref_name) in self.ref_names.iter().enumerate() {
-                for j in i..self.ref_names.len() {
+                for j in (i + 1)..self.ref_names.len() {
                     write!(f, "{ref_name}\t{}\t{}", self.ref_names[j], self.distances[dist_idx])?;
                     if self.other_distances.len() > 0 {
                         write!(f, "\t{}", self.other_distances[dist_idx])?;

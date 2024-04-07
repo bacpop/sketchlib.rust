@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use std::process::Output;
+use std::fmt;
 use std::mem;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -13,7 +14,7 @@ use crate::sketch_datafile::SketchArrayFile;
 
 // TODO might be better to have HashMap<String, usize> of name maping
 // sketch_metadata is then just Vec<Sketch>
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     sketch_size: u64,
     kmer_lengths: Vec<usize>,
@@ -26,6 +27,7 @@ pub struct MultiSketch {
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
+    sketch_version: String,
 }
 
 impl MultiSketch {
@@ -46,6 +48,7 @@ impl MultiSketch {
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
+            sketch_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 
@@ -189,5 +192,24 @@ impl MultiSketch {
             acc = 1.0 - alpha.exp();
         }
         (core, acc)
+    }
+}
+
+impl fmt::Debug for MultiSketch {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "sketch_version={}\nsketch_size={}\nn_samples={}\nkmers={:?}",
+            self.sketch_version,
+            self.sketch_size * u64::BITS as u64,
+            self.sketch_metadata.len(),
+            self.kmer_lengths,
+        )
+    }
+}
+
+impl fmt::Display for MultiSketch {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        todo!()
     }
 }

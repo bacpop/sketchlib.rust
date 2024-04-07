@@ -99,6 +99,8 @@ pub fn main() {
             };
             log::info!("Loading sketch metadata from {}.skm", ref_db_name);
             let mut references = MultiSketch::load(ref_db_name).expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
+            log::info!("Read sketches:\n{references:?}");
+
             // TODO deal with subsetting
             log::info!("Loading sketch data from {}.skd", ref_db_name);
             references.read_sketch_data(ref_db_name);
@@ -112,7 +114,7 @@ pub fn main() {
                     let mut distances = DistanceMatrix::new(&references, None, k_idx.is_some());
                     let bar = ProgressBar::new(distances.n_distances as u64);
                     for i in 0..references.number_samples_loaded() {
-                        for j in i..references.number_samples_loaded() {
+                        for j in (i + 1)..references.number_samples_loaded() {
                             if let Some(k) = k_idx {
                                 let dist = references.jaccard_dist(i, j, k);
                                 distances.add_jaccard_dist(dist);
