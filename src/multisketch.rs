@@ -1,50 +1,57 @@
-use std::sync::{Arc};
-use std::{collections::HashMap, process::Output};
+use std::rc::Rc;
+use std::process::Output;
 use std::mem;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::error::Error;
 
+use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
+// TODO might be better to have HashMap<String, usize> of name maping
+// sketch_metadata is then just Vec<Sketch>
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MultiSketch {
     sketch_size: u64,
     kmer_lengths: Vec<usize>,
-    sketch_metadata: HashMap<String, Sketch>,
+    sketch_metadata: Vec<Sketch>,
+    name_map: HashMap<String, usize>, // TODO may not actually need this
     #[serde(skip)]
-    sketch_data_buffer: Vec<u8>, // reading only
+    block_metadata: Option<Vec<Sketch>>, // TODO: could be better to have sketch as an Rc/Arc, but need to change index so would want this kept elsewhere
     #[serde(skip)]
-    flat_sketch_array: Vec<u64>,
-    flat_sketch_array_size: usize,
-    #[serde(skip)]
-    file_prefix: String,
+    sketch_bins: Vec<u64>,
+    bin_stride: usize,
+    kmer_stride: usize,
+    sample_stride: usize,
 }
 
 impl MultiSketch {
-    pub fn new(names: &[String], sketches: &mut [Sketch], sketch_size: u64, kmer_lengths: &[usize], file_prefix: &str) -> Self {
-        let mut sketch_metadata: HashMap<String, Sketch> = HashMap::with_capacity(sketches.len());
-        for (name, sketch) in names.iter().zip(sketches) {
-            sketch_metadata.insert(name.to_string(), mem::take(sketch));
+    pub fn new(names: &mut Vec<String>, sketches: &mut Vec<Sketch>, sketch_size: u64, kmer_lengths: &[usize]) -> Self {
+        let mut name_map = HashMap::with_capacity(names.len());
+        for (name, sketch) in names.iter_mut().zip(sketches.iter()) {
+            name_map.insert(mem::take(name), sketch.get_index());
         }
 
+        let kmer_stride = (sketch_size * BBITS) as usize;
         Self {
             sketch_size,
             kmer_lengths: kmer_lengths.to_vec(),
-            sketch_metadata,
-            sketch_data_buffer: Vec::new(),
-            flat_sketch_array: Vec::new(),
-            flat_sketch_array_size: (sketch_size * BBITS) as usize * kmer_lengths.len() * names.len(),
-            file_prefix: file_prefix.to_string(),
+            sketch_metadata: mem::take(sketches),
+            name_map,
+            block_metadata: None,
+            sketch_bins: Vec::new(),
+            bin_stride: 1,
+            kmer_stride,
+            sample_stride: kmer_stride * kmer_lengths.len(),
         }
     }
 
     /// Saves the metadata
-    pub fn save_metadata(&self) -> Result<(), Box<dyn Error>> {
-        let filename = format!("{}.skm", self.file_prefix);
+    pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
+        let filename = format!("{}.skm", file_prefix);
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
         ciborium::ser::into_writer(self, &mut compress_writer)?;
@@ -52,59 +59,69 @@ impl MultiSketch {
     }
 
     pub fn load(file_prefix: &str) -> Result<Self, Box<dyn Error>> {
-        // Read the serde part
         let filename = format!("{}.skm", file_prefix);
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
-        let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
-        skm_obj.file_prefix = file_prefix.to_string();
+        let skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
         Ok(skm_obj)
     }
 
-    pub fn read_all(&mut self) {
-        // Just stream the whole file and convert to u64 vec
-        let filename = format!("{}.skd", self.file_prefix);
-        let mut reader = BufReader::new(File::open(filename).expect("Could not read from {filename}"));
-        let mut buffer = [0u8; mem::size_of::<u64>()];
-        self.flat_sketch_array.reserve_exact(self.flat_sketch_array_size);
-        while let Ok(_read) = reader.read_exact(&mut buffer) {
-            self.flat_sketch_array.push(u64::from_le_bytes(buffer));
+    pub fn number_samples_loaded(&self) -> usize {
+        match &self.block_metadata {
+            Some(block_map) => block_map.len(),
+            None => self.sketch_metadata.len()
         }
     }
 
-    pub fn read_block(&mut self, names: &[String]) {
+    pub fn get_k_idx(&self, k: usize) -> Option<usize> {
+        self.kmer_lengths.iter().enumerate().find_map(|(idx, val)| if *val == k {Some(idx)} else {None})
+    }
+
+    pub fn sketch_name(&self, index: usize) -> &str {
+        match &self.block_metadata {
+            Some(block_map) => block_map[index].name(),
+            None => self.sketch_metadata[index].name()
+        }
+    }
+
+    pub fn read_sketch_data(&mut self, file_prefix: &str) {
+        let filename = format!("{}.skd", file_prefix);
+        self.sketch_bins = SketchArrayFile::read_all(&filename, self.sample_stride * self.sketch_metadata.len());
+    }
+
+    pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
         // Find the given names in the sketch metadata
-        // Discard any not in the name list (i.e. delete from the hashmap)
-        // Open sketch data via memmap2
-        // Copy to a u64 with new indices (use Self::load_sketch)
-        // update index in hashmap entry
-    }
-
-    pub fn to_map(&mut self) -> &HashMap<String, Sketch> {
-        &self.sketch_metadata
-    }
-
-    fn memmap_file(&mut self, file: &str) {
-        todo!()
-    }
-
-    fn load_sketch(&mut self, sketch_index: usize) {
-        todo!()
+        let mut block_metadata = Vec::with_capacity(names.len());
+        let mut read_indices = Vec::with_capacity(names.len());
+        for (block_idx, name) in names.iter().enumerate() {
+            if let Some(sketch_idx) = self.name_map.get(name) {
+                let mut block_sketch = self.sketch_metadata[*sketch_idx].clone();
+                read_indices.push(block_sketch.get_index());
+                block_sketch.set_index(block_idx);
+                block_metadata.push(block_sketch);
+            } else {
+                panic!("Could not find {name} in sketch metadata");
+            }
+        }
+        let filename = format!("{}.skd", file_prefix);
+        self.sketch_bins = SketchArrayFile::read_batch(&filename, &read_indices, self.sample_stride);
+        self.block_metadata = Some(block_metadata);
     }
 
     // TODO: would be fun to try putting signs in a roaringbitmap then just
     // doing intersection_len() as this function
-    pub fn jaccard_dist(&self, sketch1_idx: usize, sketch2_idx: usize, k: usize) -> f64 {
-        todo!();
-        // TODO Need to load appropriate blocks
-        /*
+    pub fn jaccard_dist(&self, sketch1_idx: usize, sketch2_idx: usize, k_idx: usize) -> f64 {
+        let s1_offset = sketch1_idx * self.sample_stride + k_idx * self.kmer_stride;
+        let s2_offset = sketch2_idx * self.sample_stride + k_idx * self.kmer_stride;
+        let s1_slice = &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
+        let s2_slice = &self.sketch_bins[s2_offset..(s2_offset + (self.sketch_size * BBITS) as usize)];
         let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
         let mut samebits: u32 = 0;
         for i in 0..self.sketch_size {
             let mut bits: u64 = !0;
             for j in 0..BBITS {
-                bits &= !(self.kmer_sketches[&k][(i * BBITS + j) as usize]
-                    ^ other.kmer_sketches[&k][(i * BBITS + j) as usize]);
+                bits &= !(s1_slice[(i * BBITS + j) as usize]
+                    ^ s2_slice[(i * BBITS + j) as usize]);
             }
             samebits += bits.count_ones();
         }
@@ -113,11 +130,10 @@ impl MultiSketch {
         if expected_samebits != 0 {
             samebits as f64
         } else {
-            let diff = samebits.saturating_sub(maxnbits);
-            let intersize = (diff * maxnbits / (maxnbits - maxnbits)) as f64;
+            let diff = samebits.saturating_sub(expected_samebits);
+            let intersize = (diff * maxnbits) as f64 / (maxnbits - expected_samebits) as f64;
             intersize / unionsize
         }
-        */
     }
 
     pub fn core_acc_dist(&self, sketch1_idx: usize, sketch2_idx: usize) -> (f64, f64) {
@@ -131,8 +147,8 @@ impl MultiSketch {
         let mut ysquaresum = 0.0;
         let mut n = 0.0;
         let tolerance = 5.0 / (self.sketch_size as f64);
-        for k in &self.kmer_lengths {
-            let y = self.jaccard_dist(sketch1_idx, sketch2_idx, *k).exp();
+        for (k_idx, k) in self.kmer_lengths.iter().enumerate() {
+            let y = self.jaccard_dist(sketch1_idx, sketch2_idx, k_idx).exp();
             if y < tolerance {
                 break;
             }

@@ -24,6 +24,22 @@ pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     input_files
 }
 
+pub fn parse_kmers(k_list: &Option<Vec<usize>>, k_seq: &Option<Vec<usize>>) -> Vec<usize> {
+    if k_list.is_some() && k_seq.is_some() {
+        panic!("Only one of --k-vals or --k-seq should be specified");
+    }
+
+    let mut kmers = if let Some(k) = k_list {
+        k.clone().to_vec()
+    } else if let Some(k) = k_seq {
+        (k[0]..=k[1]).step_by(k[2]).collect()
+    } else {
+        panic!("Must specify --k-vals or --k-seq");
+    };
+    kmers.sort_unstable();
+    kmers
+}
+
 /// Set a buffered stream to write to.
 ///
 /// Either a file (if [`Some`]) or stdout otherwise (if [`None`]).

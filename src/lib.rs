@@ -3,8 +3,12 @@
 
 #![warn(missing_docs)]
 use std::time::Instant;
+use std::io::Write;
 
+#[macro_use]
+extern crate arrayref;
 extern crate num_cpus;
+use indicatif::ProgressBar;
 
 pub mod cli;
 use crate::cli::*;
@@ -14,10 +18,14 @@ use crate::sketch::sketch_files;
 
 pub mod multisketch;
 use crate::multisketch::MultiSketch;
+
 pub mod sketch_datafile;
 
+pub mod distances;
+use crate::distances::DistanceMatrix;
+
 pub mod io;
-use crate::io::get_input_list;
+use crate::io::{set_ostream, get_input_list, parse_kmers};
 
 pub mod bloom_filter;
 pub mod hashing;
@@ -42,6 +50,7 @@ pub fn main() {
             file_list,
             output,
             k_vals,
+            k_seq,
             mut sketch_size,
             single_strand,
             min_count,
@@ -53,8 +62,9 @@ pub fn main() {
             // Read input
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
+            let kmers = parse_kmers(k_vals, k_seq);
             // TODO this is very clunky, better replace fastx type
-            let names: Vec<String> = input_files.iter().map(|x| x.0.to_string()).collect();
+            let mut names: Vec<String> = input_files.iter().map(|x| x.0.to_string()).collect();
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
@@ -62,23 +72,68 @@ pub fn main() {
 
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; threads:{}",
-                k_vals,
+                kmers,
                 sketch_size * u64::BITS as u64,
                 threads
             );
-            let mut sketches = sketch_files(&output, &input_files, k_vals, sketch_size, rc, *min_count, *min_qual);
+            let mut sketches = sketch_files(&output, &input_files, &kmers, sketch_size, rc, *min_count, *min_qual);
             log::info!("Saving sketch metadata");
-            let sketch_vec = MultiSketch::new(&names, &mut sketches, sketch_size, &k_vals, output);
-            sketch_vec.save_metadata().expect("Error saving metadata");
+            let sketch_vec = MultiSketch::new(&mut names, &mut sketches, sketch_size, &kmers);
+            sketch_vec.save_metadata(output).expect("Error saving metadata");
         }
         Commands::Dist {
-            db1,
-            db2,
+            ref_db,
+            query_db,
             output,
+            subset,
+            kmer,
             threads,
         } => {
             check_threads(*threads);
-            todo!();
+            let mut output_file = set_ostream(output);
+
+            let ref_db_name = if ref_db.ends_with(".skm") {
+                &ref_db[0..ref_db.len() - 4]
+            } else {
+                ref_db.as_str()
+            };
+            log::info!("Loading sketch metadata from {}.skm", ref_db_name);
+            let mut references = MultiSketch::load(ref_db_name).expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
+            // TODO deal with subsetting
+            log::info!("Loading sketch data from {}.skd", ref_db_name);
+            references.read_sketch_data(ref_db_name);
+
+            match query_db {
+                None => {
+                    // TODO parallelise
+                    // Self mode
+                    log::info!("Calculating all ref vs ref distances");
+                    let k_idx = if let Some(k) = kmer {references.get_k_idx(*k)} else {None};
+                    let mut distances = DistanceMatrix::new(&references, None, k_idx.is_some());
+                    let bar = ProgressBar::new(distances.n_distances as u64);
+                    for i in 0..references.number_samples_loaded() {
+                        for j in i..references.number_samples_loaded() {
+                            if let Some(k) = k_idx {
+                                let dist = references.jaccard_dist(i, j, k);
+                                distances.add_jaccard_dist(dist);
+                            } else {
+                                let dist = references.core_acc_dist(i, j);
+                                distances.add_core_acc_dist(dist.0, dist.1);
+                            }
+                            bar.inc(1);
+                        }
+                    }
+
+                    log::info!("Writing out in long matrix form");
+                    // TODO this should go in a function. Possibly a class to deal with distance matrices
+                    write!(output_file, "{distances}").expect("Error writing output distances");
+                }
+                Some(db2) => {
+                    // TODO Ref v query mode
+                    log::info!("Calculating all ref vs query distances");
+                    todo!()
+                }
+            }
         }
     }
     let end = Instant::now();

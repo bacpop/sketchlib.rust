@@ -109,9 +109,8 @@ pub enum Commands {
     ))]
     /// Create sketches from input data
     Sketch {
-        // TODO this doesn't work with k_vals
         /// List of input FASTA files
-        #[arg(group = "input")]
+        #[arg(long, group = "input", num_args = 1.., value_delimiter = ',')]
         seq_files: Option<Vec<String>>,
 
         /// File listing input files (tab separated name, sequences)
@@ -123,8 +122,12 @@ pub enum Commands {
         output: String,
 
         /// K-mer list
-        #[arg(short, long, required = true, num_args = 1.., value_delimiter = ',')]
-        k_vals: Vec<usize>,
+        #[arg(short, long, group = "kmer", required = true, num_args = 1.., value_delimiter = ',')]
+        k_vals: Option<Vec<usize>>,
+
+        /// K-mer sequence: start end step
+        #[arg(long, group = "kmer", required = true, num_args = 3)]
+        k_seq: Option<Vec<usize>>,
 
         /// Sketch size
         #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
@@ -148,22 +151,31 @@ pub enum Commands {
     },
     /// Write an unordered alignment
     Dist {
-        /// A .h5 file as the reference
+        /// The .skm file used as the reference
         #[arg(required = true)]
-        db1: String,
+        ref_db: String,
 
-        /// A .h5 file as the query (omit for ref v ref)
-        #[arg(required = true)]
-        db2: Option<String>,
+        /// The .skm file used as the query (omit for ref v ref)
+        query_db: Option<String>,
 
         /// Output filename (omit to output to stdout)
         #[arg(short)]
         output: Option<String>,
 
+        /// Sample names to analyse
+        #[arg(long)]
+        subset: Option<String>,
+
+        /// K-mer length (if provided only calculate Jaccard distance)
+        #[arg(short)]
+        kmer: Option<usize>,
+
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
+    // TODO add an info function which works like ska nk on the .skm file
+    // TODO add a sparse mode
 }
 
 /// Function to parse command line args into [`Args`] struct

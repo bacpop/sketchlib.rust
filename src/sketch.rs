@@ -23,12 +23,13 @@ pub const SEQSEP: u8 = 5;
 pub const BBITS: u64 = 14;
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct Sketch {
     #[serde(skip)] // In Multisketch
     sketch_size: u64,
     #[serde(skip)]
     usigs: Vec<u64>,
+    name: String,
     index: Option<usize>,
     rc: bool,
     reads: bool,
@@ -41,6 +42,7 @@ pub struct Sketch {
 
 impl Sketch {
     pub fn new(
+        name: &str,
         files: (&str, Option<&String>),
         kmer_lengths: &[usize],
         sketch_size: u64,
@@ -52,6 +54,7 @@ impl Sketch {
         let mut sketch = Self {
             sketch_size,
             usigs: Vec::with_capacity(size_u64),
+            name: name.to_string(),
             index: None,
             rc,
             reads: false,
@@ -126,6 +129,10 @@ impl Sketch {
         }
 
         sketch
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn set_index(&mut self, index: usize) {
@@ -252,11 +259,12 @@ pub fn sketch_files(
     let data_filename = format!("{output_prefix}.skd");
     let serial_writer = Arc::new(SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride));
 
-    let sketches: Vec<Sketch> = input_files
+    let mut sketches: Vec<Sketch> = input_files
         .par_iter()
         .progress_count(input_files.len() as u64)
-        .map(|(_name, fastx1, fastx2)| {
+        .map(|(name, fastx1, fastx2)| {
             let mut sketch = Sketch::new(
+                name,
                 (&fastx1, fastx2.as_ref()),
                 k,
                 sketch_size,
@@ -270,5 +278,7 @@ pub fn sketch_files(
             sketch
         })
         .collect();
+    // Sort to be in the same order as they were saved to the file
+    sketches.sort_unstable_by_key(|k| k.get_index());
     sketches
 }
