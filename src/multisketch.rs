@@ -21,7 +21,7 @@ pub struct MultiSketch {
     sketch_metadata: Vec<Sketch>,
     name_map: HashMap<String, usize>, // TODO may not actually need this
     #[serde(skip)]
-    block_metadata: Option<Vec<Sketch>>, // TODO: could be better to have sketch as an Rc/Arc, but need to change index so would want this kept elsewhere
+    block_metadata: Option<Vec<Sketch>>, // TODO: better to have sketch as an Rc/Arc
     #[serde(skip)]
     sketch_bins: Vec<u64>,
     bin_stride: usize,

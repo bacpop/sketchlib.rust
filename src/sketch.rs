@@ -25,8 +25,6 @@ pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct Sketch {
-    #[serde(skip)] // In Multisketch
-    sketch_size: u64,
     #[serde(skip)]
     usigs: Vec<u64>,
     name: String,
@@ -52,7 +50,6 @@ impl Sketch {
     ) -> Self {
         let size_u64 = (sketch_size * BBITS) as usize * kmer_lengths.len();
         let mut sketch = Self {
-            sketch_size,
             usigs: Vec::with_capacity(size_u64),
             name: name.to_string(),
             index: None,

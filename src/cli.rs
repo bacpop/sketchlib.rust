@@ -50,18 +50,6 @@ pub const DEFAULT_MINQUAL: u8 = 20;
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 
 #[doc(hidden)]
-fn valid_kmer(s: &str) -> Result<usize, String> {
-    let k: usize = s
-        .parse()
-        .map_err(|_| format!("`{s}` isn't a valid k-mer"))?;
-    if k < 5 {
-        Err("K-mer must a number greater than five".to_string())
-    } else {
-        Ok(k)
-    }
-}
-
-#[doc(hidden)]
 fn valid_cpus(s: &str) -> Result<usize, String> {
     let threads: usize = s
         .parse()

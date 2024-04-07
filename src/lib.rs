@@ -127,7 +127,6 @@ pub fn main() {
                     }
 
                     log::info!("Writing out in long matrix form");
-                    // TODO this should go in a function. Possibly a class to deal with distance matrices
                     write!(output_file, "{distances}").expect("Error writing output distances");
                 }
                 Some(db2) => {

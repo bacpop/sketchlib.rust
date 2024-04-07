@@ -36,7 +36,12 @@ pub fn parse_kmers(k_list: &Option<Vec<usize>>, k_seq: &Option<Vec<usize>>) -> V
     } else {
         panic!("Must specify --k-vals or --k-seq");
     };
+
     kmers.sort_unstable();
+    if !kmers.iter().all(|&k| k >= 5) {
+        panic!("K-mers must be >=5");
+    }
+
     kmers
 }
 
