@@ -2,8 +2,8 @@
 //!
 
 #![warn(missing_docs)]
-use std::time::Instant;
 use std::io::Write;
+use std::time::Instant;
 
 #[macro_use]
 extern crate arrayref;
@@ -25,7 +25,7 @@ pub mod distances;
 use crate::distances::DistanceMatrix;
 
 pub mod io;
-use crate::io::{set_ostream, get_input_list, parse_kmers};
+use crate::io::{get_input_list, parse_kmers, set_ostream};
 
 pub mod bloom_filter;
 pub mod hashing;
@@ -76,10 +76,20 @@ pub fn main() {
                 sketch_size * u64::BITS as u64,
                 threads
             );
-            let mut sketches = sketch_files(&output, &input_files, &kmers, sketch_size, rc, *min_count, *min_qual);
+            let mut sketches = sketch_files(
+                &output,
+                &input_files,
+                &kmers,
+                sketch_size,
+                rc,
+                *min_count,
+                *min_qual,
+            );
             log::info!("Saving sketch metadata");
             let sketch_vec = MultiSketch::new(&mut names, &mut sketches, sketch_size, &kmers);
-            sketch_vec.save_metadata(output).expect("Error saving metadata");
+            sketch_vec
+                .save_metadata(output)
+                .expect("Error saving metadata");
         }
         Commands::Dist {
             ref_db,
@@ -98,7 +108,8 @@ pub fn main() {
                 ref_db.as_str()
             };
             log::info!("Loading sketch metadata from {}.skm", ref_db_name);
-            let mut references = MultiSketch::load(ref_db_name).expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
+            let mut references = MultiSketch::load(ref_db_name)
+                .expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
             log::info!("Read sketches:\n{references:?}");
 
             // TODO deal with subsetting
@@ -110,7 +121,11 @@ pub fn main() {
                     // TODO parallelise
                     // Self mode
                     log::info!("Calculating all ref vs ref distances");
-                    let k_idx = if let Some(k) = kmer {references.get_k_idx(*k)} else {None};
+                    let k_idx = if let Some(k) = kmer {
+                        references.get_k_idx(*k)
+                    } else {
+                        None
+                    };
                     let mut distances = DistanceMatrix::new(&references, None, k_idx.is_some());
                     let bar = ProgressBar::new(distances.n_distances as u64);
                     for i in 0..references.number_samples_loaded() {
@@ -139,6 +154,9 @@ pub fn main() {
     }
     let end = Instant::now();
 
-    eprintln!("🧬🖋️ sketchlib done in {}s", end.duration_since(start).as_secs());
+    eprintln!(
+        "🧬🖋️ sketchlib done in {}s",
+        end.duration_since(start).as_secs()
+    );
     log::info!("Complete");
 }

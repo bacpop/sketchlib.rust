@@ -2,7 +2,6 @@ use std::fmt;
 
 use crate::multisketch::MultiSketch;
 
-
 pub struct DistanceMatrix<'a> {
     pub n_distances: usize,
     distances: Vec<f64>,
@@ -12,7 +11,11 @@ pub struct DistanceMatrix<'a> {
 }
 
 impl<'a> DistanceMatrix<'a> {
-    pub fn new(ref_sketches: &'a MultiSketch, query_sketches: Option<&'a MultiSketch>, jaccard: bool) -> Self {
+    pub fn new(
+        ref_sketches: &'a MultiSketch,
+        query_sketches: Option<&'a MultiSketch>,
+        jaccard: bool,
+    ) -> Self {
         if let Some(query) = query_sketches {
             let n_distances = ref_sketches.number_samples_loaded() * query.number_samples_loaded();
             let mut other_distances = Vec::new();
@@ -20,15 +23,29 @@ impl<'a> DistanceMatrix<'a> {
                 other_distances.reserve(n_distances);
             }
 
-            Self { n_distances, distances: Vec::with_capacity(n_distances), other_distances, ref_names: Self::sketch_names(ref_sketches), query_names: Some(Self::sketch_names(query))}
+            Self {
+                n_distances,
+                distances: Vec::with_capacity(n_distances),
+                other_distances,
+                ref_names: Self::sketch_names(ref_sketches),
+                query_names: Some(Self::sketch_names(query)),
+            }
         } else {
-            let n_distances = ref_sketches.number_samples_loaded() * (ref_sketches.number_samples_loaded() - 1) / 2;
+            let n_distances = ref_sketches.number_samples_loaded()
+                * (ref_sketches.number_samples_loaded() - 1)
+                / 2;
             let mut other_distances = Vec::new();
             if jaccard {
                 other_distances.reserve(n_distances);
             }
 
-            Self { n_distances, distances: Vec::with_capacity(n_distances), other_distances, ref_names: Self::sketch_names(ref_sketches), query_names: None}
+            Self {
+                n_distances,
+                distances: Vec::with_capacity(n_distances),
+                other_distances,
+                ref_names: Self::sketch_names(ref_sketches),
+                query_names: None,
+            }
         }
     }
 
@@ -41,7 +58,7 @@ impl<'a> DistanceMatrix<'a> {
         self.other_distances.push(acc_dist);
     }
 
-    fn sketch_names(sketches: &MultiSketch) -> Vec<&str> {
+    fn sketch_names(sketches: &'a MultiSketch) -> Vec<&'a str> {
         let n_samples = sketches.number_samples_loaded();
         let mut names = Vec::with_capacity(n_samples);
         for idx in 0..n_samples {
@@ -68,7 +85,11 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
         } else {
             for (i, ref_name) in self.ref_names.iter().enumerate() {
                 for j in (i + 1)..self.ref_names.len() {
-                    write!(f, "{ref_name}\t{}\t{}", self.ref_names[j], self.distances[dist_idx])?;
+                    write!(
+                        f,
+                        "{ref_name}\t{}\t{}",
+                        self.ref_names[j], self.distances[dist_idx]
+                    )?;
                     if self.other_distances.len() > 0 {
                         write!(f, "\t{}", self.other_distances[dist_idx])?;
                     }

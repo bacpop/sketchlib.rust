@@ -1,8 +1,8 @@
-use std::{cmp::Ordering, collections::HashMap};
-use std::sync::{Arc};
-use std::mem;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::mem;
+use std::sync::Arc;
+use std::{cmp::Ordering, collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 extern crate needletail;
@@ -254,7 +254,12 @@ pub fn sketch_files(
     let sample_stride = kmer_stride * k.len();
 
     let data_filename = format!("{output_prefix}.skd");
-    let serial_writer = Arc::new(SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride));
+    let serial_writer = Arc::new(SketchArrayFile::new(
+        &data_filename,
+        bin_stride,
+        kmer_stride,
+        sample_stride,
+    ));
 
     let mut sketches: Vec<Sketch> = input_files
         .par_iter()
