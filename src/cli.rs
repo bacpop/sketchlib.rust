@@ -162,8 +162,16 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    // TODO add an info function which works like ska nk on the .skm file
     // TODO add a sparse mode
+    /// Print information about a .skm file
+    Info {
+        /// Sketch metadata file (.skm) to describe
+        skm_file: String,
+
+        /// Write out the information for every sample contained
+        #[arg(long, default_value_t = false)]
+        sample_info: bool,
+    },
 }
 
 /// Function to parse command line args into [`Args`] struct

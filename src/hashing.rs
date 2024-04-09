@@ -43,6 +43,7 @@ const RC_HASH_LOOKUP: [u64; 4] = [
 // TODO aaHash for proteins
 
 // TODO generic hash for structure alphabet
+// https://github.com/eldruin/wyhash-rs
 
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
 #[derive(Debug)]

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::mem;
@@ -32,7 +33,6 @@ pub struct Sketch {
     rc: bool,
     reads: bool,
     seq_length: usize,
-    missing_bases: usize,
     densified: bool,
     acgt: [usize; 4],
     non_acgt: usize,
@@ -56,7 +56,6 @@ impl Sketch {
             rc,
             reads: false,
             seq_length: 0,
-            missing_bases: 0,
             densified: false,
             acgt: [0; 4],
             non_acgt: 0,
@@ -237,6 +236,22 @@ impl Sketch {
             }
             true
         }
+    }
+}
+
+impl fmt::Display for Sketch {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(
+            f,
+            "{}\t{}\t{:?}\t{}\t{}\t{}\t{}",
+            self.name,
+            self.seq_length,
+            self.acgt,
+            self.non_acgt,
+            self.reads,
+            !self.rc,
+            self.densified
+        )
     }
 }
 

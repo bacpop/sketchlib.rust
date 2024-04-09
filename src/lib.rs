@@ -151,6 +151,24 @@ pub fn main() {
                 }
             }
         }
+        Commands::Info {
+            skm_file,
+            sample_info,
+        } => {
+            let ref_db_name = if skm_file.ends_with(".skm") {
+                &skm_file[0..skm_file.len() - 4]
+            } else {
+                skm_file.as_str()
+            };
+            let sketches = MultiSketch::load(ref_db_name).expect(&format!(
+                "Could not read sketch metadata from {ref_db_name}.skm"
+            ));
+            println!("{sketches:?}");
+            if *sample_info {
+                log::info!("Printing sample info");
+                println!("{sketches}");
+            }
+        }
     }
     let end = Instant::now();
 

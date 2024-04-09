@@ -19,7 +19,7 @@ pub struct MultiSketch<'a> {
     sketch_size: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
-    name_map: HashMap<String, usize>, // TODO may not actually need this
+    name_map: HashMap<String, usize>,
     #[serde(skip)]
     block_metadata: Option<Vec<&'a Sketch>>, // TODO: may need to become Arc for multithreading? Also could just list the indices and use indirection into sketch_metadata
     #[serde(skip)]
@@ -216,6 +216,10 @@ impl<'a> fmt::Debug for MultiSketch<'a> {
 
 impl<'a> fmt::Display for MultiSketch<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        todo!()
+        writeln!(f, "Name\tSequence length\tBase frequencies\tMissing/ambig bases\tFrom reads\tSingle strand\tDensified")?;
+        for sketch in &self.sketch_metadata {
+            write!(f, "{sketch}")?;
+        }
+        Ok(())
     }
 }
