@@ -1,27 +1,26 @@
+use std::cell::RefCell;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter};
 use std::mem;
-use std::process::Output;
 use std::rc::Rc;
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
-// TODO might be better to have HashMap<String, usize> of name maping
-// sketch_metadata is then just Vec<Sketch>
 #[derive(Serialize, Deserialize)]
-pub struct MultiSketch<'a> {
+pub struct MultiSketch {
     sketch_size: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
     name_map: HashMap<String, usize>,
     #[serde(skip)]
-    block_metadata: Option<Vec<&'a Sketch>>, // TODO: may need to become Arc for multithreading? Also could just list the indices and use indirection into sketch_metadata
+    // TODO: ask chat GPT how to get the Option<Vec<&'a Sketch>> version to work
+    block_reindex: Option<Vec<usize>>,
     #[serde(skip)]
     sketch_bins: Vec<u64>,
     bin_stride: usize,
@@ -30,7 +29,7 @@ pub struct MultiSketch<'a> {
     sketch_version: String,
 }
 
-impl<'a> MultiSketch<'a> {
+impl MultiSketch {
     pub fn new(
         names: &mut Vec<String>,
         sketches: &mut Vec<Sketch>,
@@ -48,7 +47,7 @@ impl<'a> MultiSketch<'a> {
             kmer_lengths: kmer_lengths.to_vec(),
             sketch_metadata: mem::take(sketches),
             name_map,
-            block_metadata: None,
+            block_reindex: None,
             sketch_bins: Vec::new(),
             bin_stride: 1,
             kmer_stride,
@@ -75,7 +74,7 @@ impl<'a> MultiSketch<'a> {
     }
 
     pub fn number_samples_loaded(&self) -> usize {
-        match &self.block_metadata {
+        match &self.block_reindex {
             Some(block_map) => block_map.len(),
             None => self.sketch_metadata.len(),
         }
@@ -89,35 +88,36 @@ impl<'a> MultiSketch<'a> {
     }
 
     pub fn sketch_name(&self, index: usize) -> &str {
-        match &self.block_metadata {
-            Some(block_map) => block_map[index].name(),
+        match &self.block_reindex {
+            Some(block_map) => self.sketch_metadata[block_map[index]].name(),
             None => self.sketch_metadata[index].name(),
         }
     }
 
     pub fn read_sketch_data(&mut self, file_prefix: &str) {
         let filename = format!("{}.skd", file_prefix);
+        log::debug!("bin_stride:{} kmer_stride:{} sample_stride:{}", self.bin_stride, self.kmer_stride, self.sample_stride);
         self.sketch_bins =
             SketchArrayFile::read_all(&filename, self.sample_stride * self.sketch_metadata.len());
     }
 
-    pub fn read_sketch_data_block(&'a mut self, file_prefix: &str, names: &[String]) {
+    pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
         // Find the given names in the sketch metadata
-        let mut block_metadata = Vec::with_capacity(names.len());
+        let mut block_reindex = Vec::with_capacity(names.len());
         let mut read_indices = Vec::with_capacity(names.len());
         for name in names {
             if let Some(sketch_idx) = self.name_map.get(name) {
-                let block_sketch = &self.sketch_metadata[*sketch_idx];
-                read_indices.push(block_sketch.get_index());
-                block_metadata.push(block_sketch);
+                read_indices.push(self.sketch_metadata[*sketch_idx].get_index());
+                block_reindex.push(*sketch_idx);
             } else {
-                panic!("Could not find {name} in sketch metadata");
+                panic!("Could not find requested sample {name} in sketch metadata");
             }
         }
+        self.block_reindex = Some(block_reindex);
+
         let filename = format!("{}.skd", file_prefix);
         self.sketch_bins =
             SketchArrayFile::read_batch(&filename, &read_indices, self.sample_stride);
-        self.block_metadata = Some(block_metadata);
     }
 
     // TODO: would be fun to try putting signs in a roaringbitmap then just
@@ -127,8 +127,10 @@ impl<'a> MultiSketch<'a> {
         let s2_offset = sketch2_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s1_slice =
             &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
+        eprintln!("{:?}", s1_slice);
         let s2_slice =
             &self.sketch_bins[s2_offset..(s2_offset + (self.sketch_size * BBITS) as usize)];
+        log::trace!("s1_start:{s1_offset} s1_end:{} s2_start:{s2_offset} s2_end:{}", s1_offset + s1_slice.len(), s2_offset + s2_slice.len());
         let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
         let mut samebits: u32 = 0;
         for i in 0..self.sketch_size {
@@ -140,11 +142,14 @@ impl<'a> MultiSketch<'a> {
         }
         let maxnbits = self.sketch_size as u32 * u64::BITS;
         let expected_samebits = maxnbits >> BBITS;
+
+        log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
         if expected_samebits != 0 {
             samebits as f64
         } else {
             let diff = samebits.saturating_sub(expected_samebits);
             let intersize = (diff * maxnbits) as f64 / (maxnbits - expected_samebits) as f64;
+            log::trace!("intersize:{intersize} unionsize:{unionsize}");
             intersize / unionsize
         }
     }
@@ -155,9 +160,9 @@ impl<'a> MultiSketch<'a> {
         }
         let (mut xsum, mut ysum, mut xysum, mut xsquaresum, mut ysquaresum, mut n) =
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let tolerance = 5.0 / (self.sketch_size as f64);
+        let tolerance = (5.0 / (self.sketch_size as f64)).ln();
         for (k_idx, k) in self.kmer_lengths.iter().enumerate() {
-            let y = self.jaccard_dist(sketch1_idx, sketch2_idx, k_idx).exp();
+            let y = self.jaccard_dist(sketch1_idx, sketch2_idx, k_idx).ln();
             if y < tolerance {
                 break;
             }
@@ -180,6 +185,7 @@ impl<'a> MultiSketch<'a> {
         ysquaresum: f64,
         n: f64,
     ) -> (f64, f64) {
+        log::trace!("xsum:{xsum} ysum:{ysum} xysum:{xysum} xsquaresum:{xsquaresum} ysquaresum:{ysquaresum}");
         let xbar = xsum / n;
         let ybar = ysum / n;
         let x_diff = xsquaresum - xsum * xsum / n;
@@ -189,6 +195,7 @@ impl<'a> MultiSketch<'a> {
         let r = (xysum - xsum * ysum / n) / (x_diff * y_diff).sqrt();
         let beta = r * ystddev / xstddev;
         let alpha = -beta * xbar + ybar;
+        log::trace!("r:{r} alpha:{alpha} beta:{beta}");
 
         let (mut core, mut acc) = (0.0, 0.0);
         if beta < 0.0 {
@@ -201,7 +208,7 @@ impl<'a> MultiSketch<'a> {
     }
 }
 
-impl<'a> fmt::Debug for MultiSketch<'a> {
+impl fmt::Debug for MultiSketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -214,7 +221,7 @@ impl<'a> fmt::Debug for MultiSketch<'a> {
     }
 }
 
-impl<'a> fmt::Display for MultiSketch<'a> {
+impl fmt::Display for MultiSketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "Name\tSequence length\tBase frequencies\tMissing/ambig bases\tFrom reads\tSingle strand\tDensified")?;
         for sketch in &self.sketch_metadata {

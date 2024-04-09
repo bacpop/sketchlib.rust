@@ -97,3 +97,14 @@ pub fn get_input_list(
         None => read_input_fastas(seq_files.as_ref().unwrap()),
     }
 }
+
+pub fn read_subset_names(subset_file: &str) -> Vec<String> {
+    let f = File::open(subset_file).expect(&format!("Unable to open {subset_file}"));
+    let f = BufReader::new(f);
+    let mut subset_names = Vec::new();
+    for line in f.lines() {
+        subset_names.push(line.unwrap());
+    }
+    log::info!("Read {} names to subset", subset_names.len());
+    subset_names
+}

@@ -25,7 +25,7 @@ pub mod distances;
 use crate::distances::DistanceMatrix;
 
 pub mod io;
-use crate::io::{get_input_list, parse_kmers, set_ostream};
+use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 
 pub mod bloom_filter;
 pub mod hashing;
@@ -37,7 +37,8 @@ pub const DEFAULT_KMER: usize = 17;
 pub fn main() {
     let args = cli_args();
     if args.verbose {
-        simple_logger::init_with_level(log::Level::Info).unwrap();
+        // simple_logger::init_with_level(log::Level::Info).unwrap();
+        simple_logger::init_with_level(log::Level::Trace).unwrap();
     } else {
         simple_logger::init_with_level(log::Level::Warn).unwrap();
     }
@@ -112,20 +113,28 @@ pub fn main() {
                 .expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
             log::info!("Read sketches:\n{references:?}");
 
-            // TODO deal with subsetting
             log::info!("Loading sketch data from {}.skd", ref_db_name);
-            references.read_sketch_data(ref_db_name);
+            if let Some(subset_file) = subset {
+                let subset_names = read_subset_names(subset_file);
+                references.read_sketch_data_block(ref_db_name, &subset_names);
+            } else {
+                references.read_sketch_data(ref_db_name);
+            }
+
+            // Set type of distances to use
+            let k_idx = if let Some(k) = kmer {
+                log::info!("Jaccard distances at k={k}");
+                references.get_k_idx(*k)
+            } else {
+                log::info!("Core/accessory regression");
+                None
+            };
 
             match query_db {
                 None => {
                     // TODO parallelise
                     // Self mode
                     log::info!("Calculating all ref vs ref distances");
-                    let k_idx = if let Some(k) = kmer {
-                        references.get_k_idx(*k)
-                    } else {
-                        None
-                    };
                     let mut distances = DistanceMatrix::new(&references, None, k_idx.is_some());
                     let bar = ProgressBar::new(distances.n_distances as u64);
                     for i in 0..references.number_samples_loaded() {

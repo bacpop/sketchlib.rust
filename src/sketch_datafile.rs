@@ -75,9 +75,8 @@ impl SketchArrayFile {
 
     pub fn read_batch(filename: &str, sample_indices: &[usize], sample_stride: usize) -> Vec<u64> {
         // Just stream the whole file and convert to u64 vec
-        let mut mmap =
+        let mmap =
             Self::memmap_file(filename).expect(&format!("Could not memory map {filename}"));
-        let mut buffer = [0u8; mem::size_of::<u64>()];
         let mut flat_sketch_array: Vec<u64> =
             Vec::with_capacity(sample_stride * sample_indices.len());
         // TODO possible improvement would be to combine adjacent indices into ranges

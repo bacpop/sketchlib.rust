@@ -1,27 +1,25 @@
 use std::fmt;
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
-use std::mem;
 use std::sync::Arc;
-use std::{cmp::Ordering, collections::HashMap};
+use std::cmp::Ordering;
 
-use serde::{Deserialize, Serialize};
 extern crate needletail;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use needletail::{parse_fastx_file, parser::Format};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use indicatif::ParallelProgressIterator;
+use serde::{Deserialize, Serialize};
 
 use super::hashing::{encode_base, NtHashIterator};
 use crate::bloom_filter::KmerFilter;
 use crate::hashing::valid_base;
 use crate::io::InputFastx;
-use crate::multisketch::MultiSketch;
 use crate::sketch_datafile::SketchArrayFile;
 
+/// Character to use for invalid nucleotides
 pub const SEQSEP: u8 = 5;
 
-/// Bin bits
+/// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
+/// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -139,6 +137,7 @@ impl Sketch {
         self.index.unwrap()
     }
 
+    // Take the (transposed) sketch, emptying it from the [`Sketch`]
     pub fn get_usigs(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.usigs)
     }
@@ -182,6 +181,7 @@ impl Sketch {
 
     fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {
         let binidx = (sign / binsize) as usize;
+        // log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
         if let Some(filter) = read_filter {
             if sign < signs[binidx] && filter.filter(sign) == Ordering::Equal {
                 signs[binidx] = sign;
@@ -193,10 +193,11 @@ impl Sketch {
 
     #[inline(always)]
     fn bit_at_pos(x: u64, pos: u64) -> u64 {
-        x & (1 << pos) >> pos
+        (x & (1_u64 << pos)) >> pos
     }
 
     fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
+        eprintln!("{signs:?}");
         for (sign_index, sign) in signs.iter().enumerate() {
             let leftshift = sign_index % (u64::BITS as usize);
             for i in 0..BBITS {
@@ -204,6 +205,7 @@ impl Sketch {
                 usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
             }
         }
+        eprintln!("{usigs:?}");
     }
 
     #[inline(always)]
@@ -243,10 +245,13 @@ impl fmt::Display for Sketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(
             f,
-            "{}\t{}\t{:?}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t[{}, {}, {}, {}]\t{}\t{}\t{}\t{}",
             self.name,
             self.seq_length,
-            self.acgt,
+            self.acgt[0],
+            self.acgt[1],
+            self.acgt[3],
+            self.acgt[2],
             self.non_acgt,
             self.reads,
             !self.rc,
