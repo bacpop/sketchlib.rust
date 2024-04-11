@@ -53,9 +53,27 @@ impl<'a> DistanceMatrix<'a> {
         self.distances.push(dist);
     }
 
+    pub fn add_jaccard_dist_at(&mut self, dist: f64, i: usize, j: usize) {
+        if self.query_names.is_none() {
+            self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = dist;
+        } else {
+            self.distances[Self::ref_query_index(i, j, self.ref_names.len())] = dist;
+        }
+    }
+
     pub fn add_core_acc_dist(&mut self, core_dist: f64, acc_dist: f64) {
         self.distances.push(core_dist);
         self.other_distances.push(acc_dist);
+    }
+
+    pub fn add_core_acc_dist_at(&mut self, core_dist: f64, acc_dist: f64, i: usize, j: usize) {
+        if self.query_names.is_none() {
+            self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = core_dist;
+            self.other_distances[Self::square_to_condensed(i, j, self.ref_names.len())] = acc_dist;
+        } else {
+            self.distances[Self::ref_query_index(i, j, self.ref_names.len())] = core_dist;
+            self.other_distances[Self::ref_query_index(i, j, self.ref_names.len())] = acc_dist;
+        }
     }
 
     fn sketch_names(sketches: &'a MultiSketch) -> Vec<&'a str> {
@@ -65,6 +83,16 @@ impl<'a> DistanceMatrix<'a> {
             names.push(sketches.sketch_name(idx));
         }
         names
+    }
+
+    #[inline(always)]
+    fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {
+        return n * i - ((i * (i + 1)) >> 1) + j - 1 - i;
+    }
+
+    #[inline(always)]
+    fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
+        i * n + j
     }
 }
 

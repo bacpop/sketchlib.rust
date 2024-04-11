@@ -141,10 +141,10 @@ pub fn main() {
                         for j in (i + 1)..references.number_samples_loaded() {
                             if let Some(k) = k_idx {
                                 let dist = references.jaccard_dist(i, j, k);
-                                distances.add_jaccard_dist(dist);
+                                distances.add_jaccard_dist_at(dist, i, j);
                             } else {
                                 let dist = references.core_acc_dist(i, j);
-                                distances.add_core_acc_dist(dist.0, dist.1);
+                                distances.add_core_acc_dist_at(dist.0, dist.1, i, j);
                             }
                             bar.inc(1);
                         }

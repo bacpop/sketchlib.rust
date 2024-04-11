@@ -1,10 +1,8 @@
-use std::cell::RefCell;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::mem;
-use std::rc::Rc;
 
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -19,7 +17,8 @@ pub struct MultiSketch {
     sketch_metadata: Vec<Sketch>,
     name_map: HashMap<String, usize>,
     #[serde(skip)]
-    // TODO: ask chat GPT how to get the Option<Vec<&'a Sketch>> version to work
+    // NB: another way to do this is with the ouroboros crate, which allows this to reference self
+    // But this requires manual impl for ser and deser, and does the same indirection as an index anyway so not worth it
     block_reindex: Option<Vec<usize>>,
     #[serde(skip)]
     sketch_bins: Vec<u64>,
