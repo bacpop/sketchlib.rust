@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use crate::multisketch::MultiSketch;
 
@@ -53,11 +54,27 @@ impl<'a> DistanceMatrix<'a> {
         self.distances.push(dist);
     }
 
-    pub fn add_jaccard_dist_at(&mut self, dist: f64, i: usize, j: usize) {
+    pub fn dist_row_ref(&mut self, i: usize) -> Arc<&mut [f64]> {
         if self.query_names.is_none() {
-            self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = dist;
+            let slice_start = Self::square_to_condensed(i, i + 1, self.ref_names.len());
+            let slice_end = slice_start + (self.ref_names.len() - i - 1);
+            Arc::new(&mut self.distances[slice_start..slice_end])
         } else {
-            self.distances[Self::ref_query_index(i, j, self.ref_names.len())] = dist;
+            let slice_start = Self::ref_query_index(i, 0, self.ref_names.len());
+            let slice_end = slice_start + self.ref_names.len();
+            Arc::new(&mut self.distances[slice_start..slice_end])
+        }
+    }
+
+    pub fn other_dist_row_ref(&mut self, i: usize) -> Arc<&[f64]> {
+        if self.query_names.is_none() {
+            let slice_start = Self::square_to_condensed(i, i + 1, self.ref_names.len());
+            let slice_end = slice_start + (self.ref_names.len() - i - 1);
+            Arc::new(&mut self.other_distances[slice_start..slice_end])
+        } else {
+            let slice_start = Self::ref_query_index(i, 0, self.ref_names.len());
+            let slice_end = slice_start + self.ref_names.len();
+            Arc::new(&mut self.other_distances[slice_start..slice_end])
         }
     }
 

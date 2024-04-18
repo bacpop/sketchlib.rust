@@ -4,11 +4,14 @@
 #![warn(missing_docs)]
 use std::io::Write;
 use std::time::Instant;
+use std::sync::Arc;
 
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
 use indicatif::ProgressBar;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use indicatif::ParallelProgressIterator;
 
 pub mod cli;
 use crate::cli::*;
@@ -135,20 +138,19 @@ pub fn main() {
                     // TODO parallelise
                     // Self mode
                     log::info!("Calculating all ref vs ref distances");
-                    let mut distances = DistanceMatrix::new(&references, None, k_idx.is_some());
-                    let bar = ProgressBar::new(distances.n_distances as u64);
-                    for i in 0..references.number_samples_loaded() {
+                    let distances = Arc::new(DistanceMatrix::new(&references, None, k_idx.is_some()));
+                    (0..references.number_samples_loaded()).into_par_iter().progress_count(distances.n_distances as u64).for_each(|i| {
+                        let distance_slice = Arc::clone(&distances).dist_row_ref(i);
                         for j in (i + 1)..references.number_samples_loaded() {
                             if let Some(k) = k_idx {
                                 let dist = references.jaccard_dist(i, j, k);
-                                distances.add_jaccard_dist_at(dist, i, j);
+                                *distance_slice.get_mut(j - (i + 1)).unwrap() = dist;
                             } else {
                                 let dist = references.core_acc_dist(i, j);
                                 distances.add_core_acc_dist_at(dist.0, dist.1, i, j);
                             }
-                            bar.inc(1);
                         }
-                    }
+                    });
 
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");
