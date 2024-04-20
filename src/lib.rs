@@ -34,7 +34,7 @@ pub mod hashing;
 /// Default k-mer size for sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
-pub const CHUNK_SIZE: usize = 10000;
+pub const CHUNK_SIZE: usize = 5000;
 
 #[doc(hidden)]
 pub fn main() {
@@ -141,21 +141,19 @@ pub fn main() {
                     log::info!("Calculating all ref vs ref distances");
                     let mut distances = DistanceMatrix::new(&references, None, dist_type);
                     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
-                    let n = distances.n_distances;
+                    let n_dists = distances.n_distances;
+                    let n_samples = references.number_samples_loaded();
                     distances
                         .dists_mut()
                         .par_chunks_mut(par_chunk)
                         .progress()
                         .enumerate()
                         .for_each(|(chunk_idx, dist_slice)| {
+                            // Get first i, j index for the chunk
                             let start_dist_idx = chunk_idx * CHUNK_SIZE;
+                            let mut i = calc_row_idx(start_dist_idx, n_samples);
+                            let mut j = calc_col_idx(start_dist_idx, i, n_samples);
                             for dist_idx in 0..CHUNK_SIZE {
-                                let k = dist_idx + start_dist_idx;
-                                if k >= n {
-                                    break;
-                                }
-                                let i = calc_row_idx(k, n);
-                                let j = calc_col_idx(k, i, n);
                                 if let Some(k) = k_idx {
                                     let dist = references.jaccard_dist(i, j, k);
                                     dist_slice[dist_idx] = dist;
@@ -163,6 +161,16 @@ pub fn main() {
                                     let dist = references.core_acc_dist(i, j);
                                     dist_slice[dist_idx * 2] = dist.0;
                                     dist_slice[dist_idx * 2 + 1] = dist.1;
+                                }
+
+                                // Move to next index in upper triangle
+                                j += 1;
+                                if j >= n_samples {
+                                    i += 1;
+                                    j = i + 1;
+                                    if i >= (n_samples - 1) {
+                                        break;
+                                    }
                                 }
                             }
                         });
