@@ -87,11 +87,13 @@ impl<'a> DistanceMatrix<'a> {
 
     #[inline(always)]
     fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {
+        debug_assert!(j > i);
         return n * i - ((i * (i + 1)) >> 1) + j - 1 - i;
     }
 
     #[inline(always)]
     fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
+        debug_assert!(j > i);
         i * n + j
     }
 }

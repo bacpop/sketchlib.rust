@@ -1,5 +1,8 @@
 use std::{borrow::Cow, cmp::Ordering};
 
+mod nthash_tables;
+use nthash_tables::*;
+
 /// Table from bits 0-3 to ASCII (use [`decode_base()`] not this table).
 const LETTER_CODE: [u8; 4] = [b'A', b'C', b'T', b'G'];
 
@@ -27,20 +30,17 @@ pub fn valid_base(mut base: u8) -> bool {
     matches!(base, b'a' | b'c' | b'g' | b't')
 }
 
-// ntHash
-// See https://bioinformatics.stackexchange.com/a/293
-const HASH_LOOKUP: [u64; 4] = [
-    0x3c8b_fbb3_95c6_0474,
-    0x3193_c185_62a0_2b4c,
-    0x2955_49f5_4be2_4456,
-    0x2032_3ed0_8257_2324,
-];
-const RC_HASH_LOOKUP: [u64; 4] = [
-    0x2955_49f5_4be2_4456,
-    0x2032_3ed0_8257_2324,
-    0x3c8b_fbb3_95c6_0474,
-    0x3193_c185_62a0_2b4c,
-];
+#[inline(always)]
+pub fn swapbits033(v: u64) -> u64 {
+    let x = (v ^ (v >> 33)) & 1;
+    v ^ (x | (x << 33))
+}
+
+#[inline(always)]
+pub fn swapbits3263(v: u64) -> u64 {
+    let x = ((v >> 32) ^ (v >> 63)) & 1;
+    v ^ ((x << 32) | (x << 63))
+}
 
 // TODO aaHash for proteins
 
@@ -83,7 +83,7 @@ impl<'a> NtHashIterator<'a> {
         k: usize,
         rc: bool,
     ) -> Option<(u64, Option<u64>, usize)> {
-        let mut fh = 0;
+        let mut fh = 0_u64;
         'outer: while start < (seq.len() - k) {
             '_inner: for (i, v) in seq[start..(start + k)].iter().enumerate() {
                 // If invalid seq
@@ -95,7 +95,9 @@ impl<'a> NtHashIterator<'a> {
                     fh = 0;
                     continue 'outer; // Try again from new start
                 }
-                fh ^= HASH_LOOKUP[*v as usize].rotate_left((k - i - 1) as u32);
+                fh = fh.rotate_left(1_u32);
+                fh = swapbits033(fh);
+                fh ^= nthash_tables::HASH_LOOKUP[*v as usize];
             }
             break 'outer; // success
         }
@@ -104,9 +106,11 @@ impl<'a> NtHashIterator<'a> {
         }
 
         let rh = if rc {
-            let mut h = 0;
-            for (i, v) in seq[start..(start + k)].iter().rev().enumerate() {
-                h ^= RC_HASH_LOOKUP[*v as usize].rotate_left((k - i - 1) as u32);
+            let mut h = 0_u64;
+            for v in seq[start..(start + k)].iter().rev() {
+                h = h.rotate_left(1_u32);
+                h = swapbits033(h);
+                h ^= nthash_tables::RC_HASH_LOOKUP[*v as usize];
             }
             Some(h)
         } else {
@@ -118,16 +122,17 @@ impl<'a> NtHashIterator<'a> {
 
     /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
     fn roll_fwd(&mut self, old_base: u8, new_base: u8) {
-        self.fh = self.fh.rotate_left(1)
-            ^ HASH_LOOKUP[old_base as usize].rotate_left(self.k as u32)
-            ^ HASH_LOOKUP[new_base as usize];
+        self.fh = self.fh.rotate_left(1);
+        self.fh = swapbits033(self.fh);
+        self.fh ^= nthash_tables::HASH_LOOKUP[new_base as usize];
+        self.fh ^= nthash_tables::MS_TAB_31L[(old_base as usize * 31) + (self.k % 31)] | nthash_tables::MS_TAB_33R[(old_base as usize) * 33 + (self.k % 33)];
 
         if let Some(rev) = self.rh {
-            self.rh = Some(
-                rev.rotate_right(1)
-                    ^ RC_HASH_LOOKUP[old_base as usize].rotate_right(1)
-                    ^ RC_HASH_LOOKUP[new_base as usize].rotate_left(self.k as u32 - 1),
-            )
+            let mut h = rev ^ nthash_tables::MS_TAB_31L[(rc_base(new_base) as usize * 31) + (self.k % 31)] | nthash_tables::MS_TAB_33R[(rc_base(new_base) as usize) * 33 + (self.k % 33)];
+            h ^= nthash_tables::RC_HASH_LOOKUP[old_base as usize];
+            h = h.rotate_right(1);
+            h = swapbits3263(h);
+            self.rh = Some(h);
         };
     }
 

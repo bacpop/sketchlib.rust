@@ -182,7 +182,7 @@ impl Sketch {
 
     fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {
         let binidx = (sign / binsize) as usize;
-        // log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
+        log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
         if let Some(filter) = read_filter {
             if sign < signs[binidx] && filter.filter(sign) == Ordering::Equal {
                 signs[binidx] = sign;
