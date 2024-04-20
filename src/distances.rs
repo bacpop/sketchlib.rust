@@ -4,6 +4,7 @@ use crate::multisketch::MultiSketch;
 
 pub struct DistanceMatrix<'a> {
     pub n_distances: usize,
+    jaccard: bool,
     distances: Vec<f64>,
     other_distances: Vec<f64>,
     ref_names: Vec<&'a str>,
@@ -20,15 +21,16 @@ impl<'a> DistanceMatrix<'a> {
             let n_distances = ref_sketches.number_samples_loaded() * query.number_samples_loaded();
             let mut other_distances = Vec::new();
             if jaccard {
-                other_distances.reserve(n_distances);
+                other_distances = vec![0.0; n_distances];
             }
 
             Self {
                 n_distances,
-                distances: Vec::with_capacity(n_distances),
+                distances: vec![0.0; n_distances],
                 other_distances,
                 ref_names: Self::sketch_names(ref_sketches),
                 query_names: Some(Self::sketch_names(query)),
+                jaccard,
             }
         } else {
             let n_distances = ref_sketches.number_samples_loaded()
@@ -36,15 +38,16 @@ impl<'a> DistanceMatrix<'a> {
                 / 2;
             let mut other_distances = Vec::new();
             if jaccard {
-                other_distances.reserve(n_distances);
+                other_distances = vec![0.0; n_distances];
             }
 
             Self {
                 n_distances,
-                distances: Vec::with_capacity(n_distances),
+                distances: vec![0.0; n_distances],
                 other_distances,
                 ref_names: Self::sketch_names(ref_sketches),
                 query_names: None,
+                jaccard,
             }
         }
     }
@@ -105,7 +108,7 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
             for ref_name in &self.ref_names {
                 for query_name in queries {
                     write!(f, "{ref_name}\t{query_name}\t{}", self.distances[dist_idx])?;
-                    if self.other_distances.len() > 0 {
+                    if !self.jaccard {
                         write!(f, "\t{}", self.other_distances[dist_idx])?;
                     }
                     write!(f, "\n")?;
@@ -120,7 +123,7 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
                         "{ref_name}\t{}\t{}",
                         self.ref_names[j], self.distances[dist_idx]
                     )?;
-                    if self.other_distances.len() > 0 {
+                    if !self.jaccard {
                         write!(f, "\t{}", self.other_distances[dist_idx])?;
                     }
                     write!(f, "\n")?;

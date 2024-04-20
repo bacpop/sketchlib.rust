@@ -128,7 +128,7 @@ impl<'a> NtHashIterator<'a> {
         self.fh ^= nthash_tables::MS_TAB_31L[(old_base as usize * 31) + (self.k % 31)] | nthash_tables::MS_TAB_33R[(old_base as usize) * 33 + (self.k % 33)];
 
         if let Some(rev) = self.rh {
-            let mut h = rev ^ nthash_tables::MS_TAB_31L[(rc_base(new_base) as usize * 31) + (self.k % 31)] | nthash_tables::MS_TAB_33R[(rc_base(new_base) as usize) * 33 + (self.k % 33)];
+            let mut h = rev ^ (nthash_tables::MS_TAB_31L[(rc_base(new_base) as usize * 31) + (self.k % 31)] | nthash_tables::MS_TAB_33R[(rc_base(new_base) as usize) * 33 + (self.k % 33)]);
             h ^= nthash_tables::RC_HASH_LOOKUP[old_base as usize];
             h = h.rotate_right(1);
             h = swapbits3263(h);

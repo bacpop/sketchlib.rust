@@ -126,7 +126,6 @@ impl MultiSketch {
         let s2_offset = sketch2_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s1_slice =
             &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
-        eprintln!("{:?}", s1_slice);
         let s2_slice =
             &self.sketch_bins[s2_offset..(s2_offset + (self.sketch_size * BBITS) as usize)];
         log::trace!("s1_start:{s1_offset} s1_end:{} s2_start:{s2_offset} s2_end:{}", s1_offset + s1_slice.len(), s2_offset + s2_slice.len());

@@ -100,12 +100,9 @@ impl Sketch {
             // Calculate bin minima across all sequence
             let mut signs = vec![u64::MAX; num_bins as usize];
             let hash_it = NtHashIterator::new(&sequence, *k, rc);
-            // let bar = ProgressBar::new(sequence.len() as u64);
             for hash in hash_it {
-                // bar.inc(1);
                 Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut filter);
             }
-            // bar.finish();
 
             // Densify
             sketch.densified |= Self::densify_bin(&mut signs);
@@ -182,7 +179,7 @@ impl Sketch {
 
     fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {
         let binidx = (sign / binsize) as usize;
-        log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
+        // log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
         if let Some(filter) = read_filter {
             if sign < signs[binidx] && filter.filter(sign) == Ordering::Equal {
                 signs[binidx] = sign;
@@ -198,7 +195,6 @@ impl Sketch {
     }
 
     fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
-        eprintln!("{signs:?}");
         for (sign_index, sign) in signs.iter().enumerate() {
             let leftshift = sign_index % (u64::BITS as usize);
             for i in 0..BBITS {

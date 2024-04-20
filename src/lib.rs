@@ -37,8 +37,8 @@ pub const DEFAULT_KMER: usize = 17;
 pub fn main() {
     let args = cli_args();
     if args.verbose {
-        // simple_logger::init_with_level(log::Level::Info).unwrap();
-        simple_logger::init_with_level(log::Level::Trace).unwrap();
+        simple_logger::init_with_level(log::Level::Info).unwrap();
+        // simple_logger::init_with_level(log::Level::Trace).unwrap();
     } else {
         simple_logger::init_with_level(log::Level::Warn).unwrap();
     }
