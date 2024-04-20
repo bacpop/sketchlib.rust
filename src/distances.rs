@@ -2,11 +2,54 @@ use std::fmt;
 
 use crate::multisketch::MultiSketch;
 
+#[inline(always)]
+pub fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {
+    debug_assert!(j > i);
+    return n * i - ((i * (i + 1)) >> 1) + j - 1 - i;
+}
+
+#[inline(always)]
+pub fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
+    debug_assert!(j > i);
+    i * n + j
+}
+
+#[inline(always)]
+pub fn calc_col_idx(k: usize, i: usize, n: usize) -> usize {
+    let k_i64 = k as i64;
+    let i_i64 = i as i64;
+    let n_i64 = n as i64;
+    (k_i64 + i_i64 + 1 - n_i64 * (n_i64 - 1) / 2 + (n_i64 - i_i64) * ((n_i64 - i_i64) - 1) / 2)
+        as usize
+}
+
+#[inline(always)]
+pub fn calc_row_idx(k: usize, n: usize) -> usize {
+    let k_i64 = k as i64;
+    let n_i64 = n as i64;
+    n - 2
+        - (((-8 * k_i64 + 4 * n_i64 * (n_i64 - 1) - 7) as f64).sqrt() / 2.0 - 0.5).floor() as usize
+}
+
+#[derive(PartialEq, PartialOrd)]
+pub enum DistType {
+    Jaccard(usize),
+    CoreAcc,
+}
+
+impl fmt::Display for DistType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &DistType::CoreAcc => write!(f, "Distances: core/accessory regression"),
+            &DistType::Jaccard(k) => write!(f, "Distances: Jaccard distances at k={k}"),
+        }
+    }
+}
+
 pub struct DistanceMatrix<'a> {
     pub n_distances: usize,
-    jaccard: bool,
+    jaccard: DistType,
     distances: Vec<f32>,
-    other_distances: Vec<f32>,
     ref_names: Vec<&'a str>,
     query_names: Option<Vec<&'a str>>,
 }
@@ -15,67 +58,42 @@ impl<'a> DistanceMatrix<'a> {
     pub fn new(
         ref_sketches: &'a MultiSketch,
         query_sketches: Option<&'a MultiSketch>,
-        jaccard: bool,
+        jaccard: DistType,
     ) -> Self {
-        if let Some(query) = query_sketches {
-            let n_distances = ref_sketches.number_samples_loaded() * query.number_samples_loaded();
-            let mut other_distances = Vec::new();
-            if !jaccard {
-                other_distances = vec![0.0; n_distances];
-            }
-
-            Self {
-                n_distances,
-                distances: vec![0.0; n_distances],
-                other_distances,
-                ref_names: Self::sketch_names(ref_sketches),
-                query_names: Some(Self::sketch_names(query)),
-                jaccard,
-            }
+        let n_distances;
+        let query_names = if let Some(query) = query_sketches {
+            n_distances = ref_sketches.number_samples_loaded() * query.number_samples_loaded();
+            Some(Self::sketch_names(query))
         } else {
-            let n_distances = ref_sketches.number_samples_loaded()
+            n_distances = ref_sketches.number_samples_loaded()
                 * (ref_sketches.number_samples_loaded() - 1)
                 / 2;
-            let mut other_distances = Vec::new();
-            if !jaccard {
-                other_distances = vec![0.0; n_distances];
-            }
+            None
+        };
 
-            Self {
-                n_distances,
-                distances: vec![0.0; n_distances],
-                other_distances,
-                ref_names: Self::sketch_names(ref_sketches),
-                query_names: None,
-                jaccard,
-            }
+        // Pre-allocate distances
+        let mut distances = vec![0.0; n_distances];
+        if jaccard == DistType::CoreAcc {
+            distances.append(&mut vec![0.0; n_distances]);
+        }
+
+        Self {
+            n_distances,
+            distances,
+            ref_names: Self::sketch_names(ref_sketches),
+            query_names,
+            jaccard,
         }
     }
 
-    pub fn add_jaccard_dist(&mut self, dist: f32) {
-        self.distances.push(dist);
+    pub fn dists_mut(&mut self) -> &mut Vec<f32> {
+        &mut self.distances
     }
 
-    pub fn add_jaccard_dist_at(&mut self, dist: f32, i: usize, j: usize) {
-        if self.query_names.is_none() {
-            self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = dist;
-        } else {
-            self.distances[Self::ref_query_index(i, j, self.ref_names.len())] = dist;
-        }
-    }
-
-    pub fn add_core_acc_dist(&mut self, core_dist: f32, acc_dist: f32) {
-        self.distances.push(core_dist);
-        self.other_distances.push(acc_dist);
-    }
-
-    pub fn add_core_acc_dist_at(&mut self, core_dist: f32, acc_dist: f32, i: usize, j: usize) {
-        if self.query_names.is_none() {
-            self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = core_dist;
-            self.other_distances[Self::square_to_condensed(i, j, self.ref_names.len())] = acc_dist;
-        } else {
-            self.distances[Self::ref_query_index(i, j, self.ref_names.len())] = core_dist;
-            self.other_distances[Self::ref_query_index(i, j, self.ref_names.len())] = acc_dist;
+    pub fn n_dist_cols(&self) -> usize {
+        match self.jaccard {
+            DistType::CoreAcc => 2,
+            DistType::Jaccard(_) => 1,
         }
     }
 
@@ -87,18 +105,6 @@ impl<'a> DistanceMatrix<'a> {
         }
         names
     }
-
-    #[inline(always)]
-    fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {
-        debug_assert!(j > i);
-        return n * i - ((i * (i + 1)) >> 1) + j - 1 - i;
-    }
-
-    #[inline(always)]
-    fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
-        debug_assert!(j > i);
-        i * n + j
-    }
 }
 
 impl<'a> fmt::Display for DistanceMatrix<'a> {
@@ -108,8 +114,9 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
             for ref_name in &self.ref_names {
                 for query_name in queries {
                     write!(f, "{ref_name}\t{query_name}\t{}", self.distances[dist_idx])?;
-                    if !self.jaccard {
-                        write!(f, "\t{}", self.other_distances[dist_idx])?;
+                    if self.jaccard == DistType::CoreAcc {
+                        write!(f, "\t{}", self.distances[dist_idx + 1])?;
+                        dist_idx += 1;
                     }
                     write!(f, "\n")?;
                     dist_idx += 1;
@@ -123,8 +130,9 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
                         "{ref_name}\t{}\t{}",
                         self.ref_names[j], self.distances[dist_idx]
                     )?;
-                    if !self.jaccard {
-                        write!(f, "\t{}", self.other_distances[dist_idx])?;
+                    if self.jaccard == DistType::CoreAcc {
+                        write!(f, "\t{}", self.distances[dist_idx + 1])?;
+                        dist_idx += 1;
                     }
                     write!(f, "\n")?;
                     dist_idx += 1;

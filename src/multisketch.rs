@@ -7,6 +7,7 @@ use std::mem;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::hashing::HashType;
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
@@ -26,6 +27,7 @@ pub struct MultiSketch {
     kmer_stride: usize,
     sample_stride: usize,
     sketch_version: String,
+    hash_type: HashType,
 }
 
 impl MultiSketch {
@@ -52,6 +54,7 @@ impl MultiSketch {
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
+            hash_type: HashType::DNA,
         }
     }
 
@@ -127,6 +130,8 @@ impl MultiSketch {
     // TODO: would be fun to try putting signs in a roaringbitmap then just
     // doing intersection_len() as this function
     pub fn jaccard_dist(&self, sketch1_idx: usize, sketch2_idx: usize, k_idx: usize) -> f32 {
+        debug_assert!(sketch1_idx < self.sketch_metadata.len());
+        debug_assert!(sketch2_idx < self.sketch_metadata.len());
         let s1_offset = sketch1_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s2_offset = sketch2_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s1_slice =
@@ -223,8 +228,9 @@ impl fmt::Debug for MultiSketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sketch_version={}\nsketch_size={}\nn_samples={}\nkmers={:?}",
+            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmers={:?}",
             self.sketch_version,
+            self.hash_type,
             self.sketch_size * u64::BITS as u64,
             self.sketch_metadata.len(),
             self.kmer_lengths,

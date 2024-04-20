@@ -8,7 +8,8 @@ use std::time::Instant;
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
-use indicatif::ProgressBar;
+use indicatif::ParallelProgressIterator;
+use rayon::prelude::*;
 
 pub mod cli;
 use crate::cli::*;
@@ -22,7 +23,7 @@ use crate::multisketch::MultiSketch;
 pub mod sketch_datafile;
 
 pub mod distances;
-use crate::distances::DistanceMatrix;
+use crate::distances::{calc_col_idx, calc_row_idx, DistType, DistanceMatrix};
 
 pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
@@ -32,6 +33,8 @@ pub mod hashing;
 
 /// Default k-mer size for sketching
 pub const DEFAULT_KMER: usize = 17;
+/// Chunk size in parallel distance calculations
+pub const CHUNK_SIZE: usize = 10000;
 
 #[doc(hidden)]
 pub fn main() {
@@ -122,33 +125,47 @@ pub fn main() {
             }
 
             // Set type of distances to use
-            let k_idx = if let Some(k) = kmer {
-                log::info!("Jaccard distances at k={k}");
-                references.get_k_idx(*k)
+            let k_idx;
+            let dist_type = if let Some(k) = kmer {
+                k_idx = references.get_k_idx(*k);
+                DistType::Jaccard(*k)
             } else {
-                log::info!("Core/accessory regression");
-                None
+                k_idx = None;
+                DistType::CoreAcc
             };
+            log::info!("{dist_type}");
 
             match query_db {
                 None => {
-                    // TODO parallelise
                     // Self mode
                     log::info!("Calculating all ref vs ref distances");
-                    let mut distances = DistanceMatrix::new(&references, None, k_idx.is_some());
-                    let bar = ProgressBar::new(distances.n_distances as u64);
-                    for i in 0..references.number_samples_loaded() {
-                        for j in (i + 1)..references.number_samples_loaded() {
-                            if let Some(k) = k_idx {
-                                let dist = references.jaccard_dist(i, j, k);
-                                distances.add_jaccard_dist_at(dist, i, j);
-                            } else {
-                                let dist = references.core_acc_dist(i, j);
-                                distances.add_core_acc_dist_at(dist.0, dist.1, i, j);
+                    let mut distances = DistanceMatrix::new(&references, None, dist_type);
+                    let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
+                    let n = distances.n_distances;
+                    distances
+                        .dists_mut()
+                        .par_chunks_mut(par_chunk)
+                        .progress()
+                        .enumerate()
+                        .for_each(|(chunk_idx, dist_slice)| {
+                            let start_dist_idx = chunk_idx * CHUNK_SIZE;
+                            for dist_idx in 0..CHUNK_SIZE {
+                                let k = dist_idx + start_dist_idx;
+                                if k >= n {
+                                    break;
+                                }
+                                let i = calc_row_idx(k, n);
+                                let j = calc_col_idx(k, i, n);
+                                if let Some(k) = k_idx {
+                                    let dist = references.jaccard_dist(i, j, k);
+                                    dist_slice[dist_idx] = dist;
+                                } else {
+                                    let dist = references.core_acc_dist(i, j);
+                                    dist_slice[dist_idx * 2] = dist.0;
+                                    dist_slice[dist_idx * 2 + 1] = dist.1;
+                                }
                             }
-                            bar.inc(1);
-                        }
-                    }
+                        });
 
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");

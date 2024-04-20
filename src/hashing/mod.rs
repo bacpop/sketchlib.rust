@@ -1,6 +1,15 @@
 use std::{borrow::Cow, cmp::Ordering};
 
+use serde::{Deserialize, Serialize};
+
 mod nthash_tables;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum HashType {
+    DNA,
+    AA,
+    Structure,
+}
 
 /// Table from bits 0-3 to ASCII (use [`decode_base()`] not this table).
 const LETTER_CODE: [u8; 4] = [b'A', b'C', b'T', b'G'];
