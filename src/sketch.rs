@@ -206,14 +206,12 @@ impl Sketch {
                 usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
             }
         }
-        eprintln!("{usigs:?}");
     }
 
-    // TODO this might overflow
     #[inline(always)]
     fn universal_hash(s: u64, t: u64) -> u64 {
-        let x = (1009) * s + (1000 * 1000 + 3) * t;
-        (48271 * x + 11) % ((1 << 31) - 1)
+        let x = s.wrapping_mul(1009).wrapping_add(t.wrapping_mul(1000 * 1000 + 3));
+        (x.wrapping_mul(48271).wrapping_add(11)) % ((1 << 31) - 1)
     }
 
     // TODO could use newer method
