@@ -2,13 +2,12 @@ use memmap2::Mmap;
 use std::error::Error;
 use std::fs::File;
 use std::io::Read;
-use std::io::{BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::mem;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, RwLock,
 };
-use std::{collections::HashMap, process::Output};
 
 #[derive(Debug)]
 pub struct SketchArrayFile {
@@ -75,8 +74,7 @@ impl SketchArrayFile {
 
     pub fn read_batch(filename: &str, sample_indices: &[usize], sample_stride: usize) -> Vec<u64> {
         // Just stream the whole file and convert to u64 vec
-        let mmap =
-            Self::memmap_file(filename).expect(&format!("Could not memory map {filename}"));
+        let mmap = Self::memmap_file(filename).expect(&format!("Could not memory map {filename}"));
         let mut flat_sketch_array: Vec<u64> =
             Vec::with_capacity(sample_stride * sample_indices.len());
         // TODO possible improvement would be to combine adjacent indices into ranges

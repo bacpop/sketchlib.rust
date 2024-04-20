@@ -69,7 +69,7 @@ pub fn main() {
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
-            sketch_size /= u64::BITS as u64;
+            sketch_size = sketch_size.div_ceil(u64::BITS as u64);
 
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; threads:{}",

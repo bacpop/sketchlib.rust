@@ -1,11 +1,11 @@
+use std::cmp::Ordering;
 use std::fmt;
 use std::sync::Arc;
-use std::cmp::Ordering;
 
 extern crate needletail;
+use indicatif::ParallelProgressIterator;
 use needletail::{parse_fastx_file, parser::Format};
 use rayon::prelude::*;
-use indicatif::ParallelProgressIterator;
 use serde::{Deserialize, Serialize};
 
 use super::hashing::{encode_base, NtHashIterator};
@@ -16,7 +16,6 @@ use crate::sketch_datafile::SketchArrayFile;
 
 /// Character to use for invalid nucleotides
 pub const SEQSEP: u8 = 5;
-
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
@@ -206,7 +205,9 @@ impl Sketch {
 
     #[inline(always)]
     fn universal_hash(s: u64, t: u64) -> u64 {
-        let x = s.wrapping_mul(1009).wrapping_add(t.wrapping_mul(1000 * 1000 + 3));
+        let x = s
+            .wrapping_mul(1009)
+            .wrapping_add(t.wrapping_mul(1000 * 1000 + 3));
         (x.wrapping_mul(48271).wrapping_add(11)) % ((1 << 31) - 1)
     }
 

@@ -95,7 +95,12 @@ impl MultiSketch {
 
     pub fn read_sketch_data(&mut self, file_prefix: &str) {
         let filename = format!("{}.skd", file_prefix);
-        log::debug!("bin_stride:{} kmer_stride:{} sample_stride:{}", self.bin_stride, self.kmer_stride, self.sample_stride);
+        log::debug!(
+            "bin_stride:{} kmer_stride:{} sample_stride:{}",
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride
+        );
         self.sketch_bins =
             SketchArrayFile::read_all(&filename, self.sample_stride * self.sketch_metadata.len());
     }
@@ -121,15 +126,19 @@ impl MultiSketch {
 
     // TODO: would be fun to try putting signs in a roaringbitmap then just
     // doing intersection_len() as this function
-    pub fn jaccard_dist(&self, sketch1_idx: usize, sketch2_idx: usize, k_idx: usize) -> f64 {
+    pub fn jaccard_dist(&self, sketch1_idx: usize, sketch2_idx: usize, k_idx: usize) -> f32 {
         let s1_offset = sketch1_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s2_offset = sketch2_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s1_slice =
             &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
         let s2_slice =
             &self.sketch_bins[s2_offset..(s2_offset + (self.sketch_size * BBITS) as usize)];
-        log::trace!("s1_start:{s1_offset} s1_end:{} s2_start:{s2_offset} s2_end:{}", s1_offset + s1_slice.len(), s2_offset + s2_slice.len());
-        let unionsize = (u64::BITS as u64 * self.sketch_size) as f64;
+        log::trace!(
+            "s1_start:{s1_offset} s1_end:{} s2_start:{s2_offset} s2_end:{}",
+            s1_offset + s1_slice.len(),
+            s2_offset + s2_slice.len()
+        );
+        let unionsize = (u64::BITS as u64 * self.sketch_size) as f32;
         let mut samebits: u32 = 0;
         for i in 0..self.sketch_size {
             let mut bits: u64 = !0;
@@ -141,30 +150,32 @@ impl MultiSketch {
         let maxnbits = self.sketch_size as u32 * u64::BITS;
         let expected_samebits = maxnbits >> BBITS;
 
-        log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
+        log::trace!(
+            "samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}"
+        );
         if expected_samebits != 0 {
-            samebits as f64
+            samebits as f32
         } else {
             let diff = samebits.saturating_sub(expected_samebits);
-            let intersize = (diff * maxnbits) as f64 / (maxnbits - expected_samebits) as f64;
+            let intersize = (diff * maxnbits) as f32 / (maxnbits - expected_samebits) as f32;
             log::trace!("intersize:{intersize} unionsize:{unionsize}");
             intersize / unionsize
         }
     }
 
-    pub fn core_acc_dist(&self, sketch1_idx: usize, sketch2_idx: usize) -> (f64, f64) {
+    pub fn core_acc_dist(&self, sketch1_idx: usize, sketch2_idx: usize) -> (f32, f32) {
         if self.kmer_lengths.len() < 2 {
             panic!("Need at least two k-mer lengths to calculate core/accessory distances");
         }
         let (mut xsum, mut ysum, mut xysum, mut xsquaresum, mut ysquaresum, mut n) =
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let tolerance = (5.0 / (self.sketch_size as f64)).ln();
+        let tolerance = (5.0_f32 / (self.sketch_size as f32)).ln();
         for (k_idx, k) in self.kmer_lengths.iter().enumerate() {
             let y = self.jaccard_dist(sketch1_idx, sketch2_idx, k_idx).ln();
             if y < tolerance {
                 break;
             }
-            let k_fl = *k as f64;
+            let k_fl = *k as f32;
             xsum += k_fl;
             ysum += y;
             xysum += k_fl * y;
@@ -176,14 +187,16 @@ impl MultiSketch {
     }
 
     fn simple_linear_regression(
-        xsum: f64,
-        ysum: f64,
-        xysum: f64,
-        xsquaresum: f64,
-        ysquaresum: f64,
-        n: f64,
-    ) -> (f64, f64) {
-        log::trace!("xsum:{xsum} ysum:{ysum} xysum:{xysum} xsquaresum:{xsquaresum} ysquaresum:{ysquaresum}");
+        xsum: f32,
+        ysum: f32,
+        xysum: f32,
+        xsquaresum: f32,
+        ysquaresum: f32,
+        n: f32,
+    ) -> (f32, f32) {
+        log::trace!(
+            "xsum:{xsum} ysum:{ysum} xysum:{xysum} xsquaresum:{xsquaresum} ysquaresum:{ysquaresum}"
+        );
         let xbar = xsum / n;
         let ybar = ysum / n;
         let x_diff = xsquaresum - xsum * xsum / n;

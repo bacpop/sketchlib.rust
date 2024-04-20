@@ -5,8 +5,8 @@ use crate::multisketch::MultiSketch;
 pub struct DistanceMatrix<'a> {
     pub n_distances: usize,
     jaccard: bool,
-    distances: Vec<f64>,
-    other_distances: Vec<f64>,
+    distances: Vec<f32>,
+    other_distances: Vec<f32>,
     ref_names: Vec<&'a str>,
     query_names: Option<Vec<&'a str>>,
 }
@@ -20,7 +20,7 @@ impl<'a> DistanceMatrix<'a> {
         if let Some(query) = query_sketches {
             let n_distances = ref_sketches.number_samples_loaded() * query.number_samples_loaded();
             let mut other_distances = Vec::new();
-            if jaccard {
+            if !jaccard {
                 other_distances = vec![0.0; n_distances];
             }
 
@@ -37,7 +37,7 @@ impl<'a> DistanceMatrix<'a> {
                 * (ref_sketches.number_samples_loaded() - 1)
                 / 2;
             let mut other_distances = Vec::new();
-            if jaccard {
+            if !jaccard {
                 other_distances = vec![0.0; n_distances];
             }
 
@@ -52,11 +52,11 @@ impl<'a> DistanceMatrix<'a> {
         }
     }
 
-    pub fn add_jaccard_dist(&mut self, dist: f64) {
+    pub fn add_jaccard_dist(&mut self, dist: f32) {
         self.distances.push(dist);
     }
 
-    pub fn add_jaccard_dist_at(&mut self, dist: f64, i: usize, j: usize) {
+    pub fn add_jaccard_dist_at(&mut self, dist: f32, i: usize, j: usize) {
         if self.query_names.is_none() {
             self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = dist;
         } else {
@@ -64,12 +64,12 @@ impl<'a> DistanceMatrix<'a> {
         }
     }
 
-    pub fn add_core_acc_dist(&mut self, core_dist: f64, acc_dist: f64) {
+    pub fn add_core_acc_dist(&mut self, core_dist: f32, acc_dist: f32) {
         self.distances.push(core_dist);
         self.other_distances.push(acc_dist);
     }
 
-    pub fn add_core_acc_dist_at(&mut self, core_dist: f64, acc_dist: f64, i: usize, j: usize) {
+    pub fn add_core_acc_dist_at(&mut self, core_dist: f32, acc_dist: f32, i: usize, j: usize) {
         if self.query_names.is_none() {
             self.distances[Self::square_to_condensed(i, j, self.ref_names.len())] = core_dist;
             self.other_distances[Self::square_to_condensed(i, j, self.ref_names.len())] = acc_dist;

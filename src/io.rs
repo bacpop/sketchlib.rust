@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
