@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 extern crate needletail;
 use needletail::{parse_fastx_file, parser::Format};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::*;
 use indicatif::ParallelProgressIterator;
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +96,7 @@ impl Sketch {
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
         let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
         for k in kmer_lengths {
+            log::debug!("Running sketching at k={k}");
             // Calculate bin minima across all sequence
             let mut signs = vec![u64::MAX; num_bins as usize];
             let hash_it = NtHashIterator::new(&sequence, *k, rc);
@@ -208,6 +209,7 @@ impl Sketch {
         eprintln!("{usigs:?}");
     }
 
+    // TODO this might overflow
     #[inline(always)]
     fn universal_hash(s: u64, t: u64) -> u64 {
         let x = (1009) * s + (1000 * 1000 + 3) * t;
@@ -301,6 +303,6 @@ pub fn sketch_files(
         })
         .collect();
     // Sort to be in the same order as they were saved to the file
-    sketches.sort_unstable_by_key(|k| k.get_index());
+    sketches.par_sort_unstable_by_key(|k| k.get_index());
     sketches
 }

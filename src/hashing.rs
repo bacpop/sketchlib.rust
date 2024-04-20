@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, cmp::Ordering};
 
 /// Table from bits 0-3 to ASCII (use [`decode_base()`] not this table).
 const LETTER_CODE: [u8; 4] = [b'A', b'C', b'T', b'G'];
@@ -27,6 +27,8 @@ pub fn valid_base(mut base: u8) -> bool {
     matches!(base, b'a' | b'c' | b'g' | b't')
 }
 
+// ntHash
+// See https://bioinformatics.stackexchange.com/a/293
 const HASH_LOOKUP: [u64; 4] = [
     0x3c8b_fbb3_95c6_0474,
     0x3193_c185_62a0_2b4c,
@@ -66,7 +68,7 @@ impl<'a> NtHashIterator<'a> {
                 rc,
                 fh: new_it.0,
                 rh: new_it.1,
-                index: new_it.2 + k,
+                index: new_it.2,
                 seq: Cow::Borrowed(seq),
                 seq_len: seq.len() - 1,
             }
@@ -143,26 +145,41 @@ impl<'a> Iterator for NtHashIterator<'a> {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.seq_len {
-            let current = self.curr_hash();
-            let new_base = self.seq[self.index];
-            // Restart hash if invalid base
-            if new_base > 3 {
-                if let Some(new_it) = Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc)
-                {
-                    self.fh = new_it.0;
-                    self.rh = new_it.1;
-                    self.index = new_it.2;
+        match self.index.cmp(&self.seq_len) {
+            Ordering::Less => {
+                let current = self.curr_hash();
+                let new_base = self.seq[self.index];
+                // Restart hash if invalid base
+                if new_base > 3 {
+                    if let Some(new_it) = Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc)
+                    {
+                        self.fh = new_it.0;
+                        self.rh = new_it.1;
+                        self.index = new_it.2;
+                    } else {
+                        self.index = self.seq_len; // End of valid sequence
+                    }
                 } else {
-                    self.index = self.seq_len; // End of valid sequence
+                    self.roll_fwd(self.seq[self.index - self.k], new_base);
+                    self.index += 1;
                 }
-            } else {
-                self.roll_fwd(self.seq[self.index - self.k], new_base);
+                Some(current)
+            },
+            Ordering::Equal => {
+                // Final hash, do not roll forward further
                 self.index += 1;
+                Some(self.curr_hash())
+            },
+            Ordering::Greater => {
+                // End of sequence
+                None
             }
-            Some(current)
-        } else {
-            None // End of sequence
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.seq_len, Some(self.seq_len))
+    }
 }
+
+impl<'a> ExactSizeIterator for NtHashIterator<'a> {}
