@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::fmt;
+use std::mem;
 use std::sync::Arc;
 
 extern crate needletail;
-use indicatif::ParallelProgressIterator;
+use indicatif::{ProgressStyle, ParallelProgressIterator};
 use needletail::{parse_fastx_file, parser::Format};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -278,9 +279,10 @@ pub fn sketch_files(
         sample_stride,
     ));
 
+    let bar_style = ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}").unwrap();
     let mut sketches: Vec<Sketch> = input_files
         .par_iter()
-        .progress_count(input_files.len() as u64)
+        .progress_with_style(bar_style)
         .map(|(name, fastx1, fastx2)| {
             let mut sketch = Sketch::new(
                 name,

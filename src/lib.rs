@@ -8,7 +8,7 @@ use std::time::Instant;
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
-use indicatif::ParallelProgressIterator;
+use indicatif::{ProgressStyle, ParallelProgressIterator};
 use rayon::prelude::*;
 
 pub mod cli;
@@ -34,7 +34,7 @@ pub mod hashing;
 /// Default k-mer size for sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
-pub const CHUNK_SIZE: usize = 5000;
+pub const CHUNK_SIZE: usize = 1000;
 
 #[doc(hidden)]
 pub fn main() {
@@ -135,24 +135,24 @@ pub fn main() {
             };
             log::info!("{dist_type}");
 
+            let bar_style = ProgressStyle::with_template("{percent}% {bar:80.cyan/blue} eta:{eta}").unwrap();
             match query_db {
                 None => {
                     // Self mode
                     log::info!("Calculating all ref vs ref distances");
                     let mut distances = DistanceMatrix::new(&references, None, dist_type);
                     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
-                    let n_dists = distances.n_distances;
-                    let n_samples = references.number_samples_loaded();
+                    let n = references.number_samples_loaded();
                     distances
                         .dists_mut()
                         .par_chunks_mut(par_chunk)
-                        .progress()
+                        .progress_with_style(bar_style)
                         .enumerate()
                         .for_each(|(chunk_idx, dist_slice)| {
                             // Get first i, j index for the chunk
                             let start_dist_idx = chunk_idx * CHUNK_SIZE;
-                            let mut i = calc_row_idx(start_dist_idx, n_samples);
-                            let mut j = calc_col_idx(start_dist_idx, i, n_samples);
+                            let mut i = calc_row_idx(start_dist_idx, n);
+                            let mut j = calc_col_idx(start_dist_idx, i, n);
                             for dist_idx in 0..CHUNK_SIZE {
                                 if let Some(k) = k_idx {
                                     let dist = references.jaccard_dist(i, j, k);
@@ -165,10 +165,11 @@ pub fn main() {
 
                                 // Move to next index in upper triangle
                                 j += 1;
-                                if j >= n_samples {
+                                if j >= n {
                                     i += 1;
                                     j = i + 1;
-                                    if i >= (n_samples - 1) {
+                                    // End of all dists reached (final chunk)
+                                    if i >= (n - 1) {
                                         break;
                                     }
                                 }

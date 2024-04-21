@@ -163,6 +163,10 @@ pub enum Commands {
         threads: usize,
     },
     // TODO add a sparse mode
+    // TODO add a merge mode
+    // TODO add a concat mode (add sketch to existing DB)
+    // TODO add a delete mode
+    // TODO add a reorder mode
     /// Print information about a .skm file
     Info {
         /// Sketch metadata file (.skm) to describe
