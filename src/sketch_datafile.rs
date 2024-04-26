@@ -14,7 +14,7 @@ pub struct SketchArrayFile {
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
-    serial_writer: Arc<RwLock<SketchWriter>>,
+    serial_writer: SketchWriter,
 }
 
 // Both the file and index are locked together
@@ -42,7 +42,7 @@ impl SketchArrayFile {
         kmer_stride: usize,
         sample_stride: usize,
     ) -> Self {
-        let serial_writer = Arc::new(RwLock::new(SketchWriter::new(filename)));
+        let serial_writer = SketchWriter::new(filename);
         Self {
             bin_stride,
             kmer_stride,
@@ -51,12 +51,9 @@ impl SketchArrayFile {
         }
     }
 
-    pub fn write_sketch(&self, usigs_flat: &[u64]) -> usize {
-        let writer = Arc::clone(&self.serial_writer);
-        // Gets the lock. This will be dropped at the end of the function
-        let mut writer = writer.write().unwrap();
-        Self::write_sketch_data(&mut writer.writer.get_mut(), usigs_flat).unwrap();
-        writer.current_index.fetch_add(1, Ordering::SeqCst)
+    pub fn write_sketch(&mut self, usigs_flat: &[u64]) -> usize {
+        Self::write_sketch_data(&mut self.serial_writer.writer, usigs_flat).unwrap();
+        self.serial_writer.current_index.fetch_add(1, Ordering::SeqCst)
     }
 
     pub fn read_all(filename: &str, number_bins: usize) -> Vec<u64> {
