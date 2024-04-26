@@ -27,6 +27,7 @@ pub struct SketchWriter {
 impl SketchWriter {
     pub fn new(filename: &str) -> Self {
         let current_index = AtomicUsize::new(0);
+        log::info!("Saving sketch data to {filename}");
         let writer = BufWriter::new(File::create(filename).expect("Couldn't write to {filename}"));
         Self {
             writer,
@@ -53,7 +54,9 @@ impl SketchArrayFile {
 
     pub fn write_sketch(&mut self, usigs_flat: &[u64]) -> usize {
         Self::write_sketch_data(&mut self.serial_writer.writer, usigs_flat).unwrap();
-        self.serial_writer.current_index.fetch_add(1, Ordering::SeqCst)
+        self.serial_writer
+            .current_index
+            .fetch_add(1, Ordering::SeqCst)
     }
 
     pub fn read_all(filename: &str, number_bins: usize) -> Vec<u64> {

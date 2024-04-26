@@ -8,7 +8,7 @@ use std::time::Instant;
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
-use indicatif::{ProgressStyle, ParallelProgressIterator};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
 
 pub mod cli;
@@ -61,7 +61,8 @@ pub fn main() {
             min_qual,
             threads,
         } => {
-            check_threads(*threads);
+            // An extra thread is needed for the writer. This doesn't 'overuse' CPU
+            check_threads(*threads + 1);
 
             // Read input
             log::info!("Getting input files");
@@ -89,7 +90,6 @@ pub fn main() {
                 *min_count,
                 *min_qual,
             );
-            log::info!("Saving sketch metadata");
             let sketch_vec = MultiSketch::new(&mut names, &mut sketches, sketch_size, &kmers);
             sketch_vec
                 .save_metadata(output)
@@ -135,7 +135,8 @@ pub fn main() {
             };
             log::info!("{dist_type}");
 
-            let bar_style = ProgressStyle::with_template("{percent}% {bar:80.cyan/blue} eta:{eta}").unwrap();
+            let bar_style =
+                ProgressStyle::with_template("{percent}% {bar:80.cyan/blue} eta:{eta}").unwrap();
             match query_db {
                 None => {
                     // Self mode

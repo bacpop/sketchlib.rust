@@ -1,12 +1,12 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::mem;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 
 extern crate needletail;
 use indicatif::ProgressBar;
-use indicatif::{ProgressStyle, ParallelProgressIterator};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use needletail::{parse_fastx_file, parser::Format};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -277,19 +277,19 @@ pub fn sketch_files(
     let kmer_stride = (sketch_size * BBITS) as usize;
     let sample_stride = kmer_stride * k.len();
 
+    // Open output file
     let data_filename = format!("{output_prefix}.skd");
-    let mut serial_writer = SketchArrayFile::new(
-        &data_filename,
-        bin_stride,
-        kmer_stride,
-        sample_stride,
-    );
+    let mut serial_writer =
+        SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride);
 
-    let bar_style = ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}").unwrap();
-
+    // Set up sender (sketching) and receiver (writing)
     let (tx, rx) = mpsc::channel();
     let mut sketches = Vec::with_capacity(input_files.len());
 
+    let bar_style =
+        ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}")
+            .unwrap();
+    // With thanks to https://stackoverflow.com/a/76963325
     rayon::scope(|s| {
         s.spawn(move |_| {
             input_files
@@ -304,12 +304,12 @@ pub fn sketch_files(
                         min_qual,
                         min_count,
                         rc,
-                        )
-                    })
-                    .for_each_with(tx, |tx, sketch| {
-                        let _ = tx.send(sketch);
-                    });
-            });
+                    )
+                })
+                .for_each_with(tx, |tx, sketch| {
+                    let _ = tx.send(sketch);
+                });
+        });
         for mut sketch in rx {
             let index = serial_writer.write_sketch(&sketch.get_usigs());
             sketch.set_index(index);
@@ -317,32 +317,4 @@ pub fn sketch_files(
         }
     });
     sketches
-
-    /*
-    let mut sketches: Vec<Sketch> = input_files
-        .par_iter()
-        .progress_with_style(bar_style)
-        .map(|(name, fastx1, fastx2)| {
-            let mut sketch = Sketch::new(
-                name,
-                (&fastx1, fastx2.as_ref()),
-                k,
-                sketch_size,
-                min_qual,
-                min_count,
-                rc,
-            );
-            let writer = Arc::clone(&serial_writer);
-            let index = writer.write_sketch(&sketch.get_usigs());
-            sketch.set_index(index);
-            sketch
-        })
-        .collect();
-    // Sort to be in the same order as they were saved to the file
-    sketches.par_sort_unstable_by_key(|k| k.get_index());
-    sketches
-    */
 }
-
-    
-
