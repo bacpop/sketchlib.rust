@@ -61,6 +61,7 @@ impl MultiSketch {
     /// Saves the metadata
     pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
         let filename = format!("{}.skm", file_prefix);
+        log::info!("Saving sketch metadata to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
         ciborium::ser::into_writer(self, &mut compress_writer)?;
@@ -69,6 +70,7 @@ impl MultiSketch {
 
     pub fn load(file_prefix: &str) -> Result<Self, Box<dyn Error>> {
         let filename = format!("{}.skm", file_prefix);
+        log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
         let skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
