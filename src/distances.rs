@@ -15,7 +15,17 @@ pub fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
 }
 
 #[inline(always)]
+pub fn calc_query_indices(k: usize, n: usize) -> (usize, usize) {
+    let i = k / n;
+    let j = k % n;
+    debug_assert!(i < n);
+    debug_assert!(j < n);
+    (i, j)
+}
+
+#[inline(always)]
 pub fn calc_col_idx(k: usize, i: usize, n: usize) -> usize {
+    debug_assert!(i < n);
     let k_i64 = k as i64;
     let i_i64 = i as i64;
     let n_i64 = n as i64;

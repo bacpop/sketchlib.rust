@@ -18,12 +18,12 @@ pub mod sketch;
 use crate::sketch::sketch_files;
 
 pub mod multisketch;
-use crate::multisketch::MultiSketch;
+use crate::multisketch::{MultiSketch, jaccard_dist, core_acc_dist};
 
 pub mod sketch_datafile;
 
 pub mod distances;
-use crate::distances::{calc_col_idx, calc_row_idx, DistType, DistanceMatrix};
+use crate::distances::{calc_col_idx, calc_row_idx, calc_query_indices, DistType, DistanceMatrix};
 
 pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
@@ -46,7 +46,7 @@ pub fn main() {
         simple_logger::init_with_level(log::Level::Warn).unwrap();
     }
 
-    eprintln!("sketchlib.rust: fast biological distances at multiple k-mer lengths");
+    let mut print_success = true;
     let start = Instant::now();
     match &args.command {
         Commands::Sketch {
@@ -111,10 +111,8 @@ pub fn main() {
             } else {
                 ref_db.as_str()
             };
-            log::info!("Loading sketch metadata from {}.skm", ref_db_name);
             let mut references = MultiSketch::load(ref_db_name)
                 .expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
-            log::info!("Read sketches:\n{references:?}");
 
             log::info!("Loading sketch data from {}.skd", ref_db_name);
             if let Some(subset_file) = subset {
@@ -123,6 +121,19 @@ pub fn main() {
             } else {
                 references.read_sketch_data(ref_db_name);
             }
+            log::info!("Read reference sketches:\n{references:?}");
+
+            // Read queries if supplied. Note no subsetting here
+            let queries = if let Some(query_db_name) = query_db {
+                let mut queries = MultiSketch::load(query_db_name)
+                    .expect(&format!("Could not read sketch metadata from {query_db_name}.skm"));
+                log::info!("Loading query sketch data from {}.skd", query_db_name);
+                queries.read_sketch_data(query_db_name);
+                log::info!("Read query sketches:\n{queries:?}");
+                Some(queries)
+            } else {
+                None
+            };
 
             // Set type of distances to use
             let k_idx;
@@ -137,7 +148,10 @@ pub fn main() {
 
             let bar_style =
                 ProgressStyle::with_template("{percent}% {bar:80.cyan/blue} eta:{eta}").unwrap();
-            match query_db {
+            // TODO: possible improvement would be to load sketch slices when i, j change
+            // This would require a change to core_acc where multiple k-mer lengths are loaded at once
+            // Overall this would be nicer I think (not sure about speed)
+            match queries {
                 None => {
                     // Self mode
                     log::info!("Calculating all ref vs ref distances");
@@ -156,10 +170,10 @@ pub fn main() {
                             let mut j = calc_col_idx(start_dist_idx, i, n);
                             for dist_idx in 0..CHUNK_SIZE {
                                 if let Some(k) = k_idx {
-                                    let dist = references.jaccard_dist(i, j, k);
+                                    let dist = jaccard_dist(references.get_sketch_slice(i, k), references.get_sketch_slice(j, k), references.sketch_size);
                                     dist_slice[dist_idx] = dist;
                                 } else {
-                                    let dist = references.core_acc_dist(i, j);
+                                    let dist = core_acc_dist(&references, &references, i, j);
                                     dist_slice[dist_idx * 2] = dist.0;
                                     dist_slice[dist_idx * 2 + 1] = dist.1;
                                 }
@@ -180,10 +194,46 @@ pub fn main() {
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");
                 }
-                Some(db2) => {
-                    // TODO Ref v query mode
+                Some(query_db) => {
+                    // Ref v query mode
                     log::info!("Calculating all ref vs query distances");
-                    todo!()
+                    let mut distances = DistanceMatrix::new(&references, Some(&query_db), dist_type);
+                    let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
+                    let n = references.number_samples_loaded();
+                    distances
+                        .dists_mut()
+                        .par_chunks_mut(par_chunk)
+                        .progress_with_style(bar_style)
+                        .enumerate()
+                        .for_each(|(chunk_idx, dist_slice)| {
+                            // Get first i, j index for the chunk
+                            let start_dist_idx = chunk_idx * CHUNK_SIZE;
+                            let (mut i, mut j) = calc_query_indices(start_dist_idx, n);
+                            for dist_idx in 0..CHUNK_SIZE {
+                                if let Some(k) = k_idx {
+                                    let dist = jaccard_dist(references.get_sketch_slice(i, k), query_db.get_sketch_slice(j, k), references.sketch_size);
+                                    dist_slice[dist_idx] = dist;
+                                } else {
+                                    let dist = core_acc_dist(&references, &query_db, i, j);
+                                    dist_slice[dist_idx * 2] = dist.0;
+                                    dist_slice[dist_idx * 2 + 1] = dist.1;
+                                }
+
+                                // Move to next index
+                                j += 1;
+                                if j >= n {
+                                    i += 1;
+                                    j = 0;
+                                    // End of all dists reached (final chunk)
+                                    if i >= n {
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+
+                    log::info!("Writing out in long matrix form");
+                    write!(output_file, "{distances}").expect("Error writing output distances");
                 }
             }
         }
@@ -199,18 +249,23 @@ pub fn main() {
             let sketches = MultiSketch::load(ref_db_name).expect(&format!(
                 "Could not read sketch metadata from {ref_db_name}.skm"
             ));
-            println!("{sketches:?}");
             if *sample_info {
                 log::info!("Printing sample info");
                 println!("{sketches}");
+            } else {
+                log::info!("Printing database info");
+                println!("{sketches:?}");
             }
+            print_success = false; // Turn the final message off
         }
     }
     let end = Instant::now();
 
-    eprintln!(
-        "🧬🖋️ sketchlib done in {}s",
-        end.duration_since(start).as_secs()
-    );
     log::info!("Complete");
+    if print_success {
+        eprintln!(
+            "🧬🖋️ sketchlib done in {}s",
+            end.duration_since(start).as_secs()
+        );
+    }
 }
