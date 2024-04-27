@@ -2,7 +2,9 @@
 //!
 
 #![warn(missing_docs)]
+use std::collections::BinaryHeap;
 use std::io::Write;
+use std::mem;
 use std::time::Instant;
 
 #[macro_use]
@@ -18,12 +20,15 @@ pub mod sketch;
 use crate::sketch::sketch_files;
 
 pub mod multisketch;
-use crate::multisketch::{MultiSketch, jaccard_dist, core_acc_dist};
+use crate::multisketch::MultiSketch;
+
+pub mod jaccard;
+use crate::jaccard::{core_acc_dist, jaccard_dist};
 
 pub mod sketch_datafile;
 
 pub mod distances;
-use crate::distances::{calc_col_idx, calc_row_idx, calc_query_indices, DistType, DistanceMatrix};
+use crate::distances::*;
 
 pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
@@ -99,6 +104,7 @@ pub fn main() {
             ref_db,
             query_db,
             output,
+            mut knn,
             subset,
             kmer,
             threads,
@@ -122,11 +128,19 @@ pub fn main() {
                 references.read_sketch_data(ref_db_name);
             }
             log::info!("Read reference sketches:\n{references:?}");
+            let n = references.number_samples_loaded();
+            if let Some(nn) = knn {
+                if nn >= n {
+                    log::warn!("knn={nn} is higher than number of samples={n}");
+                    knn = Some(n - 1);
+                }
+            }
 
             // Read queries if supplied. Note no subsetting here
             let queries = if let Some(query_db_name) = query_db {
-                let mut queries = MultiSketch::load(query_db_name)
-                    .expect(&format!("Could not read sketch metadata from {query_db_name}.skm"));
+                let mut queries = MultiSketch::load(query_db_name).expect(&format!(
+                    "Could not read sketch metadata from {query_db_name}.skm"
+                ));
                 log::info!("Loading query sketch data from {}.skd", query_db_name);
                 queries.read_sketch_data(query_db_name);
                 log::info!("Read query sketches:\n{queries:?}");
@@ -153,53 +167,138 @@ pub fn main() {
             // Overall this would be nicer I think (not sure about speed)
             match queries {
                 None => {
-                    // Self mode
-                    log::info!("Calculating all ref vs ref distances");
-                    let mut distances = DistanceMatrix::new(&references, None, dist_type);
-                    let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
-                    let n = references.number_samples_loaded();
-                    distances
-                        .dists_mut()
-                        .par_chunks_mut(par_chunk)
-                        .progress_with_style(bar_style)
-                        .enumerate()
-                        .for_each(|(chunk_idx, dist_slice)| {
-                            // Get first i, j index for the chunk
-                            let start_dist_idx = chunk_idx * CHUNK_SIZE;
-                            let mut i = calc_row_idx(start_dist_idx, n);
-                            let mut j = calc_col_idx(start_dist_idx, i, n);
-                            for dist_idx in 0..CHUNK_SIZE {
-                                if let Some(k) = k_idx {
-                                    let dist = jaccard_dist(references.get_sketch_slice(i, k), references.get_sketch_slice(j, k), references.sketch_size);
-                                    dist_slice[dist_idx] = dist;
-                                } else {
-                                    let dist = core_acc_dist(&references, &references, i, j);
-                                    dist_slice[dist_idx * 2] = dist.0;
-                                    dist_slice[dist_idx * 2 + 1] = dist.1;
-                                }
+                    // Ref v ref functions
+                    match knn {
+                        None => {
+                            // Self mode (dense)
+                            log::info!("Calculating all ref vs ref distances");
+                            let mut distances = DistanceMatrix::new(&references, None, dist_type);
+                            let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
+                            distances
+                                .dists_mut()
+                                .par_chunks_mut(par_chunk)
+                                .progress_with_style(bar_style)
+                                .enumerate()
+                                .for_each(|(chunk_idx, dist_slice)| {
+                                    // Get first i, j index for the chunk
+                                    let start_dist_idx = chunk_idx * CHUNK_SIZE;
+                                    let mut i = calc_row_idx(start_dist_idx, n);
+                                    let mut j = calc_col_idx(start_dist_idx, i, n);
+                                    for dist_idx in 0..CHUNK_SIZE {
+                                        // TODO might be good to try and move this if out of the loop... but may not matter
+                                        if let Some(k) = k_idx {
+                                            let dist = jaccard_dist(
+                                                references.get_sketch_slice(i, k),
+                                                references.get_sketch_slice(j, k),
+                                                references.sketch_size,
+                                            );
+                                            dist_slice[dist_idx] = dist;
+                                        } else {
+                                            let dist =
+                                                core_acc_dist(&references, &references, i, j);
+                                            dist_slice[dist_idx * 2] = dist.0;
+                                            dist_slice[dist_idx * 2 + 1] = dist.1;
+                                        }
 
-                                // Move to next index in upper triangle
-                                j += 1;
-                                if j >= n {
-                                    i += 1;
-                                    j = i + 1;
-                                    // End of all dists reached (final chunk)
-                                    if i >= (n - 1) {
-                                        break;
+                                        // Move to next index in upper triangle
+                                        j += 1;
+                                        if j >= n {
+                                            i += 1;
+                                            j = i + 1;
+                                            // End of all dists reached (final chunk)
+                                            if i >= (n - 1) {
+                                                break;
+                                            }
+                                        }
                                     }
+                                });
+
+                            log::info!("Writing out in long matrix form");
+                            write!(output_file, "{distances}")
+                                .expect("Error writing output distances");
+                        }
+                        Some(nn) => {
+                            // Self mode (sparse)
+                            log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
+                            let mut sp_distances =
+                                SparseDistanceMatrix::new(&references, nn, dist_type);
+                            // TODO is it possible to add a template to the trait so this code is only written once? Maybe not
+                            match sp_distances.dists_mut() {
+                                DistVec::Jaccard(distances) => {
+                                    let k = k_idx.unwrap();
+                                    distances
+                                        .par_chunks_mut(nn)
+                                        .progress_with_style(bar_style)
+                                        .enumerate()
+                                        .for_each(|(i, row_dist_slice)| {
+                                            let mut heap = BinaryHeap::with_capacity(nn);
+                                            let i_sketch = references.get_sketch_slice(i, k);
+                                            for j in 0..n {
+                                                if i == j {
+                                                    continue;
+                                                }
+                                                let dist = jaccard_dist(
+                                                    i_sketch,
+                                                    references.get_sketch_slice(j, k),
+                                                    references.sketch_size,
+                                                );
+                                                let dist_item = SparseJaccard(j, dist);
+                                                if heap.len() < nn
+                                                    || dist_item < *heap.peek().unwrap()
+                                                {
+                                                    heap.push(dist_item);
+                                                    if heap.len() > nn {
+                                                        heap.pop();
+                                                    }
+                                                }
+                                            }
+                                            debug_assert_eq!(row_dist_slice.len(), heap.len());
+                                            row_dist_slice
+                                                .clone_from_slice(&heap.into_sorted_vec());
+                                        });
+                                }
+                                DistVec::CoreAcc(distances) => {
+                                    distances
+                                        .par_chunks_mut(nn)
+                                        .progress_with_style(bar_style)
+                                        .enumerate()
+                                        .for_each(|(i, row_dist_slice)| {
+                                            let mut heap = BinaryHeap::with_capacity(nn);
+                                            for j in 0..n {
+                                                if i == j {
+                                                    continue;
+                                                }
+                                                let dists =
+                                                    core_acc_dist(&references, &references, i, j);
+                                                let dist_item = SparseCoreAcc(j, dists.0, dists.1);
+                                                if heap.len() < nn
+                                                    || dist_item < *heap.peek().unwrap()
+                                                {
+                                                    heap.push(dist_item);
+                                                    if heap.len() > nn {
+                                                        heap.pop();
+                                                    }
+                                                }
+                                            }
+                                            debug_assert_eq!(row_dist_slice.len(), heap.len());
+                                            row_dist_slice
+                                                .clone_from_slice(&heap.into_sorted_vec());
+                                        });
                                 }
                             }
-                        });
 
-                    log::info!("Writing out in long matrix form");
-                    write!(output_file, "{distances}").expect("Error writing output distances");
+                            log::info!("Writing out in sparse matrix form");
+                            write!(output_file, "{sp_distances}")
+                                .expect("Error writing output distances");
+                        }
+                    }
                 }
                 Some(query_db) => {
                     // Ref v query mode
                     log::info!("Calculating all ref vs query distances");
-                    let mut distances = DistanceMatrix::new(&references, Some(&query_db), dist_type);
+                    let mut distances =
+                        DistanceMatrix::new(&references, Some(&query_db), dist_type);
                     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
-                    let n = references.number_samples_loaded();
                     distances
                         .dists_mut()
                         .par_chunks_mut(par_chunk)
@@ -211,7 +310,11 @@ pub fn main() {
                             let (mut i, mut j) = calc_query_indices(start_dist_idx, n);
                             for dist_idx in 0..CHUNK_SIZE {
                                 if let Some(k) = k_idx {
-                                    let dist = jaccard_dist(references.get_sketch_slice(i, k), query_db.get_sketch_slice(j, k), references.sketch_size);
+                                    let dist = jaccard_dist(
+                                        references.get_sketch_slice(i, k),
+                                        query_db.get_sketch_slice(j, k),
+                                        references.sketch_size,
+                                    );
                                     dist_slice[dist_idx] = dist;
                                 } else {
                                     let dist = core_acc_dist(&references, &query_db, i, j);

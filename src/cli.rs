@@ -137,18 +137,23 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    /// Write an unordered alignment
+    /// Calculate pairwise distances using sketches
     Dist {
         /// The .skm file used as the reference
         #[arg(required = true)]
         ref_db: String,
 
         /// The .skm file used as the query (omit for ref v ref)
+        #[arg(group = "query")]
         query_db: Option<String>,
 
         /// Output filename (omit to output to stdout)
         #[arg(short)]
         output: Option<String>,
+
+        /// Calculate sparse distances with k nearest-neighbours
+        #[arg(long, group = "query")]
+        knn: Option<usize>,
 
         /// Sample names to analyse
         #[arg(long)]
@@ -162,7 +167,6 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    // TODO add a sparse mode
     // TODO add a merge mode
     // TODO add a concat mode (add sketch to existing DB)
     // TODO add a delete mode

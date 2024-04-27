@@ -1,4 +1,7 @@
+use std::cmp::Ordering;
 use std::fmt;
+
+use ordered_float::NotNan;
 
 use crate::multisketch::MultiSketch;
 
@@ -56,6 +59,26 @@ impl fmt::Display for DistType {
     }
 }
 
+pub trait Distances<'a> {
+    fn jaccard(&self) -> &DistType;
+
+    fn n_dist_cols(&self) -> usize {
+        match self.jaccard() {
+            DistType::CoreAcc => 2,
+            DistType::Jaccard(_) => 1,
+        }
+    }
+
+    fn sketch_names(sketches: &'a MultiSketch) -> Vec<&'a str> {
+        let n_samples = sketches.number_samples_loaded();
+        let mut names = Vec::with_capacity(n_samples);
+        for idx in 0..n_samples {
+            names.push(sketches.sketch_name(idx));
+        }
+        names
+    }
+}
+
 pub struct DistanceMatrix<'a> {
     pub n_distances: usize,
     jaccard: DistType,
@@ -99,21 +122,11 @@ impl<'a> DistanceMatrix<'a> {
     pub fn dists_mut(&mut self) -> &mut Vec<f32> {
         &mut self.distances
     }
+}
 
-    pub fn n_dist_cols(&self) -> usize {
-        match self.jaccard {
-            DistType::CoreAcc => 2,
-            DistType::Jaccard(_) => 1,
-        }
-    }
-
-    fn sketch_names(sketches: &'a MultiSketch) -> Vec<&'a str> {
-        let n_samples = sketches.number_samples_loaded();
-        let mut names = Vec::with_capacity(n_samples);
-        for idx in 0..n_samples {
-            names.push(sketches.sketch_name(idx));
-        }
-        names
+impl<'a> Distances<'a> for DistanceMatrix<'a> {
+    fn jaccard(&self) -> &DistType {
+        &self.jaccard
     }
 }
 
@@ -146,6 +159,132 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
                     }
                     write!(f, "\n")?;
                     dist_idx += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// TODO making a notnan every time is probably not ideal
+#[derive(Debug, Clone)]
+pub struct SparseJaccard(pub usize, pub f32);
+impl Ord for SparseJaccard {
+    fn cmp(&self, other: &Self) -> Ordering {
+        NotNan::new(other.1)
+            .unwrap()
+            .cmp(&NotNan::new(self.1).unwrap()) // NB: backwards
+    }
+}
+impl PartialOrd for SparseJaccard {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        other.1.partial_cmp(&self.1)
+    }
+}
+impl PartialEq for SparseJaccard {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+impl Eq for SparseJaccard {}
+
+// TODO: could either change the field to compare on, or add Euclidean dists
+#[derive(Debug, Clone)]
+pub struct SparseCoreAcc(pub usize, pub f32, pub f32);
+impl Ord for SparseCoreAcc {
+    fn cmp(&self, other: &Self) -> Ordering {
+        NotNan::new(self.1)
+            .unwrap()
+            .cmp(&NotNan::new(other.1).unwrap())
+    }
+}
+impl PartialOrd for SparseCoreAcc {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.1.partial_cmp(&other.1)
+    }
+}
+impl PartialEq for SparseCoreAcc {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+impl Eq for SparseCoreAcc {}
+
+pub enum DistVec {
+    Jaccard(Vec<SparseJaccard>),
+    CoreAcc(Vec<SparseCoreAcc>),
+}
+
+pub struct SparseDistanceMatrix<'a> {
+    pub n_distances: usize,
+    pub knn: usize,
+    jaccard: DistType,
+    distances: DistVec,
+    ref_names: Vec<&'a str>,
+}
+
+impl<'a> SparseDistanceMatrix<'a> {
+    pub fn new(ref_sketches: &'a MultiSketch, knn: usize, jaccard: DistType) -> Self {
+        let n_distances = ref_sketches.number_samples_loaded() * knn;
+
+        // Pre-allocate distances
+        let distances = match jaccard {
+            DistType::CoreAcc => DistVec::CoreAcc(vec![SparseCoreAcc(0, 0.0, 0.0); n_distances]),
+            DistType::Jaccard(_) => DistVec::Jaccard(vec![SparseJaccard(0, 0.0); n_distances]),
+        };
+
+        Self {
+            n_distances,
+            knn,
+            jaccard,
+            distances,
+            ref_names: Self::sketch_names(ref_sketches),
+        }
+    }
+
+    pub fn dists_mut(&mut self) -> &mut DistVec {
+        &mut self.distances
+    }
+}
+
+impl<'a> Distances<'a> for SparseDistanceMatrix<'a> {
+    fn jaccard(&self) -> &DistType {
+        &self.jaccard
+    }
+}
+
+impl<'a> fmt::Display for SparseDistanceMatrix<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut ref_name_iter = self.ref_names.iter();
+        let mut ref_name = ref_name_iter.next().unwrap();
+        let mut k = 0;
+        match &self.distances {
+            DistVec::Jaccard(dists) => {
+                for dist_item in dists {
+                    k += 1;
+                    if k > self.knn {
+                        ref_name = ref_name_iter.next().unwrap();
+                        k = 0;
+                    }
+                    writeln!(
+                        f,
+                        "{ref_name}\t{}\t{}",
+                        self.ref_names[dist_item.0], dist_item.1,
+                    )?;
+                }
+            }
+            DistVec::CoreAcc(dists) => {
+                for dist_item in dists {
+                    k += 1;
+                    if k > self.knn {
+                        ref_name = ref_name_iter.next().unwrap();
+                        k = 0;
+                    }
+                    writeln!(
+                        f,
+                        "{ref_name}\t{}\t{}\t{}",
+                        self.ref_names[dist_item.0], dist_item.1, dist_item.2,
+                    )?;
                 }
             }
         }
