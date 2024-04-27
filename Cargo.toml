@@ -25,7 +25,7 @@ categories = ["command-line-utilities", "science"]
 # data structures
 hashbrown = { version = "0.14", features = ["serde"] }
 ahash = ">=0.8.7"
-ordered-float = "4.2"
+# ordered-float = "4.2"
 # save/load
 needletail = { version = "0.5", features = ["compression"] }
 serde = { version = "1.0", features = ["derive"] }

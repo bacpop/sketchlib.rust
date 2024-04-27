@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use ordered_float::NotNan;
+// use ordered_float::NotNan;
 
 use crate::multisketch::MultiSketch;
 
@@ -171,14 +171,18 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
 pub struct SparseJaccard(pub usize, pub f32);
 impl Ord for SparseJaccard {
     fn cmp(&self, other: &Self) -> Ordering {
-        NotNan::new(other.1)
-            .unwrap()
-            .cmp(&NotNan::new(self.1).unwrap()) // NB: backwards
+        other.1.partial_cmp(&self.1).unwrap() // NB: backwards
+                                              // Could also use
+                                              /*
+                                              NotNan::new(other.1)
+                                                  .unwrap()
+                                                  .cmp(&NotNan::new(self.1).unwrap())
+                                              */
     }
 }
 impl PartialOrd for SparseJaccard {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        other.1.partial_cmp(&self.1)
+        other.1.partial_cmp(&self.1) // NB: backwards
     }
 }
 impl PartialEq for SparseJaccard {
@@ -193,9 +197,13 @@ impl Eq for SparseJaccard {}
 pub struct SparseCoreAcc(pub usize, pub f32, pub f32);
 impl Ord for SparseCoreAcc {
     fn cmp(&self, other: &Self) -> Ordering {
+        self.1.partial_cmp(&other.1).unwrap()
+        // Could also use
+        /*
         NotNan::new(self.1)
             .unwrap()
             .cmp(&NotNan::new(other.1).unwrap())
+        */
     }
 }
 impl PartialOrd for SparseCoreAcc {
