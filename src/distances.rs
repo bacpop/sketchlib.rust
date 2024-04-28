@@ -272,7 +272,7 @@ impl<'a> fmt::Display for SparseDistanceMatrix<'a> {
                     k += 1;
                     if k > self.knn {
                         ref_name = ref_name_iter.next().unwrap();
-                        k = 0;
+                        k = 1;
                     }
                     writeln!(
                         f,
@@ -286,7 +286,7 @@ impl<'a> fmt::Display for SparseDistanceMatrix<'a> {
                     k += 1;
                     if k > self.knn {
                         ref_name = ref_name_iter.next().unwrap();
-                        k = 0;
+                        k = 1;
                     }
                     writeln!(
                         f,
