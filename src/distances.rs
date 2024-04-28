@@ -166,7 +166,6 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
     }
 }
 
-// TODO making a notnan every time is probably not ideal
 #[derive(Debug, Clone)]
 pub struct SparseJaccard(pub usize, pub f32);
 impl Ord for SparseJaccard {
