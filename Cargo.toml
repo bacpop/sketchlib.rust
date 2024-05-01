@@ -21,6 +21,9 @@ include = [
 keywords = ["bioinformatics", "genomics", "sequencing", "k-mer", "sketch"]
 categories = ["command-line-utilities", "science"]
 
+[features]
+gpu = ["dep:cc"]
+
 [dependencies]
 # data structures
 hashbrown = { version = "0.14", features = ["serde"] }
@@ -44,6 +47,9 @@ anyhow = "1.0"
 # parallelisation
 rayon = "1.8"
 num_cpus = "1.0"
+
+[build-dependencies]
+cc = { version = "*", optional = true }
 
 [dev-dependencies]
 # testing
