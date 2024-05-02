@@ -95,7 +95,7 @@ pub fn main() {
                 *min_count,
                 *min_qual,
             );
-            let sketch_vec = MultiSketch::new(&mut names, &mut sketches, sketch_size, &kmers);
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");

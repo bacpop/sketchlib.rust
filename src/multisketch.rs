@@ -32,14 +32,13 @@ pub struct MultiSketch {
 
 impl MultiSketch {
     pub fn new(
-        names: &mut Vec<String>,
         sketches: &mut Vec<Sketch>,
         sketch_size: u64,
         kmer_lengths: &[usize],
     ) -> Self {
-        let mut name_map = HashMap::with_capacity(names.len());
-        for (name, sketch) in names.iter_mut().zip(sketches.iter()) {
-            name_map.insert(mem::take(name), sketch.get_index());
+        let mut name_map = HashMap::with_capacity(sketches.len());
+        for sketch in sketches.iter() {
+            name_map.insert(sketch.name().to_string(), sketch.get_index());
         }
 
         let kmer_stride = (sketch_size * BBITS) as usize;
