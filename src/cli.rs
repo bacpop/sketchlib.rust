@@ -163,6 +163,10 @@ pub enum Commands {
         #[arg(short)]
         kmer: Option<usize>,
 
+        /// Calculate ANI rather than Jaccard dists, using Poisson model
+        #[arg(long, requires("kmer"), default_value_t = false)]
+        ani: bool,
+
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,

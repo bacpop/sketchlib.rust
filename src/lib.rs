@@ -23,7 +23,7 @@ pub mod multisketch;
 use crate::multisketch::MultiSketch;
 
 pub mod jaccard;
-use crate::jaccard::{core_acc_dist, jaccard_dist};
+use crate::jaccard::{ani_pois, core_acc_dist, jaccard_dist};
 
 pub mod sketch_datafile;
 
@@ -107,9 +107,11 @@ pub fn main() {
             mut knn,
             subset,
             kmer,
+            ani,
             threads,
         } => {
             check_threads(*threads);
+
             let mut output_file = set_ostream(output);
 
             let ref_db_name = if ref_db.ends_with(".skm") {
@@ -151,9 +153,11 @@ pub fn main() {
 
             // Set type of distances to use
             let k_idx;
+            let mut k_f32 = 0.0;
             let dist_type = if let Some(k) = kmer {
                 k_idx = references.get_k_idx(*k);
-                DistType::Jaccard(*k)
+                k_f32 = *k as f32;
+                DistType::Jaccard(*k, *ani)
             } else {
                 k_idx = None;
                 DistType::CoreAcc
@@ -187,11 +191,12 @@ pub fn main() {
                                     for dist_idx in 0..CHUNK_SIZE {
                                         // TODO might be good to try and move this if out of the loop... but may not matter
                                         if let Some(k) = k_idx {
-                                            let dist = jaccard_dist(
+                                            let mut dist = jaccard_dist(
                                                 references.get_sketch_slice(i, k),
                                                 references.get_sketch_slice(j, k),
                                                 references.sketch_size,
                                             );
+                                            dist = if *ani { ani_pois(dist, k_f32) } else { dist };
                                             dist_slice[dist_idx] = dist;
                                         } else {
                                             let dist =
@@ -237,11 +242,12 @@ pub fn main() {
                                                 if i == j {
                                                     continue;
                                                 }
-                                                let dist = jaccard_dist(
+                                                let mut dist = jaccard_dist(
                                                     i_sketch,
                                                     references.get_sketch_slice(j, k),
                                                     references.sketch_size,
                                                 );
+                                                dist = if *ani { ani_pois(dist, k_f32) } else { dist };
                                                 let dist_item = SparseJaccard(j, dist);
                                                 if heap.len() < nn
                                                     || dist_item < *heap.peek().unwrap()
@@ -310,11 +316,12 @@ pub fn main() {
                             let (mut i, mut j) = calc_query_indices(start_dist_idx, n);
                             for dist_idx in 0..CHUNK_SIZE {
                                 if let Some(k) = k_idx {
-                                    let dist = jaccard_dist(
+                                    let mut dist = jaccard_dist(
                                         references.get_sketch_slice(i, k),
                                         query_db.get_sketch_slice(j, k),
                                         references.sketch_size,
                                     );
+                                    dist = if *ani { ani_pois(dist, k_f32) } else { dist };
                                     dist_slice[dist_idx] = dist;
                                 } else {
                                     let dist = core_acc_dist(&references, &query_db, i, j);

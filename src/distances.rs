@@ -46,7 +46,7 @@ pub fn calc_row_idx(k: usize, n: usize) -> usize {
 
 #[derive(PartialEq, PartialOrd)]
 pub enum DistType {
-    Jaccard(usize),
+    Jaccard(usize, bool),
     CoreAcc,
 }
 
@@ -54,7 +54,7 @@ impl fmt::Display for DistType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &DistType::CoreAcc => write!(f, "Distances: core/accessory regression"),
-            &DistType::Jaccard(k) => write!(f, "Distances: Jaccard distances at k={k}"),
+            &DistType::Jaccard(k, ani) => if ani { write!(f, "Distances: Jaccard distances at k={k}") } else { write!(f, "Distances: ANI at k={k}") },
         }
     }
 }
@@ -65,7 +65,7 @@ pub trait Distances<'a> {
     fn n_dist_cols(&self) -> usize {
         match self.jaccard() {
             DistType::CoreAcc => 2,
-            DistType::Jaccard(_) => 1,
+            DistType::Jaccard(_, _) => 1,
         }
     }
 
@@ -237,7 +237,7 @@ impl<'a> SparseDistanceMatrix<'a> {
         // Pre-allocate distances
         let distances = match jaccard {
             DistType::CoreAcc => DistVec::CoreAcc(vec![SparseCoreAcc(0, 0.0, 0.0); n_distances]),
-            DistType::Jaccard(_) => DistVec::Jaccard(vec![SparseJaccard(0, 0.0); n_distances]),
+            DistType::Jaccard(_, _) => DistVec::Jaccard(vec![SparseJaccard(0, 0.0); n_distances]),
         };
 
         Self {
