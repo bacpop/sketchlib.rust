@@ -31,11 +31,7 @@ pub struct MultiSketch {
 }
 
 impl MultiSketch {
-    pub fn new(
-        sketches: &mut Vec<Sketch>,
-        sketch_size: u64,
-        kmer_lengths: &[usize],
-    ) -> Self {
+    pub fn new(sketches: &mut Vec<Sketch>, sketch_size: u64, kmer_lengths: &[usize]) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
         for sketch in sketches.iter() {
             name_map.insert(sketch.name().to_string(), sketch.get_index());

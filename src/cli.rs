@@ -1,45 +1,6 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
 use clap::{ArgGroup, Parser, Subcommand};
 
-/* C++ interface
-
-Usage:
-  sketchlib sketch <files>... -o <output> [-k <kseq>|--kmer <k>] [-s <size>] [--single-strand] [--codon-phased] [--min-count <count>] [--exact-counter] [--cpus <cpus>] [--gpu <gpu>]
-  sketchlib sketch -l <file-list> -o <output> [-k <kseq>|--kmer <k>] [-s <size>] [--single-strand] [--codon-phased] [--min-count <count>] [--exact-counter] [--cpus <cpus>] [--gpu <gpu>]
-  sketchlib query dist <db1> [<db2>] [-o <output>] [--adj-random] [--subset <file>] [--cpus <cpus>] [--gpu <gpu>]
-  sketchlib query jaccard <db1> [<db2>] [-o <output>] [--kmer <k>] [--adj-random] [--subset <file>] [--cpus <cpus>]
-  sketchlib query sparse <db1> (--kNN <k>|--threshold <max>) [-o <output>] [--accessory] [--adj-random] [--subset <file>] [--cpus <cpus>] [--gpu <gpu>]
-  sketchlib query sparse jaccard <db1> --kNN <k> --kmer <k> [-o <output>] [--adj-random] [--subset <file>] [--cpus <cpus>]
-  sketchlib join <db1> <db2> -o <output>
-  sketchlib (add|remove) random <db1> [--single-strand] [--cpus <cpus>]
-  sketchlib (-h | --help)
-  sketchlib (--version)
-
-Options:
-  -h --help     Show this help.
-  --version     Show version.
-
-  -o <output>    Output prefix.
-  -l <file-list> File with a list of input files.
-  --cpus <cpus>  Number of CPU threads to use [default: 1].
-  --gpu <gpu>    Use GPU with specified device ID [default: -1].
-
-  -k <kseq>     Sequence of k-mers to sketch (min,max,step) [default: 15,31,4].
-  --kmer <k>    Sketch (or distance) at a single k-mer length k.
-  -s <size>     Sketch size [default: 10000].
-  --single-strand  Ignore the reverse complement (e.g. in RNA viruses).
-  --codon-phased  Use codon phased seeds X--X--X
-  --min-count <count>  Minimum coverage count for k-mers from reads to be sketched [default: 20].
-  --exact-counter  Use an exact k-mer count filter for reads (for genomes >10Mb)
-
-  --adj-random  Adjust query matches for their chance of occurring at random
-  --subset <file>  Only query samples matching names in file
-
-  --kNN <k>  Use k nearest neighbours to sparsify
-  --threshold <max>  Remove distances over max to sparsify
-  --accessory  Use accessory distances rather than core to sparsify
-*/
-
 /// Default single strand (which is equivalent to !rc)
 pub const DEFAULT_STRAND: bool = false;
 /// Default minimum k-mer count for FASTQ files

@@ -1,11 +1,8 @@
 use std::cmp::Ordering;
 use std::fmt;
-use std::mem;
 use std::sync::mpsc;
-use std::sync::Arc;
 
 extern crate needletail;
-use indicatif::ProgressBar;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use needletail::{parse_fastx_file, parser::Format};
 use rayon::prelude::*;
@@ -298,7 +295,7 @@ pub fn sketch_files(
                 .map(|(name, fastx1, fastx2)| {
                     Sketch::new(
                         name,
-                        (&fastx1, fastx2.as_ref()),
+                        (fastx1, fastx2.as_ref()),
                         k,
                         sketch_size,
                         min_qual,

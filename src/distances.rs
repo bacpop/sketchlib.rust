@@ -8,7 +8,7 @@ use crate::multisketch::MultiSketch;
 #[inline(always)]
 pub fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {
     debug_assert!(j > i);
-    return n * i - ((i * (i + 1)) >> 1) + j - 1 - i;
+    n * i - ((i * (i + 1)) >> 1) + j - 1 - i
 }
 
 #[inline(always)]
@@ -52,9 +52,15 @@ pub enum DistType {
 
 impl fmt::Display for DistType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &DistType::CoreAcc => write!(f, "Distances: core/accessory regression"),
-            &DistType::Jaccard(k, ani) => if ani { write!(f, "Distances: ANI at k={k}") } else { write!(f, "Distances: Jaccard distances at k={k}") },
+        match *self {
+            DistType::CoreAcc => write!(f, "Distances: core/accessory regression"),
+            DistType::Jaccard(k, ani) => {
+                if ani {
+                    write!(f, "Distances: ANI at k={k}")
+                } else {
+                    write!(f, "Distances: Jaccard distances at k={k}")
+                }
+            }
         }
     }
 }
@@ -141,7 +147,7 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
                         write!(f, "\t{}", self.distances[dist_idx + 1])?;
                         dist_idx += 1;
                     }
-                    write!(f, "\n")?;
+                    writeln!(f)?;
                     dist_idx += 1;
                 }
             }
@@ -157,7 +163,7 @@ impl<'a> fmt::Display for DistanceMatrix<'a> {
                         write!(f, "\t{}", self.distances[dist_idx + 1])?;
                         dist_idx += 1;
                     }
-                    write!(f, "\n")?;
+                    writeln!(f)?;
                     dist_idx += 1;
                 }
             }

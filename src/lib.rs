@@ -4,7 +4,6 @@
 #![warn(missing_docs)]
 use std::collections::BinaryHeap;
 use std::io::Write;
-use std::mem;
 use std::time::Instant;
 
 #[macro_use]
@@ -73,8 +72,6 @@ pub fn main() {
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
             let kmers = parse_kmers(k_vals, k_seq);
-            // TODO this is very clunky, better replace fastx type
-            let mut names: Vec<String> = input_files.iter().map(|x| x.0.to_string()).collect();
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
@@ -120,7 +117,7 @@ pub fn main() {
                 ref_db.as_str()
             };
             let mut references = MultiSketch::load(ref_db_name)
-                .expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
+                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             log::info!("Loading sketch data from {}.skd", ref_db_name);
             if let Some(subset_file) = subset {
@@ -140,9 +137,9 @@ pub fn main() {
 
             // Read queries if supplied. Note no subsetting here
             let queries = if let Some(query_db_name) = query_db {
-                let mut queries = MultiSketch::load(query_db_name).expect(&format!(
-                    "Could not read sketch metadata from {query_db_name}.skm"
-                ));
+                let mut queries = MultiSketch::load(query_db_name).unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {query_db_name}.skm")
+                });
                 log::info!("Loading query sketch data from {}.skd", query_db_name);
                 queries.read_sketch_data(query_db_name);
                 log::info!("Read query sketches:\n{queries:?}");
@@ -247,7 +244,8 @@ pub fn main() {
                                                     references.get_sketch_slice(j, k),
                                                     references.sketch_size,
                                                 );
-                                                dist = if *ani { ani_pois(dist, k_f32) } else { dist };
+                                                dist =
+                                                    if *ani { ani_pois(dist, k_f32) } else { dist };
                                                 let dist_item = SparseJaccard(j, dist);
                                                 if heap.len() < nn
                                                     || dist_item < *heap.peek().unwrap()
@@ -356,9 +354,9 @@ pub fn main() {
             } else {
                 skm_file.as_str()
             };
-            let sketches = MultiSketch::load(ref_db_name).expect(&format!(
-                "Could not read sketch metadata from {ref_db_name}.skm"
-            ));
+            let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {ref_db_name}.skm")
+            });
             if *sample_info {
                 log::info!("Printing sample info");
                 println!("{sketches}");
