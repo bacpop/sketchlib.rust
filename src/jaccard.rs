@@ -27,7 +27,7 @@ pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketch_size: u64) -> f32 {
 
 #[inline(always)]
 pub fn ani_pois(jaccard: f32, k: f32) -> f32 {
-    1.0 + 1.0/k * (((2.0 * jaccard)/(1.0 + jaccard)).ln())
+    0.0_f32.max(1.0 + 1.0/k * (((2.0 * jaccard)/(1.0 + jaccard)).ln()))
 }
 
 pub fn core_acc_dist(
