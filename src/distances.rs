@@ -54,7 +54,7 @@ impl fmt::Display for DistType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &DistType::CoreAcc => write!(f, "Distances: core/accessory regression"),
-            &DistType::Jaccard(k, ani) => if ani { write!(f, "Distances: Jaccard distances at k={k}") } else { write!(f, "Distances: ANI at k={k}") },
+            &DistType::Jaccard(k, ani) => if ani { write!(f, "Distances: ANI at k={k}") } else { write!(f, "Distances: Jaccard distances at k={k}") },
         }
     }
 }
