@@ -6,7 +6,9 @@ fn main() {
     cc::Build::new()
         .cuda(true)
         .cudart("static")
+        .std("c++17")
         .flag("-gencode").flag("arch=compute_86,code=sm_86")
+        .flag("-ccbin").flag("/home/linuxbrew/.linuxbrew/bin/g++-11")
         .file("cuda/dist.cu")
         .compile("cuda_dist.a");
 
