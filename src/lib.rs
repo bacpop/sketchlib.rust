@@ -111,7 +111,7 @@ pub fn main() {
 
             let mut output_file = set_ostream(output);
 
-            let ref_db_name = if ref_db.ends_with(".skm") {
+            let ref_db_name = if ref_db.ends_with(".skm") || ref_db.ends_with(".skd") {
                 &ref_db[0..ref_db.len() - 4]
             } else {
                 ref_db.as_str()
@@ -349,7 +349,7 @@ pub fn main() {
             skm_file,
             sample_info,
         } => {
-            let ref_db_name = if skm_file.ends_with(".skm") {
+            let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
                 &skm_file[0..skm_file.len() - 4]
             } else {
                 skm_file.as_str()
