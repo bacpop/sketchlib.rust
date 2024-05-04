@@ -8,9 +8,9 @@ use needletail::{parse_fastx_file, parser::Format};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{encode_base, NtHashIterator};
+use super::hashing::{encode_base, NtHashIterator, RollHash};
 use crate::bloom_filter::KmerFilter;
-use crate::hashing::valid_base;
+use crate::hashing::{valid_base, HashType};
 use crate::io::InputFastx;
 use crate::sketch_datafile::SketchArrayFile;
 
@@ -41,6 +41,7 @@ pub struct Sketch {
 
 impl Sketch {
     pub fn new(
+        seq_type: &HashType,
         name: &str,
         files: (&str, Option<&String>),
         kmer_lengths: &[usize],
@@ -84,9 +85,9 @@ impl Sketch {
         // Read sequence into memory (as we go through multiple times)
         log::debug!("Preprocessing sequence");
         let mut sequence: Vec<u8> = Vec::new();
-        sketch.add_seq(files.0, &mut sequence, min_qual);
+        sketch.add_dna_seq(files.0, &mut sequence, min_qual);
         if let Some(filename) = files.1 {
-            sketch.add_seq(filename, &mut sequence, min_qual);
+            sketch.add_dna_seq(filename, &mut sequence, min_qual);
         }
 
         sketch.seq_length = sketch.acgt.iter().sum();
@@ -102,7 +103,11 @@ impl Sketch {
             log::debug!("Running sketching at k={k}");
             // Calculate bin minima across all sequence
             let mut signs = vec![u64::MAX; num_bins as usize];
-            let hash_it = NtHashIterator::new(&sequence, *k, rc);
+            let hash_it: Box<dyn RollHash> = match *seq_type {
+                HashType::DNA => Box::new(NtHashIterator::new(&sequence, *k, rc)),
+                _ => todo!(),
+            };
+
             for hash in hash_it {
                 Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut filter);
             }
@@ -143,7 +148,7 @@ impl Sketch {
         std::mem::take(&mut self.usigs)
     }
 
-    fn add_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, min_qual: u8) {
+    fn add_dna_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, min_qual: u8) {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
         while let Some(record) = reader.next() {
@@ -266,6 +271,7 @@ pub fn sketch_files(
     input_files: &[InputFastx],
     k: &[usize],
     sketch_size: u64,
+    seq_type: &HashType,
     rc: bool,
     min_count: u16,
     min_qual: u8,
@@ -294,6 +300,7 @@ pub fn sketch_files(
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
                     Sketch::new(
+                        seq_type,
                         name,
                         (fastx1, fastx2.as_ref()),
                         k,

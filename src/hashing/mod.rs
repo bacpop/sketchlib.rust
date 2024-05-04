@@ -1,10 +1,11 @@
 use std::{borrow::Cow, cmp::Ordering};
 
 use serde::{Deserialize, Serialize};
+use clap::ValueEnum;
 
 mod nthash_tables;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ValueEnum)]
 pub enum HashType {
     DNA,
     AA,
@@ -55,6 +56,12 @@ pub fn swapbits3263(v: u64) -> u64 {
 // TODO generic hash for structure alphabet
 // https://github.com/eldruin/wyhash-rs
 
+pub trait RollHash: Iterator<Item = u64> {
+    // fn new(seq: &'a [u8], k: usize, rc: bool) -> Self;
+    fn curr_hash(&self) -> u64;
+    fn hash_type(&self) -> HashType;
+}
+
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
 #[derive(Debug)]
 pub struct NtHashIterator<'a> {
@@ -67,9 +74,24 @@ pub struct NtHashIterator<'a> {
     seq_len: usize, // NB seq.len() - 1 due to terminating char
 }
 
+impl<'a> RollHash for NtHashIterator<'a> {
+    /// Retrieve the current hash (minimum of forward and reverse complement hashes)
+    fn curr_hash(&self) -> u64 {
+        if let Some(rev) = self.rh {
+            u64::min(self.fh, rev)
+        } else {
+            self.fh
+        }
+    }
+
+    fn hash_type(&self) -> HashType {
+        HashType::DNA
+    }
+}
+
 impl<'a> NtHashIterator<'a> {
     /// Creates a new iterator over a sequence with a given k-mer size
-    pub fn new(seq: &'a [u8], k: usize, rc: bool) -> NtHashIterator {
+    pub fn new(seq: &'a [u8], k: usize, rc: bool) -> Self {
         if let Some(new_it) = Self::new_iterator(0, seq, k, rc) {
             Self {
                 k,
@@ -147,14 +169,7 @@ impl<'a> NtHashIterator<'a> {
         };
     }
 
-    /// Retrieve the current hash (minimum of forward and reverse complement hashes)
-    pub fn curr_hash(&self) -> u64 {
-        if let Some(rev) = self.rh {
-            u64::min(self.fh, rev)
-        } else {
-            self.fh
-        }
-    }
+
 }
 
 impl<'a> Iterator for NtHashIterator<'a> {

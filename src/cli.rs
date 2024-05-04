@@ -1,6 +1,8 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
 use clap::{ArgGroup, Parser, Subcommand};
 
+use super::hashing::HashType;
+
 /// Default single strand (which is equivalent to !rc)
 pub const DEFAULT_STRAND: bool = false;
 /// Default minimum k-mer count for FASTQ files
@@ -81,6 +83,10 @@ pub enum Commands {
         /// Sketch size
         #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
         sketch_size: u64,
+
+        /// Type of sequence to hash
+        #[arg(long, value_enum, default_value_t = HashType::DNA)]
+        seq_type: HashType,
 
         /// Ignore reverse complement (all contigs are oriented along same strand)
         #[arg(long, default_value_t = DEFAULT_STRAND)]
