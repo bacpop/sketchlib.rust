@@ -4,7 +4,6 @@ use std::sync::mpsc;
 
 extern crate needletail;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
-use needletail::{parse_fastx_file, parser::Format};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +13,6 @@ use crate::hashing::{valid_base, HashType};
 use crate::io::InputFastx;
 use crate::sketch_datafile::SketchArrayFile;
 
-/// Character to use for invalid nucleotides
-pub const SEQSEP: u8 = 5;
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
@@ -63,35 +60,12 @@ impl Sketch {
             non_acgt: 0,
         };
 
-        // Check if we're working with reads, and initalise the filter if so
-        let mut reader_peek =
-            parse_fastx_file(files.0).unwrap_or_else(|_| panic!("Invalid path/file: {}", files.0));
-        let seq_peek = reader_peek
-            .next()
-            .expect("Invalid FASTA/Q record")
-            .expect("Invalid FASTA/Q record");
-        if seq_peek.format() == Format::Fastq {
-            sketch.reads = true;
-        }
-        let mut filter = match sketch.reads {
-            true => {
-                let mut kmer_filter = KmerFilter::new(min_count);
-                kmer_filter.init();
-                Some(kmer_filter)
-            }
-            false => None,
+        let mut hash_it: Box<dyn RollHash> = match *seq_type {
+            HashType::DNA => Box::new(NtHashIterator::new(files, rc, min_qual, min_count)),
+            _ => todo!(),
         };
 
-        // Read sequence into memory (as we go through multiple times)
-        log::debug!("Preprocessing sequence");
-        let mut sequence: Vec<u8> = Vec::new();
-        sketch.add_dna_seq(files.0, &mut sequence, min_qual);
-        if let Some(filename) = files.1 {
-            sketch.add_dna_seq(filename, &mut sequence, min_qual);
-        }
-
-        sketch.seq_length = sketch.acgt.iter().sum();
-        if sketch.seq_length == 0 {
+        if hash_it.seq_len() == 0 {
             panic!("{} has no valid sequence", files.0);
         }
 
@@ -103,13 +77,10 @@ impl Sketch {
             log::debug!("Running sketching at k={k}");
             // Calculate bin minima across all sequence
             let mut signs = vec![u64::MAX; num_bins as usize];
-            let hash_it: Box<dyn RollHash> = match *seq_type {
-                HashType::DNA => Box::new(NtHashIterator::new(&sequence, *k, rc)),
-                _ => todo!(),
-            };
-
-            for hash in hash_it {
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut filter);
+            hash_it.set_k(*k);
+            for hash in hash_it.iter() {
+                // TODO - sort out filter
+                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut None);
             }
 
             // Densify
@@ -122,11 +93,14 @@ impl Sketch {
             Self::fill_usigs(&mut usigs, &signs);
             sketch.usigs.append(&mut usigs);
         }
+        (sketch.reads, sketch.acgt, sketch.non_acgt) = hash_it.sketch_data();
 
         // Estimate of sequence length from read data
-        if sketch.reads {
-            sketch.seq_length = ((kmer_lengths.len() as f64) / minhash_sum) as usize;
-        }
+        sketch.seq_length = if sketch.reads {
+            ((kmer_lengths.len() as f64) / minhash_sum) as usize
+        } else {
+            hash_it.seq_len()
+        };
 
         sketch
     }
@@ -146,43 +120,6 @@ impl Sketch {
     // Take the (transposed) sketch, emptying it from the [`Sketch`]
     pub fn get_usigs(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.usigs)
-    }
-
-    fn add_dna_seq(&mut self, filename: &str, sequence: &mut Vec<u8>, min_qual: u8) {
-        let mut reader =
-            parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
-        while let Some(record) = reader.next() {
-            let seqrec = record.expect("Invalid FASTA/Q record");
-            if let Some(quals) = seqrec.qual() {
-                for (base, qual) in seqrec.seq().iter().zip(quals) {
-                    if *qual >= min_qual {
-                        if valid_base(*base) {
-                            let encoded_base = encode_base(*base);
-                            self.acgt[encoded_base as usize] += 1;
-                            sequence.push(encoded_base)
-                        } else {
-                            self.non_acgt += 1;
-                            sequence.push(SEQSEP);
-                        }
-                    } else {
-                        sequence.push(SEQSEP);
-                    }
-                }
-            } else {
-                for base in seqrec.seq().iter() {
-                    if valid_base(*base) {
-                        let encoded_base = encode_base(*base);
-                        self.acgt[encoded_base as usize] += 1;
-                        sequence.push(encoded_base)
-                    } else {
-                        self.non_acgt += 1;
-                        sequence.push(SEQSEP);
-                    }
-                }
-            }
-
-            sequence.push(SEQSEP);
-        }
     }
 
     fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {

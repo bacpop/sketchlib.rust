@@ -28,6 +28,7 @@ pub fn aa_roll_table(aa: u8, level: usize, k: usize) -> u64 {
     seed_left | seed_right
 }
 
+/*
 pub fn AA_SEED_RIGHT_33BITS_ROLL_TABLE(aa: u8, pos: usize) -> u64 {
     match aa {
         "A" | "a" => AA_SEED_A_RIGHT_33BITS_ROLL_TABLE[pos],
@@ -42,6 +43,7 @@ pub fn AA_SEED_RIGHT_33BITS_ROLL_TABLE(aa: u8, pos: usize) -> u64 {
         "L" | "l" => AA_SEED_L_RIGHT_33BITS_ROLL_TABLE[pos],
     }
   }
+  */
 
 pub const AA_SEED_A: u64 = 0xf56d6192468323df;
 pub const AA_SEED_C: u64 = 0x9b0b2fd724e1e1d2;

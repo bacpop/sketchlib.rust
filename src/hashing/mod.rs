@@ -1,9 +1,17 @@
 use std::{borrow::Cow, cmp::Ordering};
+use needletail::{parse_fastx_file, parser::Format};
+
 
 use serde::{Deserialize, Serialize};
 use clap::ValueEnum;
 
+use crate::bloom_filter::KmerFilter;
+
 mod nthash_tables;
+mod aahash_tables;
+
+/// Character to use for invalid nucleotides
+pub const SEQSEP: u8 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ValueEnum)]
 pub enum HashType {
@@ -57,24 +65,44 @@ pub fn swapbits3263(v: u64) -> u64 {
 // https://github.com/eldruin/wyhash-rs
 
 pub trait RollHash: Iterator<Item = u64> {
-    // fn new(seq: &'a [u8], k: usize, rc: bool) -> Self;
+    fn set_k(&mut self, k: usize);
     fn curr_hash(&self) -> u64;
     fn hash_type(&self) -> HashType;
+    fn seq_len(&self) -> usize;
+    fn sketch_data(&self) -> (bool, [usize; 4], usize);
+
+    fn iter(&mut self) -> Box<dyn Iterator<Item = u64> + '_> {
+        Box::new(self)
+    }
 }
 
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
 #[derive(Debug)]
-pub struct NtHashIterator<'a> {
+pub struct NtHashIterator {
     k: usize,
     rc: bool,
     fh: u64,
     rh: Option<u64>,
     index: usize,
-    seq: Cow<'a, [u8]>,
+    seq: Vec<u8>,
     seq_len: usize, // NB seq.len() - 1 due to terminating char
+    acgt: [usize; 4],
+    non_acgt: usize,
+    reads: bool,
 }
 
-impl<'a> RollHash for NtHashIterator<'a> {
+impl RollHash for NtHashIterator {
+    fn set_k(&mut self, k: usize) {
+        self.k = k;
+        if let Some(new_it) = Self::new_iterator(0, &self.seq, k, self.rc) {
+            self.fh = new_it.0;
+            self.rh = new_it.1;
+            self.index = new_it.2;
+        } else {
+            panic!("K-mer larger than smallest valid sequence");
+        }
+    }
+
     /// Retrieve the current hash (minimum of forward and reverse complement hashes)
     fn curr_hash(&self) -> u64 {
         if let Some(rev) = self.rh {
@@ -87,23 +115,96 @@ impl<'a> RollHash for NtHashIterator<'a> {
     fn hash_type(&self) -> HashType {
         HashType::DNA
     }
+
+    fn seq_len(&self) -> usize {
+        self.acgt.iter().sum()
+    }
+
+    fn sketch_data(&self) -> (bool, [usize; 4], usize) {
+        (self.reads, self.acgt, self.non_acgt)
+    }
 }
 
-impl<'a> NtHashIterator<'a> {
+impl NtHashIterator {
+    pub fn new(files: (&str, Option<&String>), rc: bool, min_qual: u8, min_count: u16) -> Self {
     /// Creates a new iterator over a sequence with a given k-mer size
-    pub fn new(seq: &'a [u8], k: usize, rc: bool) -> Self {
-        if let Some(new_it) = Self::new_iterator(0, seq, k, rc) {
-            Self {
-                k,
-                rc,
-                fh: new_it.0,
-                rh: new_it.1,
-                index: new_it.2,
-                seq: Cow::Borrowed(seq),
-                seq_len: seq.len() - 1,
+    // Check if we're working with reads, and initalise the filter if so
+        let mut reader_peek =
+            parse_fastx_file(files.0).unwrap_or_else(|_| panic!("Invalid path/file: {}", files.0));
+        let seq_peek = reader_peek
+            .next()
+            .expect("Invalid FASTA/Q record")
+            .expect("Invalid FASTA/Q record");
+        let mut reads = false;
+        if seq_peek.format() == Format::Fastq {
+            reads = true;
+        }
+        let mut filter = match reads {
+            true => {
+                let mut kmer_filter = KmerFilter::new(min_count);
+                kmer_filter.init();
+                Some(kmer_filter)
             }
-        } else {
-            panic!("K-mer larger than smallest valid sequence");
+            false => None,
+        };
+
+        let mut hash_it = Self {
+            k: 0,
+            rc,
+            fh: 0,
+            rh: None,
+            index: 0,
+            seq: Vec::new(),
+            seq_len: 0,
+            acgt: [0, 0, 0, 0],
+            non_acgt: 0,
+            reads,
+        };
+
+        // Read sequence into memory (as we go through multiple times)
+        log::debug!("Preprocessing sequence");
+        hash_it.add_dna_seq(files.0,  min_qual);
+        if let Some(filename) = files.1 {
+            hash_it.add_dna_seq(filename, min_qual);
+        }
+        hash_it.seq_len = hash_it.seq.len() - 1;
+        hash_it
+    }
+
+    fn add_dna_seq(&mut self, filename: &str, min_qual: u8) {
+        let mut reader =
+            parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
+        while let Some(record) = reader.next() {
+            let seqrec = record.expect("Invalid FASTA/Q record");
+            if let Some(quals) = seqrec.qual() {
+                for (base, qual) in seqrec.seq().iter().zip(quals) {
+                    if *qual >= min_qual {
+                        if valid_base(*base) {
+                            let encoded_base = encode_base(*base);
+                            self.acgt[encoded_base as usize] += 1;
+                            self.seq.push(encoded_base)
+                        } else {
+                            self.non_acgt += 1;
+                            self.seq.push(SEQSEP);
+                        }
+                    } else {
+                        self.seq.push(SEQSEP);
+                    }
+                }
+            } else {
+                for base in seqrec.seq().iter() {
+                    if valid_base(*base) {
+                        let encoded_base = encode_base(*base);
+                        self.acgt[encoded_base as usize] += 1;
+                        self.seq.push(encoded_base)
+                    } else {
+                        self.non_acgt += 1;
+                        self.seq.push(SEQSEP);
+                    }
+                }
+            }
+
+            self.seq.push(SEQSEP);
         }
     }
 
@@ -172,7 +273,7 @@ impl<'a> NtHashIterator<'a> {
 
 }
 
-impl<'a> Iterator for NtHashIterator<'a> {
+impl Iterator for NtHashIterator {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -215,4 +316,4 @@ impl<'a> Iterator for NtHashIterator<'a> {
 }
 
 // This lets you use collect etc
-impl<'a> ExactSizeIterator for NtHashIterator<'a> {}
+impl ExactSizeIterator for NtHashIterator {}
