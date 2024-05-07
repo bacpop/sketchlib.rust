@@ -8,8 +8,14 @@ mod nthash_tables;
 
 /// Character to use for invalid nucleotides
 pub const SEQSEP: u8 = 5;
+/// Default aaHash 'level'
 pub const DEFAULT_LEVEL: AaLevel = AaLevel::Level1;
 
+/// aaHash levels
+///
+/// Level1: All amino acids are different
+/// Level2: Groups T,S; D,E; Q,K,R; V,I,L,M; W,F,Y
+/// Level3: Additionally groups A with T,S; N with D,E
 #[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, ValueEnum)]
 pub enum AaLevel {
     Level1,

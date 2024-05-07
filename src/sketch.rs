@@ -227,6 +227,7 @@ pub fn sketch_files(
                 .par_iter()
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
+                    // Read in sequence and set up rolling hash by alphabet type
                     let mut hash_it: Box<dyn RollHash> = match seq_type {
                         HashType::DNA => Box::new(NtHashIterator::new(
                             (fastx1, fastx2.as_ref()),
@@ -240,6 +241,8 @@ pub fn sketch_files(
                     if hash_it.seq_len() == 0 {
                         panic!("{name} has no valid sequence");
                     }
+
+                    // Set a count filter if needed, which can be reused
                     let mut read_filter = if hash_it.reads() {
                         let mut filter = KmerFilter::new(min_count);
                         filter.init();
@@ -248,15 +251,19 @@ pub fn sketch_files(
                         None
                     };
 
+                    // Run the sketching
                     Sketch::new(&mut *hash_it, name, k, sketch_size, &mut read_filter, rc)
                 })
                 .for_each_with(tx, |tx, sketch| {
+                    // Emit the sketch results to the writer thread
                     let _ = tx.send(sketch);
                 });
         });
+        // Write each sketch to the .skd file as it comes in
         for mut sketch in rx {
             let index = serial_writer.write_sketch(&sketch.get_usigs());
             sketch.set_index(index);
+            // Also append (without usigs) to the metadata, which is Vec<Sketch>
             sketches.push(sketch);
         }
     });
