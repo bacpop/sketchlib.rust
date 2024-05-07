@@ -108,6 +108,12 @@ impl KmerFilter {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.counts.clear();
+        self.init();
+    }
+
     /// Add an observation of a k-mer and middle base to the filter, and return if it passed
     /// minimum count filtering criterion.
     pub fn filter(&mut self, hash: u64) -> Ordering {

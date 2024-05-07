@@ -32,10 +32,6 @@ pub struct Sketch {
     non_acgt: usize,
 }
 
-// Not needed
-// unsafe impl Send for Sketch {}
-// unsafe impl Sync for Sketch {}
-
 impl Sketch {
     pub fn new(
         seq_type: &HashType,
@@ -48,21 +44,18 @@ impl Sketch {
         rc: bool,
     ) -> Self {
         let size_u64 = (sketch_size * BBITS) as usize * kmer_lengths.len();
-        let mut sketch = Self {
-            usigs: Vec::with_capacity(size_u64),
-            name: name.to_string(),
-            index: None,
-            rc,
-            reads: false,
-            seq_length: 0,
-            densified: false,
-            acgt: [0; 4],
-            non_acgt: 0,
-        };
+        let mut usigs = Vec::with_capacity(size_u64);
 
         let mut hash_it: Box<dyn RollHash> = match *seq_type {
             HashType::DNA => Box::new(NtHashIterator::new(files, rc, min_qual, min_count)),
             _ => todo!(),
+        };
+        let mut read_filter = if hash_it.reads() {
+            let mut filter = KmerFilter::new(min_count);
+            filter.init();
+            Some(filter)
+        } else {
+            None
         };
 
         if hash_it.seq_len() == 0 {
@@ -71,6 +64,7 @@ impl Sketch {
 
         // Build the sketches across k-mer lengths
         let mut minhash_sum = 0.0;
+        let mut densified = false;
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
         let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
         for k in kmer_lengths {
@@ -79,30 +73,39 @@ impl Sketch {
             let mut signs = vec![u64::MAX; num_bins as usize];
             hash_it.set_k(*k);
             for hash in hash_it.iter() {
-                // TODO - sort out filter
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut None);
+                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
             }
 
             // Densify
-            sketch.densified |= Self::densify_bin(&mut signs);
+            densified |= Self::densify_bin(&mut signs);
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
             // Transpose the bins and save to the sketch map
             log::debug!("Transposing bins");
-            let mut usigs = vec![0; (sketch_size * BBITS) as usize];
-            Self::fill_usigs(&mut usigs, &signs);
-            sketch.usigs.append(&mut usigs);
+            let mut kmer_usigs = vec![0; (sketch_size * BBITS) as usize];
+            Self::fill_usigs(&mut kmer_usigs, &signs);
+            usigs.append(&mut kmer_usigs);
         }
-        (sketch.reads, sketch.acgt, sketch.non_acgt) = hash_it.sketch_data();
+        let (reads, acgt, non_acgt) = hash_it.sketch_data();
 
         // Estimate of sequence length from read data
-        sketch.seq_length = if sketch.reads {
+        let seq_length = if reads {
             ((kmer_lengths.len() as f64) / minhash_sum) as usize
         } else {
             hash_it.seq_len()
         };
 
-        sketch
+        Self {
+            usigs,
+            name: name.to_string(),
+            index: None,
+            rc,
+            reads,
+            seq_length,
+            densified,
+            acgt,
+            non_acgt,
+        }
     }
 
     pub fn name(&self) -> &str {

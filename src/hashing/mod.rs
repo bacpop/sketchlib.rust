@@ -1,19 +1,18 @@
-use std::{borrow::Cow, cmp::Ordering};
 use needletail::{parse_fastx_file, parser::Format};
+use std::{borrow::Cow, cmp::Ordering};
 
-
-use serde::{Deserialize, Serialize};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 
 use crate::bloom_filter::KmerFilter;
 
-mod nthash_tables;
 mod aahash_tables;
+mod nthash_tables;
 
 /// Character to use for invalid nucleotides
 pub const SEQSEP: u8 = 5;
 
-#[derive(Clone, Debug, Serialize, Deserialize, ValueEnum)]
+#[derive(Clone, Debug, Serialize, Deserialize, ValueEnum, PartialEq, PartialOrd)]
 pub enum HashType {
     DNA,
     AA,
@@ -74,6 +73,10 @@ pub trait RollHash: Iterator<Item = u64> {
     fn iter(&mut self) -> Box<dyn Iterator<Item = u64> + '_> {
         Box::new(self)
     }
+
+    fn reads(&self) -> bool {
+        false
+    }
 }
 
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
@@ -123,12 +126,16 @@ impl RollHash for NtHashIterator {
     fn sketch_data(&self) -> (bool, [usize; 4], usize) {
         (self.reads, self.acgt, self.non_acgt)
     }
+
+    fn reads(&self) -> bool {
+        self.reads
+    }
 }
 
 impl NtHashIterator {
     pub fn new(files: (&str, Option<&String>), rc: bool, min_qual: u8, min_count: u16) -> Self {
-    /// Creates a new iterator over a sequence with a given k-mer size
-    // Check if we're working with reads, and initalise the filter if so
+        /// Creates a new iterator over a sequence with a given k-mer size
+        // Check if we're working with reads, and initalise the filter if so
         let mut reader_peek =
             parse_fastx_file(files.0).unwrap_or_else(|_| panic!("Invalid path/file: {}", files.0));
         let seq_peek = reader_peek
@@ -139,14 +146,6 @@ impl NtHashIterator {
         if seq_peek.format() == Format::Fastq {
             reads = true;
         }
-        let mut filter = match reads {
-            true => {
-                let mut kmer_filter = KmerFilter::new(min_count);
-                kmer_filter.init();
-                Some(kmer_filter)
-            }
-            false => None,
-        };
 
         let mut hash_it = Self {
             k: 0,
@@ -163,7 +162,7 @@ impl NtHashIterator {
 
         // Read sequence into memory (as we go through multiple times)
         log::debug!("Preprocessing sequence");
-        hash_it.add_dna_seq(files.0,  min_qual);
+        hash_it.add_dna_seq(files.0, min_qual);
         if let Some(filename) = files.1 {
             hash_it.add_dna_seq(filename, min_qual);
         }
@@ -269,8 +268,6 @@ impl NtHashIterator {
             self.rh = Some(h);
         };
     }
-
-
 }
 
 impl Iterator for NtHashIterator {
