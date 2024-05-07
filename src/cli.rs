@@ -1,7 +1,7 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
 use clap::{ArgGroup, Parser, Subcommand};
 
-use super::hashing::HashType;
+use super::hashing::{AaLevel, HashType, DEFAULT_LEVEL};
 
 /// Default single strand (which is equivalent to !rc)
 pub const DEFAULT_STRAND: bool = false;
@@ -87,6 +87,10 @@ pub enum Commands {
         /// Type of sequence to hash
         #[arg(long, value_enum, default_value_t = HashType::DNA)]
         seq_type: HashType,
+
+        /// aaHash 'level'
+        #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
+        level: AaLevel,
 
         /// Ignore reverse complement (all contigs are oriented along same strand)
         #[arg(long, default_value_t = DEFAULT_STRAND)]

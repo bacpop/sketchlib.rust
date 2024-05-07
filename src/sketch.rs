@@ -7,9 +7,9 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{encode_base, NtHashIterator, RollHash};
+use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::bloom_filter::KmerFilter;
-use crate::hashing::{valid_base, HashType};
+use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 use crate::sketch_datafile::SketchArrayFile;
 
@@ -227,8 +227,14 @@ pub fn sketch_files(
                 .par_iter()
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
-                    let mut hash_it: Box<dyn RollHash> = match *seq_type {
-                        HashType::DNA => Box::new(NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual, min_count)),
+                    let mut hash_it: Box<dyn RollHash> = match seq_type {
+                        HashType::DNA => Box::new(NtHashIterator::new(
+                            (fastx1, fastx2.as_ref()),
+                            rc,
+                            min_qual,
+                            min_count,
+                        )),
+                        HashType::AA(level) => Box::new(AaHashIterator::new(fastx1, level.clone())),
                         _ => todo!(),
                     };
                     if hash_it.seq_len() == 0 {
@@ -242,14 +248,7 @@ pub fn sketch_files(
                         None
                     };
 
-                    Sketch::new(
-                        &mut *hash_it,
-                        name,
-                        k,
-                        sketch_size,
-                        &mut read_filter,
-                        rc,
-                    )
+                    Sketch::new(&mut *hash_it, name, k, sketch_size, &mut read_filter, rc)
                 })
                 .for_each_with(tx, |tx, sketch| {
                     let _ = tx.send(sketch);

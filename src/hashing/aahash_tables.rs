@@ -2,19 +2,10 @@
 // See https://academic.oup.com/bioinformaticsadvances/article/3/1/vbad162/7413189
 // doi:10.1093/bioadv/vbad162
 
-pub enum AaLevel {
-    Level1,
-    Level2,
-    Level3,
-}
+use super::AaLevel;
 
-pub trait AaHash {
-    fn aa_seed_table(&self, aa: u8) -> u64;
-    fn aa_roll_table(&self, aa: u8, k: usize) -> u64;
-}
-
-impl AaHash for AaLevel {
-    fn aa_seed_table(&self, aa: u8) -> u64 {
+impl AaLevel {
+    pub fn aa_seed_table(&self, aa: u8) -> u64 {
         match self {
             AaLevel::Level1 => AA_SEED_TABLE[aa as usize],
             AaLevel::Level2 => LEVEL_2_AA_SEED_TABLE[aa as usize],
@@ -22,7 +13,7 @@ impl AaHash for AaLevel {
         }
     }
 
-    fn aa_roll_table(&self, aa: u8, k: usize) -> u64 {
+    pub fn aa_roll_table(&self, aa: u8, k: usize) -> u64 {
         let rot_31 = if k < 31 { k } else { k % 31 };
         let rot_33 = if k < 33 { k } else { k % 33 };
         match self {

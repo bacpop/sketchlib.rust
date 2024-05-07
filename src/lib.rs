@@ -4,6 +4,7 @@
 #![warn(missing_docs)]
 use std::collections::BinaryHeap;
 use std::io::Write;
+use std::mem;
 use std::time::Instant;
 
 #[macro_use]
@@ -16,6 +17,7 @@ pub mod cli;
 use crate::cli::*;
 
 pub mod sketch;
+use crate::hashing::HashType;
 use crate::sketch::sketch_files;
 
 pub mod multisketch;
@@ -61,6 +63,7 @@ pub fn main() {
             k_seq,
             mut sketch_size,
             seq_type,
+            level,
             single_strand,
             min_count,
             min_qual,
@@ -72,16 +75,24 @@ pub fn main() {
             // Read input
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
+            log::info!("Parsed {} samples in input list", input_files.len());
             let kmers = parse_kmers(k_vals, k_seq);
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
             sketch_size = sketch_size.div_ceil(u64::BITS as u64);
+            // Set aa level
+            let seq_type = if let HashType::AA(_) = seq_type {
+                HashType::AA(level.clone())
+            } else {
+                seq_type.clone()
+            };
 
             log::info!(
-                "Running sketching: k:{:?}; sketch_size:{}; threads:{}",
+                "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
                 kmers,
                 sketch_size * u64::BITS as u64,
+                seq_type,
                 threads
             );
             let mut sketches = sketch_files(
@@ -89,7 +100,7 @@ pub fn main() {
                 &input_files,
                 &kmers,
                 sketch_size,
-                seq_type,
+                &seq_type,
                 rc,
                 *min_count,
                 *min_qual,
