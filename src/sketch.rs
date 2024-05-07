@@ -32,35 +32,18 @@ pub struct Sketch {
     non_acgt: usize,
 }
 
+// TODO: should this take hash_it and filter as input?
 impl Sketch {
-    pub fn new(
-        seq_type: &HashType,
+    pub fn new<H: RollHash + ?Sized>(
+        seq_hashes: &mut H,
         name: &str,
-        files: (&str, Option<&String>),
         kmer_lengths: &[usize],
         sketch_size: u64,
-        min_qual: u8,
-        min_count: u16,
+        read_filter: &mut Option<KmerFilter>,
         rc: bool,
     ) -> Self {
         let size_u64 = (sketch_size * BBITS) as usize * kmer_lengths.len();
         let mut usigs = Vec::with_capacity(size_u64);
-
-        let mut hash_it: Box<dyn RollHash> = match *seq_type {
-            HashType::DNA => Box::new(NtHashIterator::new(files, rc, min_qual, min_count)),
-            _ => todo!(),
-        };
-        let mut read_filter = if hash_it.reads() {
-            let mut filter = KmerFilter::new(min_count);
-            filter.init();
-            Some(filter)
-        } else {
-            None
-        };
-
-        if hash_it.seq_len() == 0 {
-            panic!("{} has no valid sequence", files.0);
-        }
 
         // Build the sketches across k-mer lengths
         let mut minhash_sum = 0.0;
@@ -69,11 +52,16 @@ impl Sketch {
         let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
-            // Calculate bin minima across all sequence
+            // Setup storage for each k
             let mut signs = vec![u64::MAX; num_bins as usize];
-            hash_it.set_k(*k);
-            for hash in hash_it.iter() {
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
+            seq_hashes.set_k(*k);
+            if let Some(filter) = read_filter {
+                filter.clear();
+            }
+
+            // Calculate bin minima across all sequence
+            for hash in seq_hashes.iter() {
+                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, read_filter);
             }
 
             // Densify
@@ -86,13 +74,13 @@ impl Sketch {
             Self::fill_usigs(&mut kmer_usigs, &signs);
             usigs.append(&mut kmer_usigs);
         }
-        let (reads, acgt, non_acgt) = hash_it.sketch_data();
+        let (reads, acgt, non_acgt) = seq_hashes.sketch_data();
 
         // Estimate of sequence length from read data
         let seq_length = if reads {
             ((kmer_lengths.len() as f64) / minhash_sum) as usize
         } else {
-            hash_it.seq_len()
+            seq_hashes.seq_len()
         };
 
         Self {
@@ -239,14 +227,27 @@ pub fn sketch_files(
                 .par_iter()
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
+                    let mut hash_it: Box<dyn RollHash> = match *seq_type {
+                        HashType::DNA => Box::new(NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual, min_count)),
+                        _ => todo!(),
+                    };
+                    if hash_it.seq_len() == 0 {
+                        panic!("{name} has no valid sequence");
+                    }
+                    let mut read_filter = if hash_it.reads() {
+                        let mut filter = KmerFilter::new(min_count);
+                        filter.init();
+                        Some(filter)
+                    } else {
+                        None
+                    };
+
                     Sketch::new(
-                        seq_type,
+                        &mut *hash_it,
                         name,
-                        (fastx1, fastx2.as_ref()),
                         k,
                         sketch_size,
-                        min_qual,
-                        min_count,
+                        &mut read_filter,
                         rc,
                     )
                 })
