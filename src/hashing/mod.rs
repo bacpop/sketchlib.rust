@@ -27,22 +27,29 @@ pub enum AaLevel {
 pub enum HashType {
     DNA,
     AA(AaLevel),
-    Structure,
+    PDB,
 }
 
+// NB: this is needed because ValueEnum (for clap) only works with non-unit types
+// So here set a default for the level and set it properly later (in lib.rs)
 impl clap::ValueEnum for HashType {
     fn value_variants<'a>() -> &'a [Self] {
         &[
             HashType::DNA,
             HashType::AA(DEFAULT_LEVEL),
-            HashType::Structure,
+            // HashType::AA(AaLevel::Level2),
+            // HashType::AA(AaLevel::Level3),
+            HashType::PDB,
         ]
     }
     fn to_possible_value<'a>(&self) -> ::std::option::Option<clap::builder::PossibleValue> {
         match self {
             Self::DNA => Some(clap::builder::PossibleValue::new("dna")),
             Self::AA(_) => Some(clap::builder::PossibleValue::new("aa")),
-            Self::Structure => Some(clap::builder::PossibleValue::new("structure")),
+            // Self::AA(AaLevel::Level1) => Some(clap::builder::PossibleValue::new("aa_1")),
+            // Self::AA(AaLevel::Level2) => Some(clap::builder::PossibleValue::new("aa_2")),
+            // Self::AA(AaLevel::Level3) => Some(clap::builder::PossibleValue::new("aa_3")),
+            Self::PDB => Some(clap::builder::PossibleValue::new("pdb")),
         }
     }
 }
