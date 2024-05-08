@@ -9,7 +9,7 @@ pub fn valid_aa(aa: u8) -> bool {
 }
 
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AaHashIterator {
     k: usize,
     level: AaLevel,
@@ -49,37 +49,55 @@ impl RollHash for AaHashIterator {
 }
 
 impl AaHashIterator {
-    pub fn new(file: &str, level: AaLevel) -> Self {
-        let mut hash_it = Self {
+    pub fn default(level: AaLevel) -> Self {
+        Self {
             k: 0,
             level,
             fh: 0,
             index: 0,
             seq: Vec::new(),
             invalid_count: 0,
-        };
+        }
+    }
+
+    pub fn new(file: &str, level: AaLevel, concat_fasta: bool) -> Vec<Self> {
+        let mut hash_vec = Vec::new();
 
         // Read sequence into memory (as we go through multiple times)
         log::debug!("Preprocessing sequence");
         let mut reader =
             parse_fastx_file(file).unwrap_or_else(|_| panic!("Invalid path/file: {file}"));
-        while let Some(record) = reader.next() {
-            let seqrec = record.expect("Invalid FASTA/Q record");
-            if let Some(_) = seqrec.qual() {
-                panic!("Unexpected quality information with AA sequences in {file}");
-            } else {
-                for aa in seqrec.seq().iter() {
-                    if valid_aa(*aa) {
-                        hash_it.seq.push(*aa)
-                    } else {
-                        hash_it.invalid_count += 1;
-                        hash_it.seq.push(SEQSEP);
+        loop {
+            let record_read = reader.next();
+            let mut seq_hash_it = Self::default(level.clone());
+            if let Some(record) = record_read {
+                let seqrec = record.expect("Invalid FASTA/Q record");
+                if let Some(_) = seqrec.qual() {
+                    panic!("Unexpected quality information with AA sequences in {file}");
+                } else {
+                    for aa in seqrec.seq().iter() {
+                        if valid_aa(*aa) {
+                            seq_hash_it.seq.push(*aa)
+                        } else {
+                            seq_hash_it.invalid_count += 1;
+                            seq_hash_it.seq.push(SEQSEP);
+                        }
                     }
                 }
+                if concat_fasta {
+                    hash_vec.push(seq_hash_it);
+                    seq_hash_it = Self::default(level.clone());
+                } else {
+                    seq_hash_it.seq.push(SEQSEP);
+                }
+            } else {
+                if !concat_fasta {
+                    hash_vec.push(seq_hash_it);
+                }
+                break;
             }
-            hash_it.seq.push(SEQSEP);
         }
-        hash_it
+        hash_vec
     }
 
     fn new_iterator(

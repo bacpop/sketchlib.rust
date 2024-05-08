@@ -57,7 +57,7 @@ impl RollHash for NtHashIterator {
 }
 
 impl NtHashIterator {
-    pub fn new(files: (&str, Option<&String>), rc: bool, min_qual: u8, min_count: u16) -> Self {
+    pub fn new(files: (&str, Option<&String>), rc: bool, min_qual: u8) -> Vec<Self> {
         /// Creates a new iterator over a sequence with a given k-mer size
         // Check if we're working with reads, and initalise the filter if so
         let mut reader_peek =
@@ -91,7 +91,7 @@ impl NtHashIterator {
             hash_it.add_dna_seq(filename, min_qual);
         }
         hash_it.seq_len = hash_it.seq.len() - 1;
-        hash_it
+        vec![hash_it]
     }
 
     fn add_dna_seq(&mut self, filename: &str, min_qual: u8) {

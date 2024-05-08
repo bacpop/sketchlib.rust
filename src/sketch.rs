@@ -39,11 +39,19 @@ impl Sketch {
         name: &str,
         kmer_lengths: &[usize],
         sketch_size: u64,
-        read_filter: &mut Option<KmerFilter>,
         rc: bool,
+        min_count: u16,
     ) -> Self {
         let size_u64 = (sketch_size * BBITS) as usize * kmer_lengths.len();
         let mut usigs = Vec::with_capacity(size_u64);
+
+        let mut read_filter = if seq_hashes.reads() {
+            let mut filter = KmerFilter::new(min_count);
+            filter.init();
+            Some(filter)
+        } else {
+            None
+        };
 
         // Build the sketches across k-mer lengths
         let mut minhash_sum = 0.0;
@@ -55,13 +63,13 @@ impl Sketch {
             // Setup storage for each k
             let mut signs = vec![u64::MAX; num_bins as usize];
             seq_hashes.set_k(*k);
-            if let Some(filter) = read_filter {
+            if let Some(ref mut filter) = read_filter {
                 filter.clear();
             }
 
             // Calculate bin minima across all sequence
             for hash in seq_hashes.iter() {
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, read_filter);
+                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
             }
 
             // Densify
@@ -197,6 +205,7 @@ impl fmt::Display for Sketch {
 pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
+    concat_fasta: bool,
     k: &[usize],
     sketch_size: u64,
     seq_type: &HashType,
@@ -215,7 +224,7 @@ pub fn sketch_files(
 
     // Set up sender (sketching) and receiver (writing)
     let (tx, rx) = mpsc::channel();
-    let mut sketches = Vec::with_capacity(input_files.len());
+    let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 
     let bar_style =
         ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}")
@@ -228,31 +237,33 @@ pub fn sketch_files(
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
                     // Read in sequence and set up rolling hash by alphabet type
-                    let mut hash_it: Box<dyn RollHash> = match seq_type {
-                        HashType::DNA => Box::new(NtHashIterator::new(
-                            (fastx1, fastx2.as_ref()),
-                            rc,
-                            min_qual,
-                            min_count,
-                        )),
-                        HashType::AA(level) => Box::new(AaHashIterator::new(fastx1, level.clone())),
+                    let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
+                        HashType::DNA => {
+                            NtHashIterator::new(
+                                (fastx1, fastx2.as_ref()), rc, min_qual
+                            ).into_iter().map(|it| Box::new(it) as Box<dyn RollHash>).collect()
+                        },
+                        HashType::AA(level) => {
+                            AaHashIterator::new(fastx1, level.clone(), concat_fasta
+                            ).into_iter().map(|it| Box::new(it) as Box<dyn RollHash>).collect()
+                        }
                         _ => todo!(),
                     };
-                    if hash_it.seq_len() == 0 {
-                        panic!("{name} has no valid sequence");
+
+                     hash_its.iter_mut().enumerate().map(|(idx, hash_it)| {
+                        let sample_name = if concat_fasta {
+                            format!("{name}_{idx}")
+                        } else {
+                            name.to_string()
+                        };
+                        if hash_it.seq_len() == 0 {
+                            panic!("{sample_name} has no valid sequence");
+                        }
+                        // Run the sketching
+                        Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
                     }
+                    ).collect::<Vec<Sketch>>()
 
-                    // Set a count filter if needed, which can be reused
-                    let mut read_filter = if hash_it.reads() {
-                        let mut filter = KmerFilter::new(min_count);
-                        filter.init();
-                        Some(filter)
-                    } else {
-                        None
-                    };
-
-                    // Run the sketching
-                    Sketch::new(&mut *hash_it, name, k, sketch_size, &mut read_filter, rc)
                 })
                 .for_each_with(tx, |tx, sketch| {
                     // Emit the sketch results to the writer thread
@@ -260,11 +271,13 @@ pub fn sketch_files(
                 });
         });
         // Write each sketch to the .skd file as it comes in
-        for mut sketch in rx {
-            let index = serial_writer.write_sketch(&sketch.get_usigs());
-            sketch.set_index(index);
-            // Also append (without usigs) to the metadata, which is Vec<Sketch>
-            sketches.push(sketch);
+        for sketch_file in rx {
+            for mut sketch in sketch_file {
+                let index = serial_writer.write_sketch(&sketch.get_usigs());
+                sketch.set_index(index);
+                // Also append (without usigs) to the metadata, which is Vec<Sketch>
+                sketches.push(sketch);
+            }
         }
     });
     sketches

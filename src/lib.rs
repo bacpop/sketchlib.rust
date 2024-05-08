@@ -58,6 +58,7 @@ pub fn main() {
         Commands::Sketch {
             seq_files,
             file_list,
+            concat_fasta,
             output,
             k_vals,
             k_seq,
@@ -69,6 +70,10 @@ pub fn main() {
             min_qual,
             threads,
         } => {
+            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
+                panic!("--concat-fasta currently only supported with --seq-type aa");
+            }
+
             // An extra thread is needed for the writer. This doesn't 'overuse' CPU
             check_threads(*threads + 1);
 
@@ -98,6 +103,7 @@ pub fn main() {
             let mut sketches = sketch_files(
                 &output,
                 &input_files,
+                *concat_fasta,
                 &kmers,
                 sketch_size,
                 &seq_type,
