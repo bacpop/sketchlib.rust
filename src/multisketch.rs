@@ -31,7 +31,12 @@ pub struct MultiSketch {
 }
 
 impl MultiSketch {
-    pub fn new(sketches: &mut Vec<Sketch>, sketch_size: u64, kmer_lengths: &[usize]) -> Self {
+    pub fn new(
+        sketches: &mut Vec<Sketch>,
+        sketch_size: u64,
+        kmer_lengths: &[usize],
+        hash_type: HashType,
+    ) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
         for sketch in sketches.iter() {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
@@ -49,7 +54,7 @@ impl MultiSketch {
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
-            hash_type: HashType::DNA,
+            hash_type,
         }
     }
 

@@ -239,31 +239,37 @@ pub fn sketch_files(
                     // Read in sequence and set up rolling hash by alphabet type
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                         HashType::DNA => {
-                            NtHashIterator::new(
-                                (fastx1, fastx2.as_ref()), rc, min_qual
-                            ).into_iter().map(|it| Box::new(it) as Box<dyn RollHash>).collect()
-                        },
+                            NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
+                                .into_iter()
+                                .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                .collect()
+                        }
                         HashType::AA(level) => {
-                            AaHashIterator::new(fastx1, level.clone(), concat_fasta
-                            ).into_iter().map(|it| Box::new(it) as Box<dyn RollHash>).collect()
+                            AaHashIterator::new(fastx1, level.clone(), concat_fasta)
+                                .into_iter()
+                                .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                .collect()
                         }
                         _ => todo!(),
                     };
 
-                     hash_its.iter_mut().enumerate().map(|(idx, hash_it)| {
-                        let sample_name = if concat_fasta {
-                            format!("{name}_{idx}")
-                        } else {
-                            name.to_string()
-                        };
-                        if hash_it.seq_len() == 0 {
-                            panic!("{sample_name} has no valid sequence");
-                        }
-                        // Run the sketching
-                        Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
-                    }
-                    ).collect::<Vec<Sketch>>()
-
+                    hash_its
+                        .iter_mut()
+                        .enumerate()
+                        .map(|(idx, hash_it)| {
+                            let sample_name = if concat_fasta {
+                                format!("{name}_{}", idx + 1)
+                            } else {
+                                name.to_string()
+                            };
+                            if hash_it.seq_len() == 0 {
+                                panic!("{sample_name} has no valid sequence");
+                            }
+                            // Run the sketching
+                            // (&mut **? C++ called it wants its syntax back)
+                            Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
+                        })
+                        .collect::<Vec<Sketch>>()
                 })
                 .for_each_with(tx, |tx, sketch| {
                     // Emit the sketch results to the writer thread
@@ -272,6 +278,7 @@ pub fn sketch_files(
         });
         // Write each sketch to the .skd file as it comes in
         for sketch_file in rx {
+            // Note double loop as single file may contain multiple samples with concat_fasta
             for mut sketch in sketch_file {
                 let index = serial_writer.write_sketch(&sketch.get_usigs());
                 sketch.set_index(index);

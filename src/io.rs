@@ -37,8 +37,8 @@ pub fn parse_kmers(k_list: &Option<Vec<usize>>, k_seq: &Option<Vec<usize>>) -> V
     };
 
     kmers.sort_unstable();
-    if !kmers.iter().all(|&k| k >= 5) {
-        panic!("K-mers must be >=5");
+    if !kmers.iter().all(|&k| k >= 3) {
+        panic!("K-mers must be >=3");
     }
 
     kmers
