@@ -30,6 +30,21 @@ pub enum HashType {
     PDB,
 }
 
+// TODO: for PDB need to use 3Di sequences. These are from an embedding
+// With foldseek, can run:
+// foldseek createdb 5uak.pdb 5Uak_DB
+// foldseek lndb 5uak_DB 5uak_DB_ss_h
+// foldseek convert2fasta 5uak_DB_ss_h 5uak.fasta
+// The Cpp code looks like a bit of a pain to build in:
+// https://github.com/steineggerlab/foldseek/blob/master/lib/3di/structureto3di.cpp
+// This python port is an alternative:
+// https://github.com/althonos/mini3di
+// (this seems to give different results to the above)
+// Seems pretty easy to run python from within rust:
+// https://pyo3.rs/v0.21.2/python-from-rust/calling-existing-code
+// Or a language model:
+// https://github.com/mheinzinger/ProstT5
+
 // NB: this is needed because ValueEnum (for clap) only works with non-unit types
 // So here set a default for the level and set it properly later (in lib.rs)
 impl clap::ValueEnum for HashType {
