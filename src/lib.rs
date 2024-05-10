@@ -37,7 +37,7 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 pub mod bloom_filter;
 pub mod hashing;
 
-/// Default k-mer size for sketching
+/// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
 pub const CHUNK_SIZE: usize = 1000;

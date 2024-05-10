@@ -8,6 +8,15 @@ pub fn valid_aa(aa: u8) -> bool {
     matches!(aa, b'a' | b'c'..=b'i' | b'k'..=b'n' | b'p'..=b't' | b'v' | b'w' | b'y' | b'A' | b'C'..=b'I' | b'K'..=b'N' | b'P'..=b'T' | b'V' | b'W' | b'Y' )
 }
 
+// Split a 64-bit word into 33 and 31-bit sub-words and left-rotate them separately.
+// Increases period from 64 to 1023.
+#[inline(always)]
+pub fn srol(x: u64) -> u64 {
+  let m: u64 = ((x & 0x8000000000000000) >> 30) |
+               ((x & 0x100000000) >> 32);
+  ((x << 1) & 0xFFFFFFFDFFFFFFFF) | m
+}
+
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
 #[derive(Debug, Clone)]
 pub struct AaHashIterator {
@@ -118,7 +127,7 @@ impl AaHashIterator {
                     fh = 0;
                     continue 'outer; // Try again from new start
                 }
-                fh = fh.rotate_left(1_u32);
+                fh = srol(fh);
                 fh ^= level.aa_seed_table(*v);
             }
             break 'outer; // success
@@ -132,7 +141,7 @@ impl AaHashIterator {
 
     /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
     fn roll_fwd(&mut self, old_aa: u8, new_aa: u8) {
-        self.fh = self.fh.rotate_left(1_u32);
+        self.fh = srol(self.fh);
         self.fh ^= self.level.aa_seed_table(new_aa);
         self.fh ^= self.level.aa_roll_table(old_aa, self.k);
     }
