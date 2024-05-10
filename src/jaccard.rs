@@ -85,7 +85,7 @@ fn simple_linear_regression(
     let alpha = -beta * xbar + ybar;
     log::trace!("r:{r} alpha:{alpha} beta:{beta}");
 
-    let (mut core, mut acc) = (0.0, 0.0);
+    let (mut core, mut acc) = (1.0, 1.0);
     if beta < 0.0 {
         core = 1.0 - beta.exp();
     }
