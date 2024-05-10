@@ -1,14 +1,72 @@
-use std::{borrow::Cow, cmp::Ordering};
-
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+pub mod aahash_iterator;
+mod aahash_tables;
+pub mod nthash_iterator;
 mod nthash_tables;
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Character to use for invalid nucleotides
+pub const SEQSEP: u8 = 5;
+/// Default aaHash 'level'
+pub const DEFAULT_LEVEL: AaLevel = AaLevel::Level1;
+
+/// aaHash levels
+///
+/// Level1: All amino acids are different
+/// Level2: Groups T,S; D,E; Q,K,R; V,I,L,M; W,F,Y
+/// Level3: Additionally groups A with T,S; N with D,E
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize, ValueEnum)]
+pub enum AaLevel {
+    Level1,
+    Level2,
+    Level3,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd)]
 pub enum HashType {
     DNA,
-    AA,
-    Structure,
+    AA(AaLevel),
+    PDB,
+}
+
+// TODO: for PDB need to use 3Di sequences. These are from an embedding
+// With foldseek, can run:
+// foldseek createdb 5uak.pdb 5Uak_DB
+// foldseek lndb 5uak_DB 5uak_DB_ss_h
+// foldseek convert2fasta 5uak_DB_ss_h 5uak.fasta
+// The Cpp code looks like a bit of a pain to build in:
+// https://github.com/steineggerlab/foldseek/blob/master/lib/3di/structureto3di.cpp
+// This python port is an alternative:
+// https://github.com/althonos/mini3di
+// (this seems to give different results to the above)
+// Seems pretty easy to run python from within rust:
+// https://pyo3.rs/v0.21.2/python-from-rust/calling-existing-code
+// Or a language model:
+// https://github.com/mheinzinger/ProstT5
+
+// NB: this is needed because ValueEnum (for clap) only works with non-unit types
+// So here set a default for the level and set it properly later (in lib.rs)
+impl clap::ValueEnum for HashType {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[
+            HashType::DNA,
+            HashType::AA(DEFAULT_LEVEL),
+            // HashType::AA(AaLevel::Level2),
+            // HashType::AA(AaLevel::Level3),
+            HashType::PDB,
+        ]
+    }
+    fn to_possible_value<'a>(&self) -> ::std::option::Option<clap::builder::PossibleValue> {
+        match self {
+            Self::DNA => Some(clap::builder::PossibleValue::new("dna")),
+            Self::AA(_) => Some(clap::builder::PossibleValue::new("aa")),
+            // Self::AA(AaLevel::Level1) => Some(clap::builder::PossibleValue::new("aa_1")),
+            // Self::AA(AaLevel::Level2) => Some(clap::builder::PossibleValue::new("aa_2")),
+            // Self::AA(AaLevel::Level3) => Some(clap::builder::PossibleValue::new("aa_3")),
+            Self::PDB => Some(clap::builder::PossibleValue::new("pdb")),
+        }
+    }
 }
 
 /// Table from bits 0-3 to ASCII (use [`decode_base()`] not this table).
@@ -50,154 +108,21 @@ pub fn swapbits3263(v: u64) -> u64 {
     v ^ ((x << 32) | (x << 63))
 }
 
-// TODO aaHash for proteins
-
 // TODO generic hash for structure alphabet
 // https://github.com/eldruin/wyhash-rs
 
-/// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
-#[derive(Debug)]
-pub struct NtHashIterator<'a> {
-    k: usize,
-    rc: bool,
-    fh: u64,
-    rh: Option<u64>,
-    index: usize,
-    seq: Cow<'a, [u8]>,
-    seq_len: usize, // NB seq.len() - 1 due to terminating char
-}
+pub trait RollHash: Iterator<Item = u64> {
+    fn set_k(&mut self, k: usize);
+    fn curr_hash(&self) -> u64;
+    fn hash_type(&self) -> HashType;
+    fn seq_len(&self) -> usize;
+    fn sketch_data(&self) -> (bool, [usize; 4], usize);
 
-impl<'a> NtHashIterator<'a> {
-    /// Creates a new iterator over a sequence with a given k-mer size
-    pub fn new(seq: &'a [u8], k: usize, rc: bool) -> NtHashIterator {
-        if let Some(new_it) = Self::new_iterator(0, seq, k, rc) {
-            Self {
-                k,
-                rc,
-                fh: new_it.0,
-                rh: new_it.1,
-                index: new_it.2,
-                seq: Cow::Borrowed(seq),
-                seq_len: seq.len() - 1,
-            }
-        } else {
-            panic!("K-mer larger than smallest valid sequence");
-        }
+    fn iter(&mut self) -> Box<dyn Iterator<Item = u64> + '_> {
+        Box::new(self)
     }
 
-    fn new_iterator(
-        mut start: usize,
-        seq: &[u8],
-        k: usize,
-        rc: bool,
-    ) -> Option<(u64, Option<u64>, usize)> {
-        let mut fh = 0_u64;
-        'outer: while start < (seq.len() - k) {
-            '_inner: for (i, v) in seq[start..(start + k)].iter().enumerate() {
-                // If invalid seq
-                if *v > 3 {
-                    start += i + 1;
-                    if start >= seq.len() {
-                        return None;
-                    }
-                    fh = 0;
-                    continue 'outer; // Try again from new start
-                }
-                fh = fh.rotate_left(1_u32);
-                fh = swapbits033(fh);
-                fh ^= nthash_tables::HASH_LOOKUP[*v as usize];
-            }
-            break 'outer; // success
-        }
-        if start >= (seq.len() - k) {
-            return None;
-        }
-
-        let rh = if rc {
-            let mut h = 0_u64;
-            for v in seq[start..(start + k)].iter().rev() {
-                h = h.rotate_left(1_u32);
-                h = swapbits033(h);
-                h ^= nthash_tables::RC_HASH_LOOKUP[*v as usize];
-            }
-            Some(h)
-        } else {
-            None
-        };
-
-        Some((fh, rh, start + k))
-    }
-
-    /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
-    fn roll_fwd(&mut self, old_base: u8, new_base: u8) {
-        self.fh = self.fh.rotate_left(1_u32);
-        self.fh = swapbits033(self.fh);
-        self.fh ^= nthash_tables::HASH_LOOKUP[new_base as usize];
-        self.fh ^= nthash_tables::MS_TAB_31L[(old_base as usize * 31) + (self.k % 31)]
-            | nthash_tables::MS_TAB_33R[(old_base as usize) * 33 + (self.k % 33)];
-
-        if let Some(rev) = self.rh {
-            let mut h = rev
-                ^ (nthash_tables::MS_TAB_31L[(rc_base(new_base) as usize * 31) + (self.k % 31)]
-                    | nthash_tables::MS_TAB_33R[(rc_base(new_base) as usize) * 33 + (self.k % 33)]);
-            h ^= nthash_tables::RC_HASH_LOOKUP[old_base as usize];
-            h = h.rotate_right(1_u32);
-            h = swapbits3263(h);
-            self.rh = Some(h);
-        };
-    }
-
-    /// Retrieve the current hash (minimum of forward and reverse complement hashes)
-    pub fn curr_hash(&self) -> u64 {
-        if let Some(rev) = self.rh {
-            u64::min(self.fh, rev)
-        } else {
-            self.fh
-        }
+    fn reads(&self) -> bool {
+        false
     }
 }
-
-impl<'a> Iterator for NtHashIterator<'a> {
-    type Item = u64;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.index.cmp(&self.seq_len) {
-            Ordering::Less => {
-                let current = self.curr_hash();
-                let new_base = self.seq[self.index];
-                // Restart hash if invalid base
-                if new_base > 3 {
-                    if let Some(new_it) =
-                        Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc)
-                    {
-                        self.fh = new_it.0;
-                        self.rh = new_it.1;
-                        self.index = new_it.2;
-                    } else {
-                        self.index = self.seq_len; // End of valid sequence
-                    }
-                } else {
-                    self.roll_fwd(self.seq[self.index - self.k], new_base);
-                    self.index += 1;
-                }
-                Some(current)
-            }
-            Ordering::Equal => {
-                // Final hash, do not roll forward further
-                self.index += 1;
-                Some(self.curr_hash())
-            }
-            Ordering::Greater => {
-                // End of sequence
-                None
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.seq_len, Some(self.seq_len))
-    }
-}
-
-// This lets you use collect etc
-impl<'a> ExactSizeIterator for NtHashIterator<'a> {}

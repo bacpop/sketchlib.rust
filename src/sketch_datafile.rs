@@ -4,10 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::io::{BufReader, BufWriter, Write};
 use std::mem;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc, RwLock,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub struct SketchArrayFile {
@@ -61,8 +58,9 @@ impl SketchArrayFile {
 
     pub fn read_all(filename: &str, number_bins: usize) -> Vec<u64> {
         // Just stream the whole file and convert to u64 vec
-        let mut reader =
-            BufReader::new(File::open(filename).expect(&format!("Could not read from {filename}")));
+        let mut reader = BufReader::new(
+            File::open(filename).unwrap_or_else(|_| panic!("Could not read from {filename}")),
+        );
         // TODO: longer buffer may be better (and below too)
         let mut buffer = [0u8; mem::size_of::<u64>()];
         let mut flat_sketch_array: Vec<u64> = Vec::with_capacity(number_bins);
@@ -74,7 +72,8 @@ impl SketchArrayFile {
 
     pub fn read_batch(filename: &str, sample_indices: &[usize], sample_stride: usize) -> Vec<u64> {
         // Just stream the whole file and convert to u64 vec
-        let mmap = Self::memmap_file(filename).expect(&format!("Could not memory map {filename}"));
+        let mmap = Self::memmap_file(filename)
+            .unwrap_or_else(|_| panic!("Could not memory map {filename}"));
         let mut flat_sketch_array: Vec<u64> =
             Vec::with_capacity(sample_stride * sample_indices.len());
         // TODO possible improvement would be to combine adjacent indices into ranges

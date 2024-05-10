@@ -27,7 +27,7 @@ pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketch_size: u64) -> f32 {
 
 #[inline(always)]
 pub fn ani_pois(jaccard: f32, k: f32) -> f32 {
-    0.0_f32.max(1.0 + 1.0/k * (((2.0 * jaccard)/(1.0 + jaccard)).ln()))
+    0.0_f32.max(1.0 + 1.0 / k * (((2.0 * jaccard) / (1.0 + jaccard)).ln()))
 }
 
 pub fn core_acc_dist(
@@ -41,7 +41,8 @@ pub fn core_acc_dist(
     }
     let (mut xsum, mut ysum, mut xysum, mut xsquaresum, mut ysquaresum, mut n) =
         (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    let tolerance = (5.0_f32 / (ref_sketches.sketch_size as f32)).ln();
+    let tolerance = (2.0_f32 / ((ref_sketches.sketch_size * u64::BITS as u64) as f32)).ln();
+    //let tolerance = -100.0_f32;
     for (k_idx, k) in ref_sketches.kmer_lengths().iter().enumerate() {
         let y = jaccard_dist(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
@@ -74,6 +75,11 @@ fn simple_linear_regression(
     log::trace!(
         "xsum:{xsum} ysum:{ysum} xysum:{xysum} xsquaresum:{xsquaresum} ysquaresum:{ysquaresum}"
     );
+    // No matches
+    if ysum.is_nan() || ysum == f32::NEG_INFINITY || n < 3.0 {
+        return (1.0, 1.0);
+    }
+
     let xbar = xsum / n;
     let ybar = ysum / n;
     let x_diff = xsquaresum - xsum * xsum / n;
@@ -88,6 +94,8 @@ fn simple_linear_regression(
     let (mut core, mut acc) = (0.0, 0.0);
     if beta < 0.0 {
         core = 1.0 - beta.exp();
+    } else if r > 0.0 {
+        core = 1.0;
     }
     if alpha < 0.0 {
         acc = 1.0 - alpha.exp();

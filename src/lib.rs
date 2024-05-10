@@ -1,10 +1,10 @@
 //! DOCS
 //!
 
-#![warn(missing_docs)]
+// #![warn(missing_docs)]
+
 use std::collections::BinaryHeap;
 use std::io::Write;
-use std::mem;
 use std::time::Instant;
 
 #[macro_use]
@@ -17,6 +17,7 @@ pub mod cli;
 use crate::cli::*;
 
 pub mod sketch;
+use crate::hashing::HashType;
 use crate::sketch::sketch_files;
 
 pub mod multisketch;
@@ -36,7 +37,7 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 pub mod bloom_filter;
 pub mod hashing;
 
-/// Default k-mer size for sketching
+/// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
 pub const CHUNK_SIZE: usize = 1000;
@@ -57,45 +58,60 @@ pub fn main() {
         Commands::Sketch {
             seq_files,
             file_list,
+            concat_fasta,
             output,
             k_vals,
             k_seq,
             mut sketch_size,
+            seq_type,
+            level,
             single_strand,
             min_count,
             min_qual,
             threads,
         } => {
+            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
+                panic!("--concat-fasta currently only supported with --seq-type aa");
+            }
+
             // An extra thread is needed for the writer. This doesn't 'overuse' CPU
             check_threads(*threads + 1);
 
             // Read input
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
+            log::info!("Parsed {} samples in input list", input_files.len());
             let kmers = parse_kmers(k_vals, k_seq);
-            // TODO this is very clunky, better replace fastx type
-            let mut names: Vec<String> = input_files.iter().map(|x| x.0.to_string()).collect();
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
             sketch_size = sketch_size.div_ceil(u64::BITS as u64);
+            // Set aa level
+            let seq_type = if let HashType::AA(_) = seq_type {
+                HashType::AA(level.clone())
+            } else {
+                seq_type.clone()
+            };
 
             log::info!(
-                "Running sketching: k:{:?}; sketch_size:{}; threads:{}",
+                "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
                 kmers,
                 sketch_size * u64::BITS as u64,
+                seq_type,
                 threads
             );
             let mut sketches = sketch_files(
-                &output,
+                output,
                 &input_files,
+                *concat_fasta,
                 &kmers,
                 sketch_size,
+                &seq_type,
                 rc,
                 *min_count,
                 *min_qual,
             );
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers);
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
@@ -114,13 +130,13 @@ pub fn main() {
 
             let mut output_file = set_ostream(output);
 
-            let ref_db_name = if ref_db.ends_with(".skm") {
+            let ref_db_name = if ref_db.ends_with(".skm") || ref_db.ends_with(".skd") {
                 &ref_db[0..ref_db.len() - 4]
             } else {
                 ref_db.as_str()
             };
             let mut references = MultiSketch::load(ref_db_name)
-                .expect(&format!("Could not read sketch metadata from {ref_db}.skm"));
+                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             log::info!("Loading sketch data from {}.skd", ref_db_name);
             if let Some(subset_file) = subset {
@@ -140,9 +156,9 @@ pub fn main() {
 
             // Read queries if supplied. Note no subsetting here
             let queries = if let Some(query_db_name) = query_db {
-                let mut queries = MultiSketch::load(query_db_name).expect(&format!(
-                    "Could not read sketch metadata from {query_db_name}.skm"
-                ));
+                let mut queries = MultiSketch::load(query_db_name).unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {query_db_name}.skm")
+                });
                 log::info!("Loading query sketch data from {}.skd", query_db_name);
                 queries.read_sketch_data(query_db_name);
                 log::info!("Read query sketches:\n{queries:?}");
@@ -247,7 +263,8 @@ pub fn main() {
                                                     references.get_sketch_slice(j, k),
                                                     references.sketch_size,
                                                 );
-                                                dist = if *ani { ani_pois(dist, k_f32) } else { dist };
+                                                dist =
+                                                    if *ani { ani_pois(dist, k_f32) } else { dist };
                                                 let dist_item = SparseJaccard(j, dist);
                                                 if heap.len() < nn
                                                     || dist_item < *heap.peek().unwrap()
@@ -351,14 +368,14 @@ pub fn main() {
             skm_file,
             sample_info,
         } => {
-            let ref_db_name = if skm_file.ends_with(".skm") {
+            let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
                 &skm_file[0..skm_file.len() - 4]
             } else {
                 skm_file.as_str()
             };
-            let sketches = MultiSketch::load(ref_db_name).expect(&format!(
-                "Could not read sketch metadata from {ref_db_name}.skm"
-            ));
+            let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {ref_db_name}.skm")
+            });
             if *sample_info {
                 log::info!("Printing sample info");
                 println!("{sketches}");
