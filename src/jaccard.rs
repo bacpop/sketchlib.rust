@@ -41,7 +41,8 @@ pub fn core_acc_dist(
     }
     let (mut xsum, mut ysum, mut xysum, mut xsquaresum, mut ysquaresum, mut n) =
         (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    let tolerance = (5.0_f32 / (ref_sketches.sketch_size as f32)).ln();
+    let tolerance = (2.0_f32 / ((ref_sketches.sketch_size * u64::BITS as u64) as f32)).ln();
+    //let tolerance = -100.0_f32;
     for (k_idx, k) in ref_sketches.kmer_lengths().iter().enumerate() {
         let y = jaccard_dist(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
