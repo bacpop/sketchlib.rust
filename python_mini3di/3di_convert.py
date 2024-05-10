@@ -13,6 +13,10 @@ def pdb_to_3di(struct_name: str, filename: str) -> str:
         states = encoder.encode_chain(chain)
         sequence = encoder.build_sequence(states)
         structure_string += f"{sequence},"
-    structure_string.removesuffix(",")
+    structure_string = structure_string.removesuffix(",")
 
     return structure_string
+
+# TODO: make a CLI version which iterates over pdb files
+def main():
+    print("TODO")

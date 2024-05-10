@@ -33,6 +33,7 @@ use crate::distances::*;
 
 pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
+pub mod structures;
 
 pub mod bloom_filter;
 pub mod hashing;
@@ -59,6 +60,8 @@ pub fn main() {
             seq_files,
             file_list,
             concat_fasta,
+            #[cfg(feature = "3di")]
+            convert_pdb,
             output,
             k_vals,
             k_seq,
@@ -104,6 +107,8 @@ pub fn main() {
                 output,
                 &input_files,
                 *concat_fasta,
+                #[cfg(feature = "3di")]
+                convert_pdb,
                 &kmers,
                 sketch_size,
                 &seq_type,
