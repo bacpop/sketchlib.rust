@@ -75,6 +75,11 @@ fn simple_linear_regression(
     log::trace!(
         "xsum:{xsum} ysum:{ysum} xysum:{xysum} xsquaresum:{xsquaresum} ysquaresum:{ysquaresum}"
     );
+    // Exact matches
+    if ysum == 0.0 {
+        return (0.0, 0.0)
+    }
+
     let xbar = xsum / n;
     let ybar = ysum / n;
     let x_diff = xsquaresum - xsum * xsum / n;
