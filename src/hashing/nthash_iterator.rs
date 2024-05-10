@@ -57,8 +57,8 @@ impl RollHash for NtHashIterator {
 }
 
 impl NtHashIterator {
+    /// Creates a new ntHash iterator, by loading DNA sequences into memory
     pub fn new(files: (&str, Option<&String>), rc: bool, min_qual: u8) -> Vec<Self> {
-        /// Creates a new iterator over a sequence with a given k-mer size
         // Check if we're working with reads, and initalise the filter if so
         let mut reader_peek =
             parse_fastx_file(files.0).unwrap_or_else(|_| panic!("Invalid path/file: {}", files.0));

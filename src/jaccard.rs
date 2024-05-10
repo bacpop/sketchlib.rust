@@ -77,7 +77,7 @@ fn simple_linear_regression(
     );
     // No matches
     if ysum.is_nan() || ysum == f32::NEG_INFINITY || n < 3.0 {
-        return (1.0, 1.0)
+        return (1.0, 1.0);
     }
 
     let xbar = xsum / n;

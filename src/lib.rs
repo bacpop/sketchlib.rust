@@ -1,10 +1,10 @@
 //! DOCS
 //!
 
-#![warn(missing_docs)]
+// #![warn(missing_docs)]
+
 use std::collections::BinaryHeap;
 use std::io::Write;
-use std::mem;
 use std::time::Instant;
 
 #[macro_use]
@@ -101,7 +101,7 @@ pub fn main() {
                 threads
             );
             let mut sketches = sketch_files(
-                &output,
+                output,
                 &input_files,
                 *concat_fasta,
                 &kmers,

@@ -12,9 +12,8 @@ pub fn valid_aa(aa: u8) -> bool {
 // Increases period from 64 to 1023.
 #[inline(always)]
 pub fn srol(x: u64) -> u64 {
-  let m: u64 = ((x & 0x8000000000000000) >> 30) |
-               ((x & 0x100000000) >> 32);
-  ((x << 1) & 0xFFFFFFFDFFFFFFFF) | m
+    let m: u64 = ((x & 0x8000000000000000) >> 30) | ((x & 0x100000000) >> 32);
+    ((x << 1) & 0xFFFFFFFDFFFFFFFF) | m
 }
 
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
@@ -81,8 +80,8 @@ impl AaHashIterator {
             let mut seq_hash_it = Self::default(level.clone());
             if let Some(record) = record_read {
                 let seqrec = record.expect("Invalid FASTA/Q record");
-                if let Some(_) = seqrec.qual() {
-                    panic!("Unexpected quality information with AA sequences in {file}");
+                if seqrec.qual().is_some() {
+                    panic!("Unexpected quality information with AA sequences in {file}. Correct sequence type set?");
                 } else {
                     for aa in seqrec.seq().iter() {
                         if valid_aa(*aa) {
@@ -95,7 +94,6 @@ impl AaHashIterator {
                 }
                 if concat_fasta {
                     hash_vec.push(seq_hash_it);
-                    seq_hash_it = Self::default(level.clone());
                 } else {
                     seq_hash_it.seq.push(SEQSEP);
                 }
