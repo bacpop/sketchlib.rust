@@ -75,9 +75,9 @@ fn simple_linear_regression(
     log::trace!(
         "xsum:{xsum} ysum:{ysum} xysum:{xysum} xsquaresum:{xsquaresum} ysquaresum:{ysquaresum}"
     );
-    // Exact matches
-    if ysum == 0.0 {
-        return (0.0, 0.0)
+    // No matches
+    if ysum.is_nan() || ysum == f32::NEG_INFINITY || n < 3.0 {
+        return (1.0, 1.0)
     }
 
     let xbar = xsum / n;
@@ -91,9 +91,11 @@ fn simple_linear_regression(
     let alpha = -beta * xbar + ybar;
     log::trace!("r:{r} alpha:{alpha} beta:{beta}");
 
-    let (mut core, mut acc) = (1.0, 1.0);
+    let (mut core, mut acc) = (0.0, 0.0);
     if beta < 0.0 {
         core = 1.0 - beta.exp();
+    } else if r > 0.0 {
+        core = 1.0;
     }
     if alpha < 0.0 {
         acc = 1.0 - alpha.exp();
