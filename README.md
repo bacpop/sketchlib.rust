@@ -13,4 +13,5 @@ python3 -m venv 3di_venv
 source 3di_venv/bin/activate
 python3 -m pip install numpy biopython mini3di
 cargo run -F 3di
+export PYTHONPATH=${PYTHONPATH}:$(realpath ./)/3di_venv/lib/python3.12/site-packages
 ```

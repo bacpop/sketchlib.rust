@@ -69,9 +69,13 @@ pub enum Commands {
         file_list: Option<String>,
 
         /// Treat every sequence in an input file as a new sample (aa only)
-        // TODO: for now, could be extended to dna, but probably no need
         #[arg(long, default_value_t = false)]
         concat_fasta: bool,
+
+        /// Input files are .pdb, convert them to 3Di first
+        #[cfg(feature = "3di")]
+        #[arg(long, default_value_t = false)]
+        convert_pdb: bool,
 
         /// Output prefix
         #[arg(short)]

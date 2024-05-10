@@ -107,6 +107,16 @@ impl AaHashIterator {
         hash_vec
     }
 
+    pub fn from_3di_file(file: &str, concat_fasta: bool) -> Vec<Self> {
+        Self::new(file, AaLevel::Level1, concat_fasta)
+    }
+
+    pub fn from_3di_string(sequence: String) -> Vec<Self> {
+        let mut hash_it = Self::default(AaLevel::Level1);
+        hash_it.seq = sequence.into_bytes();
+        vec![hash_it]
+    }
+
     fn new_iterator(
         mut start: usize,
         level: &AaLevel,
