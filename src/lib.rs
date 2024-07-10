@@ -27,6 +27,7 @@ pub mod jaccard;
 use crate::jaccard::{ani_pois, core_acc_dist, jaccard_dist};
 
 pub mod sketch_datafile;
+use crate::sketch_datafile::SketchArrayFile;
 
 pub mod distances;
 use crate::distances::*;
@@ -36,6 +37,8 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 
 pub mod bloom_filter;
 pub mod hashing;
+
+
 
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
@@ -364,6 +367,56 @@ pub fn main() {
                 }
             }
         }
+        Commands::Merge {
+            ref_db1,
+            ref_db2,
+            output,
+            sample_info,
+        } => {
+            let my_output = "merge_test";
+            // let mut output_file = set_ostream(output);
+            
+            let mut sketches1: MultiSketch = MultiSketch::load(ref_db1).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {ref_db1}.skm")
+            });
+            let mut sketches2: MultiSketch = MultiSketch::load(ref_db2).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {ref_db2}.skm")
+            });
+
+            // make &str
+            let str_output: &str = output.as_ref().unwrap().as_str();
+            // read in the two db 
+            sketches1.read_sketch_data(ref_db1);
+            sketches2.read_sketch_data(ref_db2);
+
+            // check compatibility
+            if !MultiSketch::is_compatible_with(&sketches1, &sketches2){
+                panic!("Databases are not compattible for merging.")
+            }
+
+            // let merged = MultiSketch::merge_sketches(&sketches1, &sketches2);
+            // Attempt to merge the sketches
+            let mut merged_sketch = MultiSketch::merge_sketches(&sketches1, &sketches2);
+            
+            MultiSketch::save_metadata(&merged_sketch, &str_output);
+
+            MultiSketch::save_MultiSketches(&merged_sketch, &str_output);
+
+            // let mut test_merge_sketches: MultiSketch = MultiSketch::load(my_output).unwrap_or_else(|_| {
+            //     panic!("Could not read sketch metadata from {my_output}.skm")
+            // });
+            // println!("{}", test_merge_sketches);
+            // println!("{:?}", test_merge_sketches);
+
+            // test_merge_sketches.read_sketch_data(my_output);
+
+            // println!("{}", test_merge_sketches);
+            // println!("{:?}", test_merge_sketches);
+            // MultiSketch::print_info(&test_merge_sketches);
+            // MultiSketch::print_sketch_data_summary(&test_merge_sketches);
+        }
+
+   
         Commands::Info {
             skm_file,
             sample_info,

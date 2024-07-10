@@ -147,7 +147,24 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    // TODO add a merge mode
+    Merge { // TODO add a merge mode
+        /// The first .skd (sketch data) file
+        #[arg(required = true)]
+        ref_db1: String,
+    
+        /// The second .skd (sketch data) file
+        #[arg(required = true)]
+        ref_db2: String,
+    
+        /// Output filename for the merged sketch
+        #[arg(short)]
+        output: Option<String>,
+
+        /// Write out the information for every sample contained
+        #[arg(long, default_value_t = false)]
+        sample_info: bool,
+    },
+    
     // TODO add a concat mode (add sketch to existing DB)
     // TODO add a delete mode
     // TODO add a reorder mode

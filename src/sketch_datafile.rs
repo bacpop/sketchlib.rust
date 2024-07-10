@@ -95,7 +95,7 @@ impl SketchArrayFile {
         Ok(mmap)
     }
 
-    fn write_sketch_data<W: Write>(
+    pub fn write_sketch_data<W: Write>(
         writer: &mut W,
         usigs_flat: &[u64],
     ) -> Result<(), Box<dyn Error>> {

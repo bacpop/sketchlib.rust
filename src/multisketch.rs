@@ -8,8 +8,10 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
-use crate::sketch::{Sketch, BBITS};
+use crate::sketch::{self, Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
+
+use std::collections::HashSet;
 
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
@@ -95,6 +97,10 @@ impl MultiSketch {
         &self.kmer_lengths
     }
 
+    pub fn get_hash_type(&self) -> &HashType {
+        &self.hash_type
+    }
+
     pub fn sketch_name(&self, index: usize) -> &str {
         match &self.block_reindex {
             Some(block_map) => self.sketch_metadata[block_map[index]].name(),
@@ -113,6 +119,8 @@ impl MultiSketch {
         self.sketch_bins =
             SketchArrayFile::read_all(&filename, self.sample_stride * self.sketch_metadata.len());
     }
+
+    
 
     pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
         // Find the given names in the sketch metadata
@@ -140,6 +148,147 @@ impl MultiSketch {
             &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
         log::trace!("s1_start:{s1_offset} s1_end:{}", s1_offset + s1_slice.len(),);
         s1_slice
+    }
+
+    pub fn remove_sketches(&self, ids: &Vec<String>)
+    {   
+        // TODO: remove sketch bins which belong to the duplicate ids
+        for id in ids {
+            println!("{}", id);
+        }
+    }
+
+    pub fn is_compatible_with(sketch1: &Self, sketch2: &Self) -> bool {
+        sketch1.kmer_lengths() == sketch2.kmer_lengths()
+            && sketch1.sketch_size == sketch2.sketch_size
+            && sketch1.get_hash_type() == sketch2.get_hash_type()
+    }
+
+    pub fn merge_sketches(sketch1: &Self, sketch2: &Self) -> Self {
+        
+        // Check if strides are the same
+        if sketch1.bin_stride != sketch2.bin_stride || sketch1.kmer_stride != sketch2.kmer_stride || sketch1.sample_stride != sketch2.sample_stride 
+        {
+            println!("Strides do not match between the sketches:");
+            // println!("Sketch 1 strides: bin={}, kmer={}, sample={}", sketch1.bin_stride, sketch1.kmer_stride, sketch1.sample_stride);
+            // println!("Sketch 2 strides: bin={}, kmer={}, sample={}", sketch2.bin_stride, sketch2.kmer_stride, sketch2.sample_stride);
+        }
+
+        let mut sketch1_names: HashSet<String> = HashSet::new();
+        for sketch in sketch1.sketch_metadata.iter() {
+            let name = sketch.name().to_string();
+            println!("{}", name);
+            sketch1_names.insert(name);
+        }
+
+        // First metadata
+        let mut merged_metadata = sketch1.sketch_metadata.clone();
+        let mut duplcate_ids: Vec<String> = Vec::with_capacity(10);
+        // merged_metadata.extend(sketch2.sketch_metadata.iter().cloned());
+       
+        for sketch in sketch2.sketch_metadata.iter() {
+            if !sketch1_names.contains(sketch.name()) {
+                merged_metadata.push(sketch.clone());
+            }
+            else {
+                duplcate_ids.push(sketch.name().to_string());
+            }
+        }
+
+        MultiSketch::remove_sketches(sketch2, &duplcate_ids);
+
+        // then merge sketches, create new multisketch instance
+        let mut merged_sketch = Self::new(&mut merged_metadata, sketch1.sketch_size, &sketch1.kmer_lengths, sketch1.hash_type.clone());
+        // Merge actual sketche infos
+        merged_sketch.sketch_bins = sketch1.sketch_bins.clone();
+        // merged_sketch.sketch_bins.extend(&sketch2.sketch_bins);
+        for bin in &sketch2.sketch_bins {
+            merged_sketch.sketch_bins.push(bin.clone());
+        }
+        // Update infos
+        merged_sketch.bin_stride = sketch1.bin_stride;
+        merged_sketch.kmer_stride = sketch1.kmer_stride;
+        merged_sketch.sample_stride = sketch1.sample_stride;
+
+        let mut merged_name_map = HashMap::with_capacity(sketch1.sketch_metadata.len() + sketch2.sketch_metadata.len());
+        merged_name_map = sketch1.name_map.clone();
+
+        for sketch in sketch2.sketch_metadata.iter() {
+            if !merged_name_map.contains_key(sketch.name()) {
+                merged_name_map.insert(sketch.name().to_string(), sketch.get_index() + sketch1.sketch_metadata.len());
+            }
+        }
+        merged_sketch.name_map = merged_name_map;
+
+        return(merged_sketch)
+    }
+
+    pub fn save_MultiSketches(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
+        
+        let data_filename = format!("{file_prefix}.skd");
+        let mut file = std::fs::File::create(&data_filename)?;
+
+        let mut serial_writer = SketchArrayFile::new(&data_filename, self.bin_stride, self.kmer_stride, self.sample_stride);
+
+        SketchArrayFile::write_sketch_data(&mut file, &self.sketch_bins)?;
+        Ok(())
+    }
+
+    pub fn print_sketch_data_summary(&self) {
+        println!("Sketch Data Summary:");
+        println!("Total number of bins: {}", self.sketch_bins.len());
+        
+        let preview_size = 5;
+        println!("First {} elements:", preview_size);
+        for &bin in self.sketch_bins.iter().take(preview_size) {
+            println!("{}", bin);
+        }
+        
+        if self.sketch_bins.len() > preview_size * 2 {
+            println!("...");
+            
+            println!("Last {} elements:", preview_size);
+            for &bin in self.sketch_bins.iter().rev().take(preview_size) {
+                println!("{}", bin);
+            }
+        }
+        
+        // if let (Some(&min), Some(&max)) = (self.sketch_bins.iter().min(), self.sketch_bins.iter().max()) {
+        //     println!("Min value: {}", min);
+        //     println!("Max value: {}", max);
+        // }
+    }
+    
+    pub fn print_info(&self) {
+        println!("MultiSketch Information:");
+        println!("Sketch Version: {}", self.sketch_version);
+        println!("Hash Type: {:?}", self.hash_type);
+        println!("Sketch Size: {}", self.sketch_size);
+
+        println!("Sketch Metadata Length: {}", self.sketch_metadata.len());
+        println!("Sketch Metadata:");
+        for (i, sketch) in self.sketch_metadata.iter().enumerate() {
+            println!("Sketch {}", sketch);
+            // println!("Sketch {}", sketch);
+            // println!("K-mer Count: {}", sketch.kmer_count());
+        }
+
+        println!("K-mer Lengths: {:?}", self.kmer_lengths);
+        println!("Name Map Length: {}", self.name_map.len());
+        for (name, index) in self.name_map.iter() {
+            println!("Name: {}, Index: {}", name, index);
+        }
+
+        if let Some(block_reindex) = &self.block_reindex {
+            println!("Block Reindex Length: {}", block_reindex.len());
+        } else {
+            println!("Block Reindex: None");
+            }
+
+        println!("Sketch Bins Length: {}", self.sketch_bins.len());
+        println!("Bin Stride: {}", self.bin_stride);
+        println!("Kmer Stride: {}", self.kmer_stride);
+        println!("Sample Stride: {}", self.sample_stride);
     }
 }
 
