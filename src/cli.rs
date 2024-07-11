@@ -159,10 +159,44 @@ pub enum Commands {
         /// Output filename for the merged sketch
         #[arg(short)]
         output: Option<String>,
+    },
 
-        /// Write out the information for every sample contained
-        #[arg(long, default_value_t = false)]
-        sample_info: bool,
+    Concat { // TODO add a merge mode
+        /// The first .skd (sketch data) file
+        #[arg(required = true)]
+        db: String,
+    
+        /// List of input FASTA files
+        #[arg(long, group = "input", num_args = 1.., value_delimiter = ',')]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+    
+        /// Output filename for the merged sketch
+        #[arg(short)]
+        output: String,
+
+        /// Ignore reverse complement (all contigs are oriented along same strand)
+        #[arg(long, default_value_t = DEFAULT_STRAND)]
+        single_strand: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+
+        /// aaHash 'level'
+        #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
+        level: AaLevel,
     },
     
     // TODO add a concat mode (add sketch to existing DB)

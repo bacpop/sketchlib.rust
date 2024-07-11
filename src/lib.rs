@@ -6,6 +6,7 @@
 use std::collections::BinaryHeap;
 use std::io::Write;
 use std::time::Instant;
+use std::fs::File;
 
 #[macro_use]
 extern crate arrayref;
@@ -37,6 +38,10 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 
 pub mod bloom_filter;
 pub mod hashing;
+
+
+
+
 
 
 
@@ -371,10 +376,9 @@ pub fn main() {
             ref_db1,
             ref_db2,
             output,
-            sample_info,
         } => {
-            let my_output = "merge_test";
-            // let mut output_file = set_ostream(output);
+            // let my_output = "merge_test";
+            // // let mut output_file = set_ostream(output);
             
             let mut sketches1: MultiSketch = MultiSketch::load(ref_db1).unwrap_or_else(|_| {
                 panic!("Could not read sketch metadata from {ref_db1}.skm")
@@ -415,6 +419,86 @@ pub fn main() {
             // MultiSketch::print_info(&test_merge_sketches);
             // MultiSketch::print_sketch_data_summary(&test_merge_sketches);
         }
+
+        Commands::Concat {
+            db,
+            seq_files,
+            file_list,
+            output,
+            single_strand,
+            min_count,
+            min_qual,
+            threads,
+            level,
+        } => {
+            // An extra thread is needed for the writer. This doesn't 'overuse' CPU
+            check_threads(*threads + 1);
+
+            // read in already existing db
+            log::info!("Reading in database");
+            let mut db_sketches: MultiSketch = MultiSketch::load(db).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {db}.skm")
+            });
+            db_sketches.read_sketch_data(db);
+
+            // Read input
+            log::info!("Getting input files");
+            let input_files = get_input_list(file_list, seq_files);
+            log::info!("Parsed {} samples in input list", input_files.len());
+            
+            // read these in from already existing db infos:
+            log::info!("Getting infos from database");
+
+            let mut sketch_size = db_sketches.sketch_size;
+            let kmers = db_sketches.kmer_lengths();
+            // let k_vals = 
+
+            let seq_type = MultiSketch::get_hash_type(&db_sketches);
+            
+            //TODO: get actual level of sketch?
+            //TODO: when to use concat_fasta
+            
+            // Build, merge
+            let rc = !*single_strand;
+            // Set expected sketchsize
+            sketch_size = sketch_size.div_ceil(u64::BITS as u64);
+            // Set aa level
+            let seq_type = if let HashType::AA(_) = seq_type {
+                HashType::AA(level.clone())
+            } else {
+                seq_type.clone()
+            };
+                log::info!(
+                    "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
+                    kmers,
+                    sketch_size * u64::BITS as u64,
+                    seq_type,
+                    threads
+                );
+                let mut sketches = sketch_files(
+                    output,
+                    &input_files,
+                    false,
+                    &kmers,
+                    sketch_size,
+                    &seq_type,
+                    rc,
+                    *min_count,
+                    *min_qual,
+                );
+
+
+        // merge new db with read in db before saving the new_concat db
+        let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
+        let mut merged_sketch = MultiSketch::merge_sketches(&db_sketches, &sketch_vec);
+
+        let str_output: &str = output.as_str();
+
+        MultiSketch::save_metadata(&merged_sketch, &str_output);
+        MultiSketch::save_MultiSketches(&merged_sketch, &str_output);    
+        
+        }
+
 
    
         Commands::Info {
