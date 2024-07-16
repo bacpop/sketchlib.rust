@@ -441,6 +441,7 @@ pub fn main() {
             });
             db_sketches.read_sketch_data(db);
 
+            
             // Read input
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
@@ -450,13 +451,13 @@ pub fn main() {
             log::info!("Getting infos from database");
 
             let mut sketch_size = db_sketches.sketch_size;
+            println!("{:?}", sketch_size);
+
             let kmers = db_sketches.kmer_lengths();
+            println!("{:?}", kmers);
             // let k_vals = 
 
             let seq_type = MultiSketch::get_hash_type(&db_sketches);
-            
-            //TODO: get actual level of sketch?
-            //TODO: when to use concat_fasta
             
             // Build, merge
             let rc = !*single_strand;
@@ -468,6 +469,7 @@ pub fn main() {
             } else {
                 seq_type.clone()
             };
+            
                 log::info!(
                     "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
                     kmers,

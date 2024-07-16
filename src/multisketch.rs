@@ -170,8 +170,8 @@ impl MultiSketch {
         if sketch1.bin_stride != sketch2.bin_stride || sketch1.kmer_stride != sketch2.kmer_stride || sketch1.sample_stride != sketch2.sample_stride 
         {
             println!("Strides do not match between the sketches:");
-            // println!("Sketch 1 strides: bin={}, kmer={}, sample={}", sketch1.bin_stride, sketch1.kmer_stride, sketch1.sample_stride);
-            // println!("Sketch 2 strides: bin={}, kmer={}, sample={}", sketch2.bin_stride, sketch2.kmer_stride, sketch2.sample_stride);
+            println!("Sketch 1 strides: bin={}, kmer={}, sample={}", sketch1.bin_stride, sketch1.kmer_stride, sketch1.sample_stride);
+            println!("Sketch 2 strides: bin={}, kmer={}, sample={}", sketch2.bin_stride, sketch2.kmer_stride, sketch2.sample_stride);
         }
 
         let mut sketch1_names: HashSet<String> = HashSet::new();
