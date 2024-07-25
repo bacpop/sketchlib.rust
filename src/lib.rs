@@ -378,19 +378,26 @@ pub fn main() {
             }
 
             // make &str
-            let str_output: &str = output.as_ref().unwrap().as_str();
+            let str_output: &str = output.as_str();
             // read in the two db
+            // TODO: Don't need to read data in, can remove these
             log::info!("Loading sketch data from {}.skd", ref_db_name1);
             sketches1.read_sketch_data(ref_db_name1);
             log::info!("Loading sketch data from {}.skd", ref_db_name2);
             sketches2.read_sketch_data(ref_db_name2);
 
+            // TODO: remove clones
             let merged_sketch = &sketches1.merge_sketches(&sketches2);
 
-            // let _ = MultiSketch::save_metadata(merged_sketch, str_output);
-            MultiSketch::save_metadata(merged_sketch, str_output).expect("Couldn't save metadata to {str_output}");
-            MultiSketch::save_multi_sketches(merged_sketch, str_output).expect("Couldn't save metadata to {str_output}");
-            // let _ = MultiSketch::save_multi_sketches(merged_sketch, str_output);
+            // TODO: no merged sketch any more, will just call save_metadata on sketch1
+            merged_sketch
+                .save_metadata(str_output)
+                .expect("Couldn't save metadata to {str_output}");
+            // TODO: replace with function that just concatenates the bytes from the
+            // two skd files using https://doc.rust-lang.org/std/io/fn.copy.html
+            merged_sketch
+                .save_sketch_data(str_output)
+                .expect("Couldn't save metadata to {str_output}");
         }
 
         Commands::Info {

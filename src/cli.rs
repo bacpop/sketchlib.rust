@@ -158,7 +158,7 @@ pub enum Commands {
 
         /// Output filename for the merged sketch
         #[arg(required = true, short)]
-        output: Option<String>,
+        output: String,
     },
 
     Info {

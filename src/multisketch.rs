@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
-use crate::sketch::{self, Sketch, BBITS};
+use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
 use std::collections::HashSet;
@@ -160,7 +160,7 @@ impl MultiSketch {
             && self.get_hash_type() == sketch2.get_hash_type()
     }
 
-    pub fn merge_sketches(&self, sketch2: &Self) -> Self {
+    pub fn merge_sketches(&mut self, sketch2: &Self) -> Self {
         let mut sketch1_names: HashSet<String> = HashSet::new();
         for sketch in self.sketch_metadata.iter() {
             let name = sketch.name().to_string();
@@ -169,15 +169,20 @@ impl MultiSketch {
         }
 
         // First metadata
+        // TODO: remove this clone, then just append to self
         let mut merged_metadata = self.sketch_metadata.clone();
         for sketch in sketch2.sketch_metadata.iter() {
             if sketch1_names.contains(sketch.name()) {
-                let sample_name = sketch.name();
-                panic!("{sample_name} seems to appear in both databases. Cannot merge sketches.");
+                panic!(
+                    "{} seems to appear in both databases. Cannot merge sketches.",
+                    sketch.name()
+                );
             } else {
+                // TODO: Remove this clone
                 merged_metadata.push(sketch.clone());
             }
         }
+        // TODO: below here this operates on sketch1
         // then merge sketches, create new multisketch instance
         let mut merged_sketch = Self::new(
             &mut merged_metadata,
@@ -200,10 +205,8 @@ impl MultiSketch {
 
         // update hashmap
         for sketch in sketch2.sketch_metadata.iter() {
-            if !merged_name_map.contains_key(sketch.name()) {
-                let new_index = sketch.get_index() + self.sketch_metadata.len();
-                merged_name_map.insert(sketch.name().to_string(), new_index);
-            }
+            let new_index = sketch.get_index() + self.sketch_metadata.len();
+            merged_name_map.insert(sketch.name().to_string(), new_index);
         }
 
         // update index
@@ -216,7 +219,9 @@ impl MultiSketch {
         merged_sketch
     }
 
-    pub fn save_multi_sketches(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
+    // This function is called when sketches are merged, not when they are
+    // first sketched (this is handled by sketch::sketch_files())
+    pub fn save_sketch_data(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
         let data_filename = format!("{file_prefix}.skd");
         let mut file = std::fs::File::create(&data_filename)?;
         SketchArrayFile::write_sketch_data(&mut file, &self.sketch_bins)?;
@@ -256,51 +261,32 @@ impl fmt::Display for MultiSketch {
     }
 }
 
+// This is only used in the tests
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
+        let mut mismatch: bool = false;
         if self.sketch_metadata.len() != other.sketch_metadata.len() {
-            
-            panic!(
-                "sketch_metadata length mismatch: self {} != other {}",
-                self.sketch_metadata.len(),
-                other.sketch_metadata.len()
-            );
+            mismatch = true;
         }
-        for (i, (self_sketch, other_sketch)) in self
+        for (self_sketch, other_sketch) in self
             .sketch_metadata
             .iter()
             .zip(other.sketch_metadata.iter())
-            .enumerate()
         {
             if self_sketch != other_sketch {
-                panic!(
-                    "Mismatch in sketch_metadata at index {}: {:?} != {:?}",
-                    i, self_sketch, other_sketch
-                );
+                mismatch = true;
+                break;
             }
         }
-        macro_rules! check_field {
-            ($field:ident) => {
-                if self.$field != other.$field {
-                    panic!(
-                        "{} mismatch: {:?} != {:?}",
-                        stringify!($field),
-                        self.$field,
-                        other.$field
-                    );
-                }
-            };
-        }
-        check_field!(sketch_size);
-        check_field!(kmer_lengths);
-        check_field!(name_map);
-        check_field!(block_reindex);
-        check_field!(sketch_bins);
-        check_field!(bin_stride);
-        check_field!(kmer_stride);
-        check_field!(sample_stride);
-        check_field!(sketch_version);
-        check_field!(hash_type);
-        true
+        mismatch |= self.sketch_size == other.sketch_size;
+        mismatch |= self.kmer_lengths == other.kmer_lengths;
+        mismatch |= self.name_map == other.name_map;
+        mismatch |= self.sketch_bins == other.sketch_bins;
+        mismatch |= self.bin_stride == other.bin_stride;
+        mismatch |= self.kmer_stride == other.kmer_stride;
+        mismatch |= self.sample_stride == other.sample_stride;
+        mismatch |= self.sketch_version == other.sketch_version;
+        mismatch |= self.hash_type == other.hash_type;
+        !mismatch
     }
 }

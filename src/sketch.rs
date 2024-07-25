@@ -18,7 +18,7 @@ pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Sketch {
     #[serde(skip)]
     usigs: Vec<u64>,
@@ -288,18 +288,4 @@ pub fn sketch_files(
         }
     });
     sketches
-}
-
-impl PartialEq for Sketch {
-    fn eq(&self, other: &Self) -> bool {
-        self.usigs == other.usigs
-            && self.name == other.name
-            && self.index == other.index
-            && self.rc == other.rc
-            && self.reads == other.reads
-            && self.seq_length == other.seq_length
-            && self.densified == other.densified
-            && self.acgt == other.acgt
-            && self.non_acgt == other.non_acgt
-    }
 }
