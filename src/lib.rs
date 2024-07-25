@@ -38,11 +38,6 @@ pub mod bloom_filter;
 pub mod hashing;
 
 
-
-
-
-
-
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
@@ -378,8 +373,6 @@ pub fn main() {
             ref_db2,
             output,
         } => {
-            // let my_output = "merge_test";
-            // // let mut output_file = set_ostream(output);
             
             let ref_db_name1 = MultiSketch::strip_sketch_extension(ref_db1);
             let ref_db_name2 = MultiSketch::strip_sketch_extension(ref_db2);
@@ -399,10 +392,6 @@ pub fn main() {
             log::info!("Loading sketch data from {}.skd", ref_db_name2);
             sketches2.read_sketch_data(ref_db_name2);
 
-            print!("Now sketches1");
-            MultiSketch::print_info(&sketches1);
-            print!("Now sketches2");
-            MultiSketch::print_info(&sketches2);
             // check compatibility
             if !&sketches1.is_compatible_with(&sketches2) {
                 panic!("Databases are not compatible for merging.")
@@ -416,86 +405,86 @@ pub fn main() {
 
         }
 
-        Commands::Concat {
-            db,
-            seq_files,
-            file_list,
-            output,
-            single_strand,
-            min_count,
-            min_qual,
-            threads,
-            level,
-        } => {
-            // An extra thread is needed for the writer. This doesn't 'overuse' CPU
-            check_threads(*threads + 1);
+        // Commands::Concat {
+        //     db,
+        //     seq_files,
+        //     file_list,
+        //     output,
+        //     single_strand,
+        //     min_count,
+        //     min_qual,
+        //     threads,
+        //     level,
+        // } => {
+        //     // An extra thread is needed for the writer. This doesn't 'overuse' CPU
+        //     check_threads(*threads + 1);
 
-            // read in already existing db
-            log::info!("Reading in database");
-            let mut db_sketches: MultiSketch = MultiSketch::load(db).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {db}.skm")
-            });
-            db_sketches.read_sketch_data(db);
+        //     // read in already existing db
+        //     log::info!("Reading in database");
+        //     let mut db_sketches: MultiSketch = MultiSketch::load(db).unwrap_or_else(|_| {
+        //         panic!("Could not read sketch metadata from {db}.skm")
+        //     });
+        //     db_sketches.read_sketch_data(db);
 
             
-            // Read input
-            log::info!("Getting input files");
-            let input_files = get_input_list(file_list, seq_files);
-            log::info!("Parsed {} samples in input list", input_files.len());
+        //     // Read input
+        //     log::info!("Getting input files");
+        //     let input_files = get_input_list(file_list, seq_files);
+        //     log::info!("Parsed {} samples in input list", input_files.len());
             
-            // read these in from already existing db infos:
-            log::info!("Getting infos from database");
+        //     // read these in from already existing db infos:
+        //     log::info!("Getting infos from database");
 
-            let mut sketch_size = db_sketches.sketch_size;
-            println!("{:?}", sketch_size);
+        //     let mut sketch_size = db_sketches.sketch_size;
+        //     println!("{:?}", sketch_size);
 
-            let kmers = db_sketches.kmer_lengths();
-            println!("{:?}", kmers);
-            // let k_vals = 
+        //     let kmers = db_sketches.kmer_lengths();
+        //     println!("{:?}", kmers);
+        //     // let k_vals = 
 
-            let seq_type = MultiSketch::get_hash_type(&db_sketches);
+        //     let seq_type = MultiSketch::get_hash_type(&db_sketches);
             
-            // Build, merge
-            let rc = !*single_strand;
-            // Set expected sketchsize
-            sketch_size = sketch_size.div_ceil(u64::BITS as u64);
-            // Set aa level
-            let seq_type = if let HashType::AA(_) = seq_type {
-                HashType::AA(level.clone())
-            } else {
-                seq_type.clone()
-            };
+        //     // Build, merge
+        //     let rc = !*single_strand;
+        //     // Set expected sketchsize
+        //     sketch_size = sketch_size.div_ceil(u64::BITS as u64);
+        //     // Set aa level
+        //     let seq_type = if let HashType::AA(_) = seq_type {
+        //         HashType::AA(level.clone())
+        //     } else {
+        //         seq_type.clone()
+        //     };
             
-                log::info!(
-                    "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
-                    kmers,
-                    sketch_size * u64::BITS as u64,
-                    seq_type,
-                    threads
-                );
-                let mut sketches = sketch_files(
-                    output,
-                    &input_files,
-                    false,
-                    &kmers,
-                    sketch_size,
-                    &seq_type,
-                    rc,
-                    *min_count,
-                    *min_qual,
-                );
+        //         log::info!(
+        //             "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
+        //             kmers,
+        //             sketch_size * u64::BITS as u64,
+        //             seq_type,
+        //             threads
+        //         );
+        //         let mut sketches = sketch_files(
+        //             output,
+        //             &input_files,
+        //             false,
+        //             &kmers,
+        //             sketch_size,
+        //             &seq_type,
+        //             rc,
+        //             *min_count,
+        //             *min_qual,
+        //         );
 
 
-        // merge new db with read in db before saving the new_concat db
-        let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
-        let merged_sketch = MultiSketch::merge_sketches(&db_sketches, &sketch_vec);
+        // // merge new db with read in db before saving the new_concat db
+        // let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
+        // let merged_sketch = MultiSketch::merge_sketches(&db_sketches, &sketch_vec);
 
-        let str_output: &str = output.as_str();
+        // let str_output: &str = output.as_str();
 
-        let _ = MultiSketch::save_metadata(&merged_sketch, str_output);
-        let _ = MultiSketch::save_multi_sketches(&merged_sketch, str_output);    
+        // let _ = MultiSketch::save_metadata(&merged_sketch, str_output);
+        // let _ = MultiSketch::save_multi_sketches(&merged_sketch, str_output);    
         
-        }
+        // }
 
 
    
