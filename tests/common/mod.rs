@@ -208,4 +208,3 @@ pub fn aln_length(aln1: &[u8]) -> Vec<usize> {
     }
     lengths
 }
-

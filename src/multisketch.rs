@@ -33,8 +33,6 @@ pub struct MultiSketch {
     hash_type: HashType,
 }
 
-
-
 impl MultiSketch {
     pub fn new(
         sketches: &mut Vec<Sketch>,
@@ -123,8 +121,6 @@ impl MultiSketch {
             SketchArrayFile::read_all(&filename, self.sample_stride * self.sketch_metadata.len());
     }
 
-    
-
     pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
         // Find the given names in the sketch metadata
         let mut block_reindex = Vec::with_capacity(names.len());
@@ -153,8 +149,7 @@ impl MultiSketch {
         s1_slice
     }
 
-    pub fn remove_sketches(&self, ids: &Vec<String>)
-    {   
+    pub fn remove_sketches(&self, ids: &Vec<String>) {
         // TODO: remove sketch bins which belong to the duplicate ids
         todo!();
     }
@@ -179,22 +174,22 @@ impl MultiSketch {
             if sketch1_names.contains(sketch.name()) {
                 let sample_name = sketch.name();
                 panic!("{sample_name} seems to appear in both databases. Cannot merge sketches.");
-            }
-            else {
+            } else {
                 merged_metadata.push(sketch.clone());
             }
         }
-        println!("Hello I am here");
         // then merge sketches, create new multisketch instance
-        let mut merged_sketch = Self::new(&mut merged_metadata, self.sketch_size, &self.kmer_lengths, self.hash_type.clone());
-        println!("Empty merged sketch: {}", merged_sketch.sketch_bins.len());
+        let mut merged_sketch = Self::new(
+            &mut merged_metadata,
+            self.sketch_size,
+            &self.kmer_lengths,
+            self.hash_type.clone(),
+        );
         // Merge actual sketche infos
         merged_sketch.sketch_bins = self.sketch_bins.clone();
-        println!("merged sketch with sketches1: {}", merged_sketch.sketch_bins.len());
         for bin in &sketch2.sketch_bins {
             merged_sketch.sketch_bins.push(*bin);
         }
-        println!("merged sketch with sketches2: {}", merged_sketch.sketch_bins.len());
         // Update infos
         merged_sketch.bin_stride = self.bin_stride;
         merged_sketch.kmer_stride = self.kmer_stride;
@@ -218,12 +213,10 @@ impl MultiSketch {
         }
         merged_sketch.name_map = merged_name_map;
 
-        
         merged_sketch
     }
 
     pub fn save_multi_sketches(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
-        
         let data_filename = format!("{file_prefix}.skd");
         let mut file = std::fs::File::create(&data_filename)?;
         SketchArrayFile::write_sketch_data(&mut file, &self.sketch_bins)?;
@@ -237,7 +230,6 @@ impl MultiSketch {
             file_name
         }
     }
-    
 }
 
 impl fmt::Debug for MultiSketch {
@@ -267,20 +259,35 @@ impl fmt::Display for MultiSketch {
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
         if self.sketch_metadata.len() != other.sketch_metadata.len() {
-            panic!("sketch_metadata length mismatch: self {} != other {}", 
-                   self.sketch_metadata.len(), other.sketch_metadata.len());
+            
+            panic!(
+                "sketch_metadata length mismatch: self {} != other {}",
+                self.sketch_metadata.len(),
+                other.sketch_metadata.len()
+            );
         }
-        for (i, (self_sketch, other_sketch)) in self.sketch_metadata.iter().zip(other.sketch_metadata.iter()).enumerate() {
+        for (i, (self_sketch, other_sketch)) in self
+            .sketch_metadata
+            .iter()
+            .zip(other.sketch_metadata.iter())
+            .enumerate()
+        {
             if self_sketch != other_sketch {
-                panic!("Mismatch in sketch_metadata at index {}: {:?} != {:?}", 
-                       i, self_sketch, other_sketch);
+                panic!(
+                    "Mismatch in sketch_metadata at index {}: {:?} != {:?}",
+                    i, self_sketch, other_sketch
+                );
             }
         }
         macro_rules! check_field {
             ($field:ident) => {
                 if self.$field != other.$field {
-                    panic!("{} mismatch: {:?} != {:?}", 
-                           stringify!($field), self.$field, other.$field);
+                    panic!(
+                        "{} mismatch: {:?} != {:?}",
+                        stringify!($field),
+                        self.$field,
+                        other.$field
+                    );
                 }
             };
         }
