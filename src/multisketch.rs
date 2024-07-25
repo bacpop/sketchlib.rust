@@ -1,3 +1,4 @@
+use core::panic;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
@@ -31,6 +32,8 @@ pub struct MultiSketch {
     sketch_version: String,
     hash_type: HashType,
 }
+
+
 
 impl MultiSketch {
     pub fn new(
@@ -157,82 +160,86 @@ impl MultiSketch {
             println!("{}", id);
         }
     }
-
-    pub fn is_compatible_with(sketch1: &Self, sketch2: &Self) -> bool {
-        sketch1.kmer_lengths() == sketch2.kmer_lengths()
-            && sketch1.sketch_size == sketch2.sketch_size
-            && sketch1.get_hash_type() == sketch2.get_hash_type()
+    // let compatible = MultiSketch::is_compatible_with(sketch1, sketch2);
+    // let compatible = sketch1.is_compatible_with(sketch2);
+    pub fn is_compatible_with(&self, sketch2: &Self) -> bool {
+        self.kmer_lengths() == sketch2.kmer_lengths()
+            && self.sketch_size == sketch2.sketch_size
+            && self.get_hash_type() == sketch2.get_hash_type()
     }
 
-    pub fn merge_sketches(sketch1: &Self, sketch2: &Self) -> Self {
+    pub fn merge_sketches(&self, sketch2: &Self) -> Self {
         
-        // Check if strides are the same
-        if sketch1.bin_stride != sketch2.bin_stride || sketch1.kmer_stride != sketch2.kmer_stride || sketch1.sample_stride != sketch2.sample_stride 
-        {
-            println!("Strides do not match between the sketches:");
-            println!("Sketch 1 strides: bin={}, kmer={}, sample={}", sketch1.bin_stride, sketch1.kmer_stride, sketch1.sample_stride);
-            println!("Sketch 2 strides: bin={}, kmer={}, sample={}", sketch2.bin_stride, sketch2.kmer_stride, sketch2.sample_stride);
-        }
-
         let mut sketch1_names: HashSet<String> = HashSet::new();
-        for sketch in sketch1.sketch_metadata.iter() {
+        for sketch in self.sketch_metadata.iter() {
             let name = sketch.name().to_string();
             println!("{}", name);
             sketch1_names.insert(name);
         }
 
         // First metadata
-        let mut merged_metadata = sketch1.sketch_metadata.clone();
-        let mut duplcate_ids: Vec<String> = Vec::with_capacity(10);
-        // merged_metadata.extend(sketch2.sketch_metadata.iter().cloned());
-       
+        let mut merged_metadata = self.sketch_metadata.clone();
         for sketch in sketch2.sketch_metadata.iter() {
-            if !sketch1_names.contains(sketch.name()) {
-                merged_metadata.push(sketch.clone());
+            if sketch1_names.contains(sketch.name()) {
+                let sample_name = sketch.name();
+                panic!("{sample_name} seems to appear in both databases. Cannot merge sketches.");
             }
             else {
-                duplcate_ids.push(sketch.name().to_string());
+                merged_metadata.push(sketch.clone());
             }
         }
-
-        MultiSketch::remove_sketches(sketch2, &duplcate_ids);
-
+        println!("Hello I am here");
         // then merge sketches, create new multisketch instance
-        let mut merged_sketch = Self::new(&mut merged_metadata, sketch1.sketch_size, &sketch1.kmer_lengths, sketch1.hash_type.clone());
+        let mut merged_sketch = Self::new(&mut merged_metadata, self.sketch_size, &self.kmer_lengths, self.hash_type.clone());
+        println!("Empty merged sketch: {}", merged_sketch.sketch_bins.len());
         // Merge actual sketche infos
-        merged_sketch.sketch_bins = sketch1.sketch_bins.clone();
+        merged_sketch.sketch_bins = self.sketch_bins.clone();
+        println!("merged sketch with sketches1: {}", merged_sketch.sketch_bins.len());
         // merged_sketch.sketch_bins.extend(&sketch2.sketch_bins);
         for bin in &sketch2.sketch_bins {
-            merged_sketch.sketch_bins.push(bin.clone());
+            merged_sketch.sketch_bins.push(*bin);
         }
+        println!("merged sketch with sketches2: {}", merged_sketch.sketch_bins.len());
         // Update infos
-        merged_sketch.bin_stride = sketch1.bin_stride;
-        merged_sketch.kmer_stride = sketch1.kmer_stride;
-        merged_sketch.sample_stride = sketch1.sample_stride;
+        merged_sketch.bin_stride = self.bin_stride;
+        merged_sketch.kmer_stride = self.kmer_stride;
+        merged_sketch.sample_stride = self.sample_stride;
 
-        let mut merged_name_map = HashMap::with_capacity(sketch1.sketch_metadata.len() + sketch2.sketch_metadata.len());
-        merged_name_map = sketch1.name_map.clone();
+        let mut merged_name_map = self.name_map.clone();
+        merged_name_map.reserve(sketch2.sketch_metadata.len());
 
+        // update index for second sketch
         for sketch in sketch2.sketch_metadata.iter() {
             if !merged_name_map.contains_key(sketch.name()) {
-                merged_name_map.insert(sketch.name().to_string(), sketch.get_index() + sketch1.sketch_metadata.len());
+                let new_index = sketch.get_index() + self.sketch_metadata.len();
+                merged_name_map.insert(sketch.name().to_string(), new_index);
+                //chnage index: Some(0) to new adjusted index
+                // sketch.set_index(new_index);
             }
+        }
+
+        for sketch in merged_sketch.sketch_metadata.iter_mut() {
+            let new_index = merged_name_map[sketch.name()];
+            sketch.set_index(new_index);
         }
         merged_sketch.name_map = merged_name_map;
 
-        return(merged_sketch)
+        
+        merged_sketch
     }
 
-    pub fn save_MultiSketches(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
+    pub fn save_multi_sketches(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
         
         let data_filename = format!("{file_prefix}.skd");
         let mut file = std::fs::File::create(&data_filename)?;
 
-        let mut serial_writer = SketchArrayFile::new(&data_filename, self.bin_stride, self.kmer_stride, self.sample_stride);
+        // let mut serial_writer = SketchArrayFile::new(&data_filename, self.bin_stride, self.kmer_stride, self.sample_stride);
 
         SketchArrayFile::write_sketch_data(&mut file, &self.sketch_bins)?;
         Ok(())
     }
+
+
 
     pub fn print_sketch_data_summary(&self) {
         println!("Sketch Data Summary:");
@@ -267,8 +274,8 @@ impl MultiSketch {
 
         println!("Sketch Metadata Length: {}", self.sketch_metadata.len());
         println!("Sketch Metadata:");
-        for (i, sketch) in self.sketch_metadata.iter().enumerate() {
-            println!("Sketch {}", sketch);
+        for sketch in self.sketch_metadata.iter().enumerate() {
+            println!("Sketch {:?}", sketch);
             // println!("Sketch {}", sketch);
             // println!("K-mer Count: {}", sketch.kmer_count());
         }
@@ -289,6 +296,32 @@ impl MultiSketch {
         println!("Bin Stride: {}", self.bin_stride);
         println!("Kmer Stride: {}", self.kmer_stride);
         println!("Sample Stride: {}", self.sample_stride);
+    }
+
+    pub fn strip_sketch_extension(file_name: &str) -> &str {
+        if file_name.ends_with(".skm") || file_name.ends_with(".skd") {
+            &file_name[..file_name.len() - 4]
+        } else {
+            file_name
+        }
+    }
+    
+    pub fn debug_print(&self) -> String {
+        let mut output = String::new();
+
+        output.push_str(&format!("sketch_metadata length: {}\n", self.sketch_metadata.len()));
+        output.push_str(&format!("sketch_size: {:?}\n", self.sketch_size));
+        output.push_str(&format!("kmer_lengths: {:?}\n", self.kmer_lengths));
+        output.push_str(&format!("name_map length: {}\n", self.name_map.len()));
+        output.push_str(&format!("block_reindex: {:?}\n", self.block_reindex));
+        output.push_str(&format!("sketch_bins length: {}\n", self.sketch_bins.len()));
+        output.push_str(&format!("bin_stride: {}\n", self.bin_stride));
+        output.push_str(&format!("kmer_stride: {}\n", self.kmer_stride));
+        output.push_str(&format!("sample_stride: {}\n", self.sample_stride));
+        output.push_str(&format!("sketch_version: {}\n", self.sketch_version));
+        output.push_str(&format!("hash_type: {:?}\n", self.hash_type));
+
+        output
     }
 }
 
@@ -315,3 +348,64 @@ impl fmt::Display for MultiSketch {
         Ok(())
     }
 }
+
+// impl PartialEq for MultiSketch {
+//     fn eq(&self, other: &Self) -> bool {
+//         if self.sketch_metadata.len() != other.sketch_metadata.len() {
+//             return false;
+//         }
+//         for (self_sketch, other_sketch) in self.sketch_metadata.iter().zip(other.sketch_metadata.iter()) {
+//             if self_sketch != other_sketch {
+//                 return false;
+//             }
+//         }
+//         // loop over sketch metadat to figure out if that is the same.
+//         self.sketch_size == other.sketch_size
+//             && self.kmer_lengths == other.kmer_lengths
+//             && self.name_map == other.name_map
+//             && self.block_reindex == other.block_reindex
+//             && self.sketch_bins == other.sketch_bins
+//             && self.bin_stride == other.bin_stride
+//             && self.kmer_stride == other.kmer_stride
+//             && self.sample_stride == other.sample_stride
+//             && self.sketch_version == other.sketch_version
+//             && self.hash_type == other.hash_type
+//     }
+// }
+
+impl PartialEq for MultiSketch {
+    fn eq(&self, other: &Self) -> bool {
+        if self.sketch_metadata.len() != other.sketch_metadata.len() {
+            panic!("sketch_metadata length mismatch: self {} != other {}", 
+                   self.sketch_metadata.len(), other.sketch_metadata.len());
+        }
+        for (i, (self_sketch, other_sketch)) in self.sketch_metadata.iter().zip(other.sketch_metadata.iter()).enumerate() {
+            if self_sketch != other_sketch {
+                panic!("Mismatch in sketch_metadata at index {}: {:?} != {:?}", 
+                       i, self_sketch, other_sketch);
+            }
+        }
+        macro_rules! check_field {
+            ($field:ident) => {
+                if self.$field != other.$field {
+                    panic!("{} mismatch: {:?} != {:?}", 
+                           stringify!($field), self.$field, other.$field);
+                }
+            };
+        }
+        check_field!(sketch_size);
+        check_field!(kmer_lengths);
+        check_field!(name_map);
+        check_field!(block_reindex);
+        check_field!(sketch_bins);
+        check_field!(bin_stride);
+        check_field!(kmer_stride);
+        check_field!(sample_stride);
+        check_field!(sketch_version);
+        check_field!(hash_type);
+        true
+    }
+}
+
+
+

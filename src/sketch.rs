@@ -289,3 +289,17 @@ pub fn sketch_files(
     });
     sketches
 }
+
+impl PartialEq for Sketch {
+    fn eq(&self, other: &Self) -> bool {
+        self.usigs == other.usigs
+            && self.name == other.name
+            && self.index == other.index
+            && self.rc == other.rc
+            && self.reads == other.reads
+            && self.seq_length == other.seq_length
+            && self.densified == other.densified
+            && self.acgt == other.acgt
+            && self.non_acgt == other.non_acgt
+    }
+}

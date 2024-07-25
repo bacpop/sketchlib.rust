@@ -6,7 +6,6 @@
 use std::collections::BinaryHeap;
 use std::io::Write;
 use std::time::Instant;
-use std::fs::File;
 
 #[macro_use]
 extern crate arrayref;
@@ -28,7 +27,6 @@ pub mod jaccard;
 use crate::jaccard::{ani_pois, core_acc_dist, jaccard_dist};
 
 pub mod sketch_datafile;
-use crate::sketch_datafile::SketchArrayFile;
 
 pub mod distances;
 use crate::distances::*;
@@ -138,11 +136,14 @@ pub fn main() {
 
             let mut output_file = set_ostream(output);
 
-            let ref_db_name = if ref_db.ends_with(".skm") || ref_db.ends_with(".skd") {
-                &ref_db[0..ref_db.len() - 4]
-            } else {
-                ref_db.as_str()
-            };
+            // made a function out of it because it needs to be used often.
+            // let ref_db_name = if ref_db.ends_with(".skm") || ref_db.ends_with(".skd") {
+            //     &ref_db[0..ref_db.len() - 4]
+            // } else {
+            //     ref_db.as_str()
+            // };
+            let ref_db_name = MultiSketch::strip_sketch_extension(ref_db);
+
             let mut references = MultiSketch::load(ref_db_name)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
@@ -380,44 +381,39 @@ pub fn main() {
             // let my_output = "merge_test";
             // // let mut output_file = set_ostream(output);
             
-            let mut sketches1: MultiSketch = MultiSketch::load(ref_db1).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {ref_db1}.skm")
+            let ref_db_name1 = MultiSketch::strip_sketch_extension(ref_db1);
+            let ref_db_name2 = MultiSketch::strip_sketch_extension(ref_db2);
+
+            let mut sketches1: MultiSketch = MultiSketch::load(ref_db_name1).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {ref_db_name1}.skm")
             });
-            let mut sketches2: MultiSketch = MultiSketch::load(ref_db2).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {ref_db2}.skm")
+            let mut sketches2: MultiSketch = MultiSketch::load(ref_db_name2).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {ref_db_name2}.skm")
             });
 
             // make &str
             let str_output: &str = output.as_ref().unwrap().as_str();
             // read in the two db 
-            sketches1.read_sketch_data(ref_db1);
-            sketches2.read_sketch_data(ref_db2);
+            log::info!("Loading sketch data from {}.skd", ref_db_name1);
+            sketches1.read_sketch_data(ref_db_name1);
+            log::info!("Loading sketch data from {}.skd", ref_db_name2);
+            sketches2.read_sketch_data(ref_db_name2);
 
+            print!("Now sketches1");
+            MultiSketch::print_info(&sketches1);
+            print!("Now sketches2");
+            MultiSketch::print_info(&sketches2);
             // check compatibility
-            if !MultiSketch::is_compatible_with(&sketches1, &sketches2){
-                panic!("Databases are not compattible for merging.")
+            if !&sketches1.is_compatible_with(&sketches2) {
+                panic!("Databases are not compatible for merging.")
             }
 
-            // let merged = MultiSketch::merge_sketches(&sketches1, &sketches2);
-            // Attempt to merge the sketches
-            let mut merged_sketch = MultiSketch::merge_sketches(&sketches1, &sketches2);
-            
-            MultiSketch::save_metadata(&merged_sketch, &str_output);
+            let merged_sketch = &sketches1.merge_sketches(&sketches2);
 
-            MultiSketch::save_MultiSketches(&merged_sketch, &str_output);
+            let _ = MultiSketch::save_metadata(merged_sketch, str_output);
 
-            // let mut test_merge_sketches: MultiSketch = MultiSketch::load(my_output).unwrap_or_else(|_| {
-            //     panic!("Could not read sketch metadata from {my_output}.skm")
-            // });
-            // println!("{}", test_merge_sketches);
-            // println!("{:?}", test_merge_sketches);
+            let _ = MultiSketch::save_multi_sketches(merged_sketch, str_output);
 
-            // test_merge_sketches.read_sketch_data(my_output);
-
-            // println!("{}", test_merge_sketches);
-            // println!("{:?}", test_merge_sketches);
-            // MultiSketch::print_info(&test_merge_sketches);
-            // MultiSketch::print_sketch_data_summary(&test_merge_sketches);
         }
 
         Commands::Concat {
@@ -492,12 +488,12 @@ pub fn main() {
 
         // merge new db with read in db before saving the new_concat db
         let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
-        let mut merged_sketch = MultiSketch::merge_sketches(&db_sketches, &sketch_vec);
+        let merged_sketch = MultiSketch::merge_sketches(&db_sketches, &sketch_vec);
 
         let str_output: &str = output.as_str();
 
-        MultiSketch::save_metadata(&merged_sketch, &str_output);
-        MultiSketch::save_MultiSketches(&merged_sketch, &str_output);    
+        let _ = MultiSketch::save_metadata(&merged_sketch, str_output);
+        let _ = MultiSketch::save_multi_sketches(&merged_sketch, str_output);    
         
         }
 

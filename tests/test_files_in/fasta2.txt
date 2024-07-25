@@ -1,0 +1,2 @@
+R6.fa	/Users/wachsmannj/Documents/work/development/test_data/s_pneumo_genomes/R6.fa
+TIGR4.fa	/Users/wachsmannj/Documents/work/development/test_data/s_pneumo_genomes/TIGR4.fa
