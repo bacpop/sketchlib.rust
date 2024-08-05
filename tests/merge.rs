@@ -17,12 +17,20 @@ mod tests {
         let ref_db2 = sandbox.file_string("sketches2", TestDir::Input);
         let ref_db3 = sandbox.file_string("sketches3", TestDir::Input);
 
-        let sketches1: MultiSketch = MultiSketch::load(&ref_db1)
-            .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db1}.skm"));
-        let sketches2: MultiSketch = MultiSketch::load(&ref_db2)
-            .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db2}.skm"));
-        let sketches3: MultiSketch = MultiSketch::load(&ref_db3)
-            .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db3}.skm"));
+        let sketches1: MultiSketch = MultiSketch::load(&ref_db1).expect(&format!(
+            "Could not read sketch metadata from {}.skm",
+            ref_db1
+        ));
+
+        let sketches2: MultiSketch = MultiSketch::load(&ref_db2).expect(&format!(
+            "Could not read sketch metadata from {}.skm",
+            ref_db2
+        ));
+
+        let sketches3: MultiSketch = MultiSketch::load(&ref_db3).expect(&format!(
+            "Could not read sketch metadata from {}.skm",
+            ref_db3
+        ));
 
         // Test case 1: Sketches are compatible
         assert!(

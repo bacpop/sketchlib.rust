@@ -37,6 +37,8 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 pub mod bloom_filter;
 pub mod hashing;
 
+pub mod utils;
+
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
@@ -130,7 +132,7 @@ pub fn main() {
 
             let mut output_file = set_ostream(output);
 
-            let ref_db_name = MultiSketch::strip_sketch_extension(ref_db);
+            let ref_db_name = utils::strip_sketch_extension(ref_db);
 
             let mut references = MultiSketch::load(ref_db_name)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
@@ -362,42 +364,37 @@ pub fn main() {
             }
         }
         Commands::Merge { db1, db2, output } => {
-            let ref_db_name1 = MultiSketch::strip_sketch_extension(db1);
-            let ref_db_name2 = MultiSketch::strip_sketch_extension(db2);
+            let ref_db_name1 = utils::strip_sketch_extension(db1);
+            let ref_db_name2 = utils::strip_sketch_extension(db2);
 
             let mut sketches1: MultiSketch = MultiSketch::load(ref_db_name1).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {ref_db_name1}.skm")
+                panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
             });
-            let mut sketches2: MultiSketch = MultiSketch::load(ref_db_name2).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {ref_db_name2}.skm")
+
+            let sketches2: MultiSketch = MultiSketch::load(ref_db_name2).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
             });
 
             // check compatibility
-            if !&sketches1.is_compatible_with(&sketches2) {
+            if !sketches1.is_compatible_with(&sketches2) {
                 panic!("Databases are not compatible for merging.")
             }
 
             // make &str
             let str_output: &str = output.as_str();
-            // read in the two db
-            // TODO: Don't need to read data in, can remove these
-            log::info!("Loading sketch data from {}.skd", ref_db_name1);
-            sketches1.read_sketch_data(ref_db_name1);
-            log::info!("Loading sketch data from {}.skd", ref_db_name2);
-            sketches2.read_sketch_data(ref_db_name2);
 
-            // TODO: remove clones
-            let merged_sketch = &sketches1.merge_sketches(&sketches2);
+            let merged_sketch = sketches1.merge_sketches(&sketches2);
 
-            // TODO: no merged sketch any more, will just call save_metadata on sketch1
+            // merge metadata
             merged_sketch
                 .save_metadata(str_output)
-                .expect("Couldn't save metadata to {str_output}");
-            // TODO: replace with function that just concatenates the bytes from the
-            // two skd files using https://doc.rust-lang.org/std/io/fn.copy.html
-            merged_sketch
-                .save_sketch_data(str_output)
-                .expect("Couldn't save metadata to {str_output}");
+                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", str_output));
+
+            // merge actual sketch data
+            match utils::save_sketch_data(db1, db2, str_output) {
+                Ok(_) => println!("Sketch data saved successfully."),
+                Err(e) => eprintln!("Error saving sketch data: {}", e),
+            }
         }
 
         Commands::Info {

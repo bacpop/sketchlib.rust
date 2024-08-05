@@ -149,7 +149,7 @@ impl MultiSketch {
         s1_slice
     }
 
-    pub fn remove_sketches(&self, ids: &Vec<String>) {
+    pub fn remove_sketches(&self, ids: &[String]) {
         // TODO: remove sketch bins which belong to the duplicate ids
         todo!();
     }
@@ -160,17 +160,14 @@ impl MultiSketch {
             && self.get_hash_type() == sketch2.get_hash_type()
     }
 
-    pub fn merge_sketches(&mut self, sketch2: &Self) -> Self {
+    pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
         let mut sketch1_names: HashSet<String> = HashSet::new();
         for sketch in self.sketch_metadata.iter() {
             let name = sketch.name().to_string();
-            println!("{}", name);
             sketch1_names.insert(name);
         }
-
+        let sketch1_len = self.sketch_metadata.len();
         // First metadata
-        // TODO: remove this clone, then just append to self
-        let mut merged_metadata = self.sketch_metadata.clone();
         for sketch in sketch2.sketch_metadata.iter() {
             if sketch1_names.contains(sketch.name()) {
                 panic!(
@@ -178,63 +175,20 @@ impl MultiSketch {
                     sketch.name()
                 );
             } else {
-                // TODO: Remove this clone
-                merged_metadata.push(sketch.clone());
+                let mut temp_sketch: Sketch = sketch.clone();
+                let new_index = temp_sketch.get_index() + sketch1_len;
+                temp_sketch.set_index(new_index);
+                self.name_map
+                    .insert(temp_sketch.name().to_string(), new_index);
+                self.sketch_metadata.push(temp_sketch);
             }
         }
-        // TODO: below here this operates on sketch1
-        // then merge sketches, create new multisketch instance
-        let mut merged_sketch = Self::new(
-            &mut merged_metadata,
-            self.sketch_size,
-            &self.kmer_lengths,
-            self.hash_type.clone(),
-        );
-        // Merge actual sketche infos
-        merged_sketch.sketch_bins = self.sketch_bins.clone();
-        for bin in &sketch2.sketch_bins {
-            merged_sketch.sketch_bins.push(*bin);
-        }
-        // Update infos
-        merged_sketch.bin_stride = self.bin_stride;
-        merged_sketch.kmer_stride = self.kmer_stride;
-        merged_sketch.sample_stride = self.sample_stride;
 
-        let mut merged_name_map = self.name_map.clone();
-        merged_name_map.reserve(sketch2.sketch_metadata.len());
-
-        // update hashmap
-        for sketch in sketch2.sketch_metadata.iter() {
-            let new_index = sketch.get_index() + self.sketch_metadata.len();
-            merged_name_map.insert(sketch.name().to_string(), new_index);
-        }
-
-        // update index
-        for sketch in merged_sketch.sketch_metadata.iter_mut() {
-            let new_index = merged_name_map[sketch.name()];
-            sketch.set_index(new_index);
-        }
-        merged_sketch.name_map = merged_name_map;
-
-        merged_sketch
+        self
     }
 
     // This function is called when sketches are merged, not when they are
     // first sketched (this is handled by sketch::sketch_files())
-    pub fn save_sketch_data(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
-        let data_filename = format!("{file_prefix}.skd");
-        let mut file = std::fs::File::create(&data_filename)?;
-        SketchArrayFile::write_sketch_data(&mut file, &self.sketch_bins)?;
-        Ok(())
-    }
-
-    pub fn strip_sketch_extension(file_name: &str) -> &str {
-        if file_name.ends_with(".skm") || file_name.ends_with(".skd") {
-            &file_name[..file_name.len() - 4]
-        } else {
-            file_name
-        }
-    }
 }
 
 impl fmt::Debug for MultiSketch {
@@ -267,6 +221,11 @@ impl PartialEq for MultiSketch {
         let mut mismatch: bool = false;
         if self.sketch_metadata.len() != other.sketch_metadata.len() {
             mismatch = true;
+            println!(
+                "Sketch metadata lengths is mismatching. Self: {}, Other: {}",
+                self.sketch_metadata.len(),
+                other.sketch_metadata.len()
+            );
         }
         for (self_sketch, other_sketch) in self
             .sketch_metadata
@@ -275,18 +234,93 @@ impl PartialEq for MultiSketch {
         {
             if self_sketch != other_sketch {
                 mismatch = true;
+                println!(
+                    "Sketches mismatching. Self: {}, Other: {}",
+                    self_sketch, other_sketch
+                );
                 break;
             }
         }
-        mismatch |= self.sketch_size == other.sketch_size;
-        mismatch |= self.kmer_lengths == other.kmer_lengths;
-        mismatch |= self.name_map == other.name_map;
-        mismatch |= self.sketch_bins == other.sketch_bins;
-        mismatch |= self.bin_stride == other.bin_stride;
-        mismatch |= self.kmer_stride == other.kmer_stride;
-        mismatch |= self.sample_stride == other.sample_stride;
-        mismatch |= self.sketch_version == other.sketch_version;
-        mismatch |= self.hash_type == other.hash_type;
+        mismatch |= self.sketch_size != other.sketch_size;
+        if mismatch {
+            println!(
+                "Sketch sizes are mismatching. Self: {}, Other: {}",
+                self.sketch_size, other.sketch_size
+            );
+            return false;
+        }
+
+        mismatch |= self.kmer_lengths != other.kmer_lengths;
+        if mismatch {
+            println!(
+                "Kmer lengths are mismatching. Self: {:?}, Other: {:?}",
+                self.kmer_lengths, other.kmer_lengths
+            );
+            return false;
+        }
+
+        mismatch |= self.name_map != other.name_map;
+        if mismatch {
+            println!(
+                "Name maps are mismatching. Self: {:?}, Other: {:?}",
+                self.name_map, other.name_map
+            );
+            return false;
+        }
+
+        mismatch |= self.sketch_bins != other.sketch_bins;
+        if mismatch {
+            println!(
+                "Sketch bins are mismatching. Self: {:?}, Other: {:?}",
+                self.sketch_bins, other.sketch_bins
+            );
+            return false;
+        }
+
+        mismatch |= self.bin_stride != other.bin_stride;
+        if mismatch {
+            println!(
+                "Bin strides are mismatching. Self: {}, Other: {}",
+                self.bin_stride, other.bin_stride
+            );
+            return false;
+        }
+
+        mismatch |= self.kmer_stride != other.kmer_stride;
+        if mismatch {
+            println!(
+                "Kmer strides are mismatching. Self: {}, Other: {}",
+                self.kmer_stride, other.kmer_stride
+            );
+            return false;
+        }
+
+        mismatch |= self.sample_stride != other.sample_stride;
+        if mismatch {
+            println!(
+                "Sample strides are mismatching. Self: {}, Other: {}",
+                self.sample_stride, other.sample_stride
+            );
+            return false;
+        }
+
+        mismatch |= self.sketch_version != other.sketch_version;
+        if mismatch {
+            println!(
+                "Sketch versions are mismatching. Self: {:?}, Other: {:?}",
+                self.sketch_version, other.sketch_version
+            );
+            return false;
+        }
+
+        mismatch |= self.hash_type != other.hash_type;
+        if mismatch {
+            println!(
+                "Hash types are mismatching. Self: {:?}, Other: {:?}",
+                self.hash_type, other.hash_type
+            );
+            return false;
+        }
         !mismatch
     }
 }

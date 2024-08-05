@@ -7,10 +7,7 @@ use std::{
 use assert_fs::{prelude::*, TempDir};
 use predicates::prelude::*;
 
-use hashbrown::HashSet;
-
 #[cfg(test)]
-use pretty_assertions::assert_eq;
 
 // Creates correct path for input/output files
 static FILE_IN: &'static str = "tests/test_files_in";
@@ -160,51 +157,4 @@ impl TestSetup {
         }
         RFILE_NAME
     }
-}
-
-// Helper for multi sample fasta, where column order isn't conserved
-pub fn var_hash(aln_string: &[u8]) -> HashSet<Vec<char>> {
-    let fastq_align_out = String::from_utf8(aln_string.to_vec()).unwrap();
-    let mut sample_vecs: Vec<Vec<char>> = Vec::new();
-
-    // Read sample lines
-    for (idx, line) in fastq_align_out.lines().enumerate() {
-        if idx % 2 == 1 {
-            let line_vec: Vec<char> = line.chars().collect();
-            sample_vecs.push(line_vec);
-        }
-    }
-
-    // Transpose into a set
-    let mut variant_pairs: HashSet<Vec<char>> = HashSet::new();
-    for var_idx in 0..sample_vecs[0].len() {
-        let mut var_vec = Vec::new();
-        for sample_vec in &sample_vecs {
-            var_vec.push(sample_vec[var_idx]);
-        }
-        variant_pairs.insert(var_vec);
-    }
-
-    return variant_pairs;
-}
-
-// Helper for comparing mapped alignments with different sample names
-pub fn cmp_map_aln(aln1: &[u8], aln2: &[u8]) {
-    let aln1_str = String::from_utf8(aln1.to_vec()).unwrap();
-    let aln2_str = String::from_utf8(aln2.to_vec()).unwrap();
-
-    for (line1, line2) in aln1_str.lines().zip(aln2_str.lines()).skip(1).step_by(2) {
-        assert_eq!(line1, line2);
-    }
-}
-
-// Helper for checking alignment length
-pub fn aln_length(aln1: &[u8]) -> Vec<usize> {
-    let aln1_str = String::from_utf8(aln1.to_vec()).unwrap();
-
-    let mut lengths = Vec::new();
-    for aln_line in aln1_str.lines().skip(1).step_by(2) {
-        lengths.push(aln_line.len());
-    }
-    lengths
 }
