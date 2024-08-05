@@ -147,6 +147,7 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
+    /// Merge two sketch files (.skm and .skd pair)
     Merge {
         /// The first .skd (sketch data) file
         #[arg(required = true)]
@@ -160,7 +161,7 @@ pub enum Commands {
         #[arg(required = true, short)]
         output: String,
     },
-
+    /// Print information about a .skm file
     Info {
         /// Sketch metadata file (.skm) to describe
         skm_file: String,
