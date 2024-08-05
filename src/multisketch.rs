@@ -161,22 +161,16 @@ impl MultiSketch {
     }
 
     pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
-        let mut sketch1_names: HashSet<String> = HashSet::new();
-        for sketch in self.sketch_metadata.iter() {
-            let name = sketch.name().to_string();
-            sketch1_names.insert(name);
-        }
-        let sketch1_len = self.sketch_metadata.len();
         // First metadata
         for sketch in sketch2.sketch_metadata.iter() {
-            if sketch1_names.contains(sketch.name()) {
+            if self.name_map.contains_key(sketch.name()) {
                 panic!(
-                    "{} seems to appear in both databases. Cannot merge sketches.",
+                    "{} appears in both databases. Cannot merge sketches.",
                     sketch.name()
                 );
             } else {
                 let mut temp_sketch: Sketch = sketch.clone();
-                let new_index = temp_sketch.get_index() + sketch1_len;
+                let new_index = temp_sketch.get_index() + self.sketch_metadata.len();
                 temp_sketch.set_index(new_index);
                 self.name_map
                     .insert(temp_sketch.name().to_string(), new_index);
