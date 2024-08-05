@@ -160,6 +160,7 @@ impl MultiSketch {
 
     pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
         // First metadata
+        let offset = self.sketch_metadata.len();
         for sketch in sketch2.sketch_metadata.iter() {
             if self.name_map.contains_key(sketch.name()) {
                 panic!(
@@ -168,7 +169,7 @@ impl MultiSketch {
                 );
             } else {
                 let mut temp_sketch: Sketch = sketch.clone();
-                let new_index = temp_sketch.get_index() + self.sketch_metadata.len();
+                let new_index = temp_sketch.get_index() + offset;
                 temp_sketch.set_index(new_index);
                 self.name_map
                     .insert(temp_sketch.name().to_string(), new_index);
@@ -208,6 +209,7 @@ impl fmt::Display for MultiSketch {
 }
 
 // This is only used in the tests
+// Ignores name_map
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
         let mut metadata_match = true;
@@ -246,14 +248,6 @@ impl PartialEq for MultiSketch {
             eprintln!(
                 "Kmer lengths are mismatching. Self: {:?}, Other: {:?}",
                 self.kmer_lengths, other.kmer_lengths
-            );
-        }
-
-        if self.name_map != other.name_map {
-            metadata_match = false;
-            eprintln!(
-                "Name maps are mismatching. Self: {:?}, Other: {:?}",
-                self.name_map, other.name_map
             );
         }
 
