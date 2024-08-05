@@ -218,10 +218,10 @@ impl fmt::Display for MultiSketch {
 // This is only used in the tests
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
-        let mut mismatch: bool = false;
+        let mut metadata_match: bool = true;
         if self.sketch_metadata.len() != other.sketch_metadata.len() {
-            mismatch = true;
-            println!(
+            metadata_match = false;
+            log::error!(
                 "Sketch metadata lengths is mismatching. Self: {}, Other: {}",
                 self.sketch_metadata.len(),
                 other.sketch_metadata.len()
@@ -233,94 +233,85 @@ impl PartialEq for MultiSketch {
             .zip(other.sketch_metadata.iter())
         {
             if self_sketch != other_sketch {
-                mismatch = true;
-                println!(
+                metadata_match = false;
+                log::error!(
                     "Sketches mismatching. Self: {}, Other: {}",
                     self_sketch, other_sketch
                 );
                 break;
             }
         }
-        mismatch |= self.sketch_size != other.sketch_size;
-        if mismatch {
-            println!(
+        if self.sketch_size != other.sketch_size {
+            metadata_match = false;
+            log::error!(
                 "Sketch sizes are mismatching. Self: {}, Other: {}",
                 self.sketch_size, other.sketch_size
             );
-            return false;
         }
 
-        mismatch |= self.kmer_lengths != other.kmer_lengths;
-        if mismatch {
-            println!(
+        if self.kmer_lengths != other.kmer_lengths {
+            metadata_match = false;
+            log::error!(
                 "Kmer lengths are mismatching. Self: {:?}, Other: {:?}",
                 self.kmer_lengths, other.kmer_lengths
             );
-            return false;
         }
 
-        mismatch |= self.name_map != other.name_map;
-        if mismatch {
-            println!(
+        if self.name_map != other.name_map {
+            metadata_match = false;
+            log::error!(
                 "Name maps are mismatching. Self: {:?}, Other: {:?}",
                 self.name_map, other.name_map
             );
-            return false;
         }
 
-        mismatch |= self.sketch_bins != other.sketch_bins;
-        if mismatch {
-            println!(
+        if self.sketch_bins != other.sketch_bins {
+            metadata_match = false;
+            log::error!(
                 "Sketch bins are mismatching. Self: {:?}, Other: {:?}",
                 self.sketch_bins, other.sketch_bins
             );
-            return false;
         }
 
-        mismatch |= self.bin_stride != other.bin_stride;
-        if mismatch {
-            println!(
+        if self.bin_stride != other.bin_stride {
+            metadata_match = false;
+            log::error!(
                 "Bin strides are mismatching. Self: {}, Other: {}",
                 self.bin_stride, other.bin_stride
             );
-            return false;
         }
 
-        mismatch |= self.kmer_stride != other.kmer_stride;
-        if mismatch {
-            println!(
+        if self.kmer_stride != other.kmer_stride {
+            metadata_match = false;
+            log::error!(
                 "Kmer strides are mismatching. Self: {}, Other: {}",
                 self.kmer_stride, other.kmer_stride
             );
-            return false;
         }
 
-        mismatch |= self.sample_stride != other.sample_stride;
-        if mismatch {
-            println!(
+        if self.sample_stride != other.sample_stride {
+            metadata_match = false;
+            log::error!(
                 "Sample strides are mismatching. Self: {}, Other: {}",
                 self.sample_stride, other.sample_stride
             );
-            return false;
         }
 
-        mismatch |= self.sketch_version != other.sketch_version;
-        if mismatch {
-            println!(
+        if self.sketch_version != other.sketch_version {
+            metadata_match = false;
+            log::error!(
                 "Sketch versions are mismatching. Self: {:?}, Other: {:?}",
                 self.sketch_version, other.sketch_version
             );
-            return false;
         }
 
-        mismatch |= self.hash_type != other.hash_type;
-        if mismatch {
-            println!(
+        if self.hash_type != other.hash_type {
+            metadata_match = false;
+            log::error!(
                 "Hash types are mismatching. Self: {:?}, Other: {:?}",
                 self.hash_type, other.hash_type
             );
-            return false;
         }
-        !mismatch
+        metadata_match
     }
 }
