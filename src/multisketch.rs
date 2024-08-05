@@ -158,6 +158,17 @@ impl MultiSketch {
             && self.get_hash_type() == sketch2.get_hash_type()
     }
 
+    pub fn concat_competibility(&self, name_vec: &[(String, String, Option<String>)]) {
+        for (id, _, _) in name_vec.iter() {
+            if self.name_map.contains_key(id) {
+                panic!(
+                    "{} appears in both the database and the provided files. Cannot concat files.",
+                    id
+                );
+            }
+        }
+    }
+
     pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
         // First metadata
         let offset = self.sketch_metadata.len();
