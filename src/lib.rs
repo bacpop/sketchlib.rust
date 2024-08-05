@@ -12,6 +12,7 @@ extern crate arrayref;
 extern crate num_cpus;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
+use anyhow::Error;
 
 pub mod cli;
 use crate::cli::*;
@@ -45,7 +46,7 @@ pub const DEFAULT_KMER: usize = 17;
 pub const CHUNK_SIZE: usize = 1000;
 
 #[doc(hidden)]
-pub fn main() {
+pub fn main() -> Result<(), Error> {
     let args = cli_args();
     if args.verbose {
         simple_logger::init_with_level(log::Level::Info).unwrap();
@@ -56,7 +57,7 @@ pub fn main() {
 
     let mut print_success = true;
     let start = Instant::now();
-    match &args.command {
+    let result = match &args.command {
         Commands::Sketch {
             seq_files,
             file_list,
@@ -117,6 +118,7 @@ pub fn main() {
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
+            Ok(())
         }
         Commands::Dist {
             ref_db,
@@ -362,6 +364,7 @@ pub fn main() {
                     write!(output_file, "{distances}").expect("Error writing output distances");
                 }
             }
+            Ok(())
         }
         Commands::Merge { db1, db2, output } => {
             let ref_db_name1 = utils::strip_sketch_extension(db1);
@@ -391,10 +394,7 @@ pub fn main() {
                 .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", str_output));
 
             // merge actual sketch data
-            match utils::save_sketch_data(db1, db2, str_output) {
-                Ok(_) => println!("Sketch data saved successfully."),
-                Err(e) => eprintln!("Error saving sketch data: {}", e),
-            }
+            utils::save_sketch_data(db1, db2, str_output)
         }
 
         Commands::Info {
@@ -417,8 +417,9 @@ pub fn main() {
                 println!("{sketches:?}");
             }
             print_success = false; // Turn the final message off
+            Ok(())
         }
-    }
+    };
     let end = Instant::now();
 
     log::info!("Complete");
@@ -428,4 +429,5 @@ pub fn main() {
             end.duration_since(start).as_secs()
         );
     }
+    result
 }
