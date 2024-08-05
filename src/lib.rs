@@ -370,6 +370,7 @@ pub fn main() -> Result<(), Error> {
             let ref_db_name1 = utils::strip_sketch_extension(db1);
             let ref_db_name2 = utils::strip_sketch_extension(db2);
 
+            
             let mut sketches1: MultiSketch = MultiSketch::load(ref_db_name1).unwrap_or_else(|_| {
                 panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
             });
@@ -383,18 +384,16 @@ pub fn main() -> Result<(), Error> {
                 panic!("Databases are not compatible for merging.")
             }
 
-            // make &str
-            let str_output: &str = output.as_str();
 
             let merged_sketch = sketches1.merge_sketches(&sketches2);
 
             // merge metadata
             merged_sketch
-                .save_metadata(str_output)
-                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", str_output));
+                .save_metadata(output)
+                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", output));
 
             // merge actual sketch data
-            utils::save_sketch_data(db1, db2, str_output)
+            utils::save_sketch_data(db1, db2, output)
         }
 
         Commands::Info {
