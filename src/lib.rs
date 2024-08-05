@@ -10,6 +10,7 @@ use std::time::Instant;
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
+use anyhow::Error;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
 
@@ -37,13 +38,15 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
 pub mod bloom_filter;
 pub mod hashing;
 
+pub mod utils;
+
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
 pub const CHUNK_SIZE: usize = 1000;
 
 #[doc(hidden)]
-pub fn main() {
+pub fn main() -> Result<(), Error> {
     let args = cli_args();
     if args.verbose {
         simple_logger::init_with_level(log::Level::Info).unwrap();
@@ -54,7 +57,7 @@ pub fn main() {
 
     let mut print_success = true;
     let start = Instant::now();
-    match &args.command {
+    let result = match &args.command {
         Commands::Sketch {
             seq_files,
             file_list,
@@ -115,6 +118,7 @@ pub fn main() {
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
+            Ok(())
         }
         Commands::Dist {
             ref_db,
@@ -130,11 +134,8 @@ pub fn main() {
 
             let mut output_file = set_ostream(output);
 
-            let ref_db_name = if ref_db.ends_with(".skm") || ref_db.ends_with(".skd") {
-                &ref_db[0..ref_db.len() - 4]
-            } else {
-                ref_db.as_str()
-            };
+            let ref_db_name = utils::strip_sketch_extension(ref_db);
+
             let mut references = MultiSketch::load(ref_db_name)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
@@ -363,7 +364,37 @@ pub fn main() {
                     write!(output_file, "{distances}").expect("Error writing output distances");
                 }
             }
+            Ok(())
         }
+        Commands::Merge { db1, db2, output } => {
+            let ref_db_name1 = utils::strip_sketch_extension(db1);
+            let ref_db_name2 = utils::strip_sketch_extension(db2);
+
+            log::info!("Reading input metadata");
+            let mut sketches1: MultiSketch = MultiSketch::load(ref_db_name1).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
+            });
+
+            let sketches2: MultiSketch = MultiSketch::load(ref_db_name2).unwrap_or_else(|_| {
+                panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
+            });
+            // check compatibility
+            if !sketches1.is_compatible_with(&sketches2) {
+                panic!("Databases are not compatible for merging.")
+            }
+
+            log::info!("Merging metadata to {}.skm", output);
+            let merged_sketch = sketches1.merge_sketches(&sketches2);
+            // merge metadata
+            merged_sketch
+                .save_metadata(output)
+                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", output));
+
+            // merge actual sketch data
+            log::info!("Merging and saving sketch data to {}.skd", output);
+            utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
+        }
+
         Commands::Info {
             skm_file,
             sample_info,
@@ -384,8 +415,9 @@ pub fn main() {
                 println!("{sketches:?}");
             }
             print_success = false; // Turn the final message off
+            Ok(())
         }
-    }
+    };
     let end = Instant::now();
 
     log::info!("Complete");
@@ -395,4 +427,5 @@ pub fn main() {
             end.duration_since(start).as_secs()
         );
     }
+    result
 }

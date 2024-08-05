@@ -1,3 +1,4 @@
+use core::panic;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
@@ -95,6 +96,10 @@ impl MultiSketch {
         &self.kmer_lengths
     }
 
+    pub fn get_hash_type(&self) -> &HashType {
+        &self.hash_type
+    }
+
     pub fn sketch_name(&self, index: usize) -> &str {
         match &self.block_reindex {
             Some(block_map) => self.sketch_metadata[block_map[index]].name(),
@@ -141,6 +146,42 @@ impl MultiSketch {
         log::trace!("s1_start:{s1_offset} s1_end:{}", s1_offset + s1_slice.len(),);
         s1_slice
     }
+
+    pub fn remove_sketches(&self, ids: &[String]) {
+        // TODO: remove sketch bins which belong to the duplicate ids
+        todo!();
+    }
+
+    pub fn is_compatible_with(&self, sketch2: &Self) -> bool {
+        self.kmer_lengths() == sketch2.kmer_lengths()
+            && self.sketch_size == sketch2.sketch_size
+            && self.get_hash_type() == sketch2.get_hash_type()
+    }
+
+    pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
+        // First metadata
+        let offset = self.sketch_metadata.len();
+        for sketch in sketch2.sketch_metadata.iter() {
+            if self.name_map.contains_key(sketch.name()) {
+                panic!(
+                    "{} appears in both databases. Cannot merge sketches.",
+                    sketch.name()
+                );
+            } else {
+                let mut temp_sketch: Sketch = sketch.clone();
+                let new_index = temp_sketch.get_index() + offset;
+                temp_sketch.set_index(new_index);
+                self.name_map
+                    .insert(temp_sketch.name().to_string(), new_index);
+                self.sketch_metadata.push(temp_sketch);
+            }
+        }
+
+        self
+    }
+
+    // This function is called when sketches are merged, not when they are
+    // first sketched (this is handled by sketch::sketch_files())
 }
 
 impl fmt::Debug for MultiSketch {
@@ -164,5 +205,99 @@ impl fmt::Display for MultiSketch {
             write!(f, "{sketch}")?;
         }
         Ok(())
+    }
+}
+
+// This is only used in the tests
+// Ignores name_map
+impl PartialEq for MultiSketch {
+    fn eq(&self, other: &Self) -> bool {
+        let mut metadata_match = true;
+        if self.sketch_metadata.len() != other.sketch_metadata.len() {
+            metadata_match = false;
+            eprintln!(
+                "Sketch metadata lengths is mismatching. Self: {}, Other: {}",
+                self.sketch_metadata.len(),
+                other.sketch_metadata.len()
+            );
+        }
+        for (self_sketch, other_sketch) in self
+            .sketch_metadata
+            .iter()
+            .zip(other.sketch_metadata.iter())
+        {
+            if self_sketch != other_sketch {
+                metadata_match = false;
+                eprintln!(
+                    "Sketches mismatching. Self: {}, Other: {}",
+                    self_sketch, other_sketch
+                );
+                break;
+            }
+        }
+        if self.sketch_size != other.sketch_size {
+            metadata_match = false;
+            eprintln!(
+                "Sketch sizes are mismatching. Self: {}, Other: {}",
+                self.sketch_size, other.sketch_size
+            );
+        }
+
+        if self.kmer_lengths != other.kmer_lengths {
+            metadata_match = false;
+            eprintln!(
+                "Kmer lengths are mismatching. Self: {:?}, Other: {:?}",
+                self.kmer_lengths, other.kmer_lengths
+            );
+        }
+
+        if self.sketch_bins != other.sketch_bins {
+            metadata_match = false;
+            eprintln!(
+                "Sketch bins are mismatching. Self: {:?}, Other: {:?}",
+                self.sketch_bins, other.sketch_bins
+            );
+        }
+
+        if self.bin_stride != other.bin_stride {
+            metadata_match = false;
+            eprintln!(
+                "Bin strides are mismatching. Self: {}, Other: {}",
+                self.bin_stride, other.bin_stride
+            );
+        }
+
+        if self.kmer_stride != other.kmer_stride {
+            metadata_match = false;
+            eprintln!(
+                "Kmer strides are mismatching. Self: {}, Other: {}",
+                self.kmer_stride, other.kmer_stride
+            );
+        }
+
+        if self.sample_stride != other.sample_stride {
+            metadata_match = false;
+            eprintln!(
+                "Sample strides are mismatching. Self: {}, Other: {}",
+                self.sample_stride, other.sample_stride
+            );
+        }
+
+        if self.sketch_version != other.sketch_version {
+            metadata_match = false;
+            eprintln!(
+                "Sketch versions are mismatching. Self: {:?}, Other: {:?}",
+                self.sketch_version, other.sketch_version
+            );
+        }
+
+        if self.hash_type != other.hash_type {
+            metadata_match = false;
+            eprintln!(
+                "Hash types are mismatching. Self: {:?}, Other: {:?}",
+                self.hash_type, other.hash_type
+            );
+        }
+        metadata_match
     }
 }

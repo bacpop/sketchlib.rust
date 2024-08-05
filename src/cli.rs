@@ -147,10 +147,20 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    // TODO add a merge mode
-    // TODO add a concat mode (add sketch to existing DB)
-    // TODO add a delete mode
-    // TODO add a reorder mode
+    /// Merge two sketch files (.skm and .skd pair)
+    Merge {
+        /// The first .skd (sketch data) file
+        #[arg(required = true)]
+        db1: String,
+
+        /// The second .skd (sketch data) file
+        #[arg(required = true)]
+        db2: String,
+
+        /// Output filename for the merged sketch
+        #[arg(required = true, short)]
+        output: String,
+    },
     /// Print information about a .skm file
     Info {
         /// Sketch metadata file (.skm) to describe
