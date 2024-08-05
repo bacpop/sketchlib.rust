@@ -62,9 +62,7 @@ impl TestSetup {
             TestDir::Input => {
                 PathBuf::from(&format!("{}/{}/{}", self.wd.path().display(), SYM_IN, name))
             }
-            TestDir::Output => {
-                PathBuf::from(&format!("{}/{}", self.wd.path().display(), name))
-            }
+            TestDir::Output => PathBuf::from(&format!("{}/{}", self.wd.path().display(), name)),
             TestDir::Correct => PathBuf::from(&format!(
                 "{}/{}/{}",
                 self.wd.path().display(),

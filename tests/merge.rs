@@ -1,4 +1,6 @@
+use predicates::prelude::*;
 use snapbox::cmd::{cargo_bin, Command};
+use std::path::Path;
 
 pub mod common;
 use crate::common::*;
@@ -72,10 +74,21 @@ mod tests {
             MultiSketch::load(&sandbox.file_string("sketches_all", TestDir::Correct))
                 .expect("Failed to load expected merged sketch");
 
-        // assess if sketches are the same
+        let predicate_file = predicate::path::eq_file(Path::new(
+            &sandbox.file_string("merge_test.skd", TestDir::Output),
+        ));
+        assert_eq!(
+            true,
+            predicate_file.eval(Path::new(
+                &sandbox.file_string("sketches_all.skd", TestDir::Correct)
+            )),
+            "Merged sketch data does not match"
+        );
+
+        // assess if sketch metadata are the same
         assert_eq!(
             merged_sketch, expected_sketch,
-            "Merged sketch does not match expected sketch"
+            "Merged sketch metadata does not match"
         );
     }
 }

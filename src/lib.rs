@@ -10,9 +10,9 @@ use std::time::Instant;
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
+use anyhow::Error;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
-use anyhow::Error;
 
 pub mod cli;
 use crate::cli::*;

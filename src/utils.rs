@@ -13,7 +13,11 @@ pub fn strip_sketch_extension(file_name: &str) -> &str {
 }
 
 /// Concatenates two .skd files using [`std::io::copy`]
-pub fn save_sketch_data(db1_prefix: &str, db2_prefix: &str, str_output: &str) -> Result<(), anyhow::Error> {
+pub fn save_sketch_data(
+    db1_prefix: &str,
+    db2_prefix: &str,
+    str_output: &str,
+) -> Result<(), anyhow::Error> {
     let mut output_file = File::create(format!("{}.skd", str_output))?;
     // Open and copy the contents of the first input file
     let mut db_sketch1 = File::open(format!("{}.skd", db1_prefix))?;
