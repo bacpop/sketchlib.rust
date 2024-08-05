@@ -383,7 +383,7 @@ pub fn main() -> Result<(), Error> {
                 panic!("Databases are not compatible for merging.")
             }
 
-            log::info!("Merging and saving metadata to {}.skm", output);
+            log::info!("Merging metadata to {}.skm", output);
             let merged_sketch = sketches1.merge_sketches(&sketches2);
             // merge metadata
             merged_sketch
@@ -392,7 +392,7 @@ pub fn main() -> Result<(), Error> {
 
             // merge actual sketch data
             log::info!("Merging and saving sketch data to {}.skd", output);
-            utils::save_sketch_data(db1, db2, output)
+            utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
 
         Commands::Info {

@@ -19,6 +19,7 @@ static RFILE_NAME: &'static str = "file_list.txt";
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum TestDir {
     Input,
+    Output,
     Correct,
 }
 
@@ -60,6 +61,9 @@ impl TestSetup {
         match file_type {
             TestDir::Input => {
                 PathBuf::from(&format!("{}/{}/{}", self.wd.path().display(), SYM_IN, name))
+            }
+            TestDir::Output => {
+                PathBuf::from(&format!("{}/{}", self.wd.path().display(), name))
             }
             TestDir::Correct => PathBuf::from(&format!(
                 "{}/{}/{}",

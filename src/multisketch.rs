@@ -12,8 +12,6 @@ use crate::hashing::HashType;
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
-use std::collections::HashSet;
-
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     pub sketch_size: u64,
@@ -212,7 +210,7 @@ impl fmt::Display for MultiSketch {
 // This is only used in the tests
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
-        let mut metadata_match: bool = true;
+        let mut metadata_match = true;
         if self.sketch_metadata.len() != other.sketch_metadata.len() {
             metadata_match = false;
             log::error!(

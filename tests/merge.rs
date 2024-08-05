@@ -61,16 +61,16 @@ mod tests {
             .arg(sandbox.file_string("test_merge_sketches1", TestDir::Input))
             .arg(sandbox.file_string("test_merge_sketches2", TestDir::Input))
             .arg("-v")
-            .args(&["-o", &sandbox.file_string("merge_test", TestDir::Input)])
+            .args(&["-o", "merge_test"])
             .assert()
             .success();
 
         let merged_sketch: MultiSketch =
-            MultiSketch::load(&sandbox.file_string("merge_test", TestDir::Input))
-                .expect("Failed to load merged sketch");
+            MultiSketch::load(&sandbox.file_string("merge_test", TestDir::Output))
+                .expect("Failed to load output merged sketch");
         let expected_sketch =
             MultiSketch::load(&sandbox.file_string("sketches_all", TestDir::Correct))
-                .expect("Failed to load expected sketch");
+                .expect("Failed to load expected merged sketch");
 
         // assess if sketches are the same
         assert_eq!(
