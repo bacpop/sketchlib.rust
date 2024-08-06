@@ -161,7 +161,7 @@ pub enum Commands {
         #[arg(required = true, short)]
         output: String,
     },
-    /// Concat one sketch file (.skm and .skd pair) with new genomes
+    /// Concat one sketch file (.skm and .skd pair) with new genomes (seq_files or files_list)
     Concat {
         /// The first .skd (sketch data) file
         #[arg(required = true)]
@@ -200,7 +200,7 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
 
-         /// aaHash 'level'
+        /// aaHash 'level'
         #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
         level: AaLevel,
     },

@@ -39,6 +39,8 @@ pub mod bloom_filter;
 pub mod hashing;
 
 pub mod utils;
+use std::fs::{File, OpenOptions};
+use std::io::copy;
 
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
@@ -407,7 +409,6 @@ pub fn main() -> Result<(), Error> {
             threads,
             level,
         } => {
-            
             //get input files
             log::info!("Getting input files");
             let input_files: Vec<(String, String, Option<String>)> =
@@ -419,25 +420,23 @@ pub fn main() -> Result<(), Error> {
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", db));
             println!("{:?}", db_metadata);
 
-            println!("{:?}", db_metadata.kmer_lengths());
-            db_metadata.concat_competibility(&input_files);
+            if !db_metadata.concat_competibility(&input_files) {
+                panic!("Databases are not compatible for merging.")
+            }
             log::info!("Passed concat check");
 
             // read out sketching information needed to sketch the new files
             let kmers = db_metadata.kmer_lengths();
-            // Build, merge
             let rc = !*single_strand;
-            // Set expected sketchsize
             let sketch_size = db_metadata.sketch_size;
-            // Set aa level
             let seq_type = db_metadata.get_hash_type();
-
             if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
                 panic!("--concat-fasta currently only supported with --seq-type aa");
             }
+
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
-                kmers,
+                &kmers,
                 sketch_size * u64::BITS as u64,
                 seq_type,
                 threads,
@@ -448,7 +447,7 @@ pub fn main() -> Result<(), Error> {
             } else {
                 seq_type.clone()
             };
-            // sketch freshly incoming files
+            // sketch genomes and save them to concat output file
             let mut db2_sketches = sketch_files(
                 output,
                 &input_files,
@@ -460,17 +459,27 @@ pub fn main() -> Result<(), Error> {
                 *min_count,
                 *min_qual,
             );
-            let db2_metadata = MultiSketch::new(&mut db2_sketches, sketch_size, &kmers, seq_type);
-            db2_metadata
+            let mut db2_metadata =
+                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type);
+
+            // save skd data from db1 and from freshly sketched input files
+            log::info!("Merging and saving sketch data to {}.skd", output);
+            // let mut output_file = File::create(format!("{}.skd", output))?;
+            let mut output_file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(format!("{}.skd", output))?;
+            // stream sketch data directly to concat output file
+            let mut db_sketch = File::open(format!("{}.skd", db))?;
+            println!("{:?}", db_sketch);
+            println!("{:?}", output_file);
+            copy(&mut db_sketch, &mut output_file)?;
+
+            // merge and update skm from db1 and the new just sketched sketch
+            let concat_metadata = db2_metadata.merge_sketches(&db_metadata);
+            concat_metadata
                 .save_metadata(output)
-                .expect("Error saving metadata");
-
-            // // save skd data from db1 and from freshly sketched input files
-            // log::info!("Merging and saving sketch data to {}.skd", output);
-            // utils::save_sketch_data(db_metadata, db2, output);
-
-            // // read in skm from db1
-            // // merge and update skm from db1 and the new just sketched sketch
+                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", output));
             Ok(())
         }
 
