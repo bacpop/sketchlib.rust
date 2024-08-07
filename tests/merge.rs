@@ -130,8 +130,8 @@ mod tests {
 
         // Check .skm the same
         let merged_sketch: MultiSketch =
-        MultiSketch::load(&sandbox.file_string("merged_test", TestDir::Output))
-            .expect("Failed to load output merged sketch");
+            MultiSketch::load(&sandbox.file_string("merged_test", TestDir::Output))
+                .expect("Failed to load output merged sketch");
         let expected_sketch =
             MultiSketch::load(&sandbox.file_string("merged_ref", TestDir::Output))
                 .expect("Failed to load expected merged sketch");

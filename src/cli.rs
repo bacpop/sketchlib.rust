@@ -161,6 +161,49 @@ pub enum Commands {
         #[arg(required = true, short)]
         output: String,
     },
+    /// Append new genomes to be sketched to an existing sketch database
+    Append {
+        /// Sketching database basename (so without .skm or .skd)
+        #[arg(required = true)]
+        db: String,
+
+        /// List of input FASTA files
+        #[arg(long, group = "input", num_args = 1.., value_delimiter = ',')]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+
+        /// Output filename for the merged sketch
+        #[arg(required = true, short)]
+        output: String,
+
+        /// Ignore reverse complement (all contigs are oriented along same strand)
+        #[arg(long, default_value_t = DEFAULT_STRAND)]
+        single_strand: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
+
+        /// Treat every sequence in an input file as a new sample (aa only)
+        // TODO: for now, could be extended to dna, but probably no need
+        #[arg(long, default_value_t = false)]
+        concat_fasta: bool,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+
+        /// aaHash 'level'
+        #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
+        level: AaLevel,
+    },
     /// Print information about a .skm file
     Info {
         /// Sketch metadata file (.skm) to describe

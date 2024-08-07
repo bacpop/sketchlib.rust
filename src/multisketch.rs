@@ -1,5 +1,5 @@
 use core::panic;
-use std::error::Error;
+use anyhow::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -60,7 +60,7 @@ impl MultiSketch {
     }
 
     /// Saves the metadata
-    pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
+    pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
         let filename = format!("{}.skm", file_prefix);
         log::info!("Saving sketch metadata to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
@@ -69,7 +69,7 @@ impl MultiSketch {
         Ok(())
     }
 
-    pub fn load(file_prefix: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn load(file_prefix: &str) -> Result<Self, Error> {
         let filename = format!("{}.skm", file_prefix);
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
@@ -156,6 +156,23 @@ impl MultiSketch {
         self.kmer_lengths() == sketch2.kmer_lengths()
             && self.sketch_size == sketch2.sketch_size
             && self.get_hash_type() == sketch2.get_hash_type()
+    }
+
+    pub fn append_compatibility(&self, name_vec: &[(String, String, Option<String>)]) -> bool {
+        let mut compatibility = true;
+        let mut duplicate_list = Vec::new();
+        for (id, _, _) in name_vec.iter() {
+            if self.name_map.contains_key(id) {
+                duplicate_list.push(id);
+                compatibility = false;
+            }
+        }
+
+        if !duplicate_list.is_empty() {
+            println!("Duplicates found: {:?}", duplicate_list);
+        }
+
+        compatibility
     }
 
     pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
