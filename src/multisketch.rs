@@ -1,5 +1,5 @@
 use core::panic;
-use std::error::Error;
+use anyhow::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -60,7 +60,7 @@ impl MultiSketch {
     }
 
     /// Saves the metadata
-    pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Box<dyn Error>> {
+    pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
         let filename = format!("{}.skm", file_prefix);
         log::info!("Saving sketch metadata to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
@@ -69,7 +69,7 @@ impl MultiSketch {
         Ok(())
     }
 
-    pub fn load(file_prefix: &str) -> Result<Self, Box<dyn Error>> {
+    pub fn load(file_prefix: &str) -> Result<Self, Error> {
         let filename = format!("{}.skm", file_prefix);
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);

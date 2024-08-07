@@ -418,8 +418,7 @@ pub fn main() -> Result<(), Error> {
             log::info!("Parsed {} samples in input list", input_files.len());
 
             //check if any of the new files are already existant in the db
-            let db_metadata: MultiSketch = MultiSketch::load(db)
-                .expect(&format!("Could not read sketch metadata from .skm: {}", db));
+            let db_metadata: MultiSketch = MultiSketch::load(db)?;
 
             if !db_metadata.append_compatibility(&input_files) {
                 panic!("Databases are not compatible for merging.")
@@ -472,15 +471,13 @@ pub fn main() -> Result<(), Error> {
                 .open(format!("{}.skd", output))?;
             // stream sketch data directly to concat output file
             let mut db_sketch = File::open(format!("{}.skd", db))?;
-            println!("{:?}", db_sketch);
-            println!("{:?}", output_file);
             copy(&mut db_sketch, &mut output_file)?;
 
             // merge and update skm from db1 and the new just sketched sketch
             let concat_metadata = db2_metadata.merge_sketches(&db_metadata);
             concat_metadata
                 .save_metadata(output)
-                .expect(&format!("Could not save metadata to {}", output));
+                .unwrap_or_else(|_| panic!("Could not save metadata to {}", output));
             Ok(())
         }
 
