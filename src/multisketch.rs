@@ -158,14 +158,21 @@ impl MultiSketch {
             && self.get_hash_type() == sketch2.get_hash_type()
     }
 
-    pub fn concat_competibility(&self, name_vec: &[(String, String, Option<String>)]) -> bool {
+    pub fn append_compatibility(&self, name_vec: &[(String, String, Option<String>)]) -> bool {
+        let mut compatibility = true;
+        let mut duplicate_list = Vec::new();
         for (id, _, _) in name_vec.iter() {
             if self.name_map.contains_key(id) {
-                println!("{} is found in both database and input fasta", id);
-                return false;
+                duplicate_list.push(id);
+                compatibility = false;
             }
         }
-        true
+
+        if !duplicate_list.is_empty() {
+            println!("Duplicates found: {:?}", duplicate_list);
+        }
+
+        compatibility
     }
 
     pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {

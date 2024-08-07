@@ -397,7 +397,7 @@ pub fn main() -> Result<(), Error> {
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
 
-        Commands::Concat {
+        Commands::Append {
             db,
             seq_files,
             file_list,
@@ -409,6 +409,8 @@ pub fn main() -> Result<(), Error> {
             threads,
             level,
         } => {
+            // An extra thread is needed for the writer. This doesn't 'overuse' CPU
+            check_threads(*threads + 1);
             //get input files
             log::info!("Getting input files");
             let input_files: Vec<(String, String, Option<String>)> =
@@ -417,10 +419,9 @@ pub fn main() -> Result<(), Error> {
 
             //check if any of the new files are already existant in the db
             let db_metadata: MultiSketch = MultiSketch::load(db)
-                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", db));
-            println!("{:?}", db_metadata);
+                .expect(&format!("Could not read sketch metadata from .skm: {}", db));
 
-            if !db_metadata.concat_competibility(&input_files) {
+            if !db_metadata.append_compatibility(&input_files) {
                 panic!("Databases are not compatible for merging.")
             }
             log::info!("Passed concat check");
@@ -436,7 +437,7 @@ pub fn main() -> Result<(), Error> {
 
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
-                &kmers,
+                kmers,
                 sketch_size * u64::BITS as u64,
                 seq_type,
                 threads,
@@ -452,7 +453,7 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
-                &kmers,
+                kmers,
                 sketch_size,
                 &seq_type,
                 rc,
@@ -479,7 +480,7 @@ pub fn main() -> Result<(), Error> {
             let concat_metadata = db2_metadata.merge_sketches(&db_metadata);
             concat_metadata
                 .save_metadata(output)
-                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", output));
+                .expect(&format!("Could not save metadata to {}", output));
             Ok(())
         }
 

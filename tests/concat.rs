@@ -4,48 +4,16 @@ use std::path::Path;
 
 pub mod common;
 use crate::common::*;
-
-#[path = "../src/io.rs"]
-pub mod io;
+use sketchlib::io::*;
 
 use sketchlib::multisketch::MultiSketch;
 
 #[cfg(test)]
 
 mod tests {
+    use sketchlib::io;
     use super::*;
-
-    #[test]
-    fn concat_competibility_test() {
-        let sandbox = TestSetup::setup();
-        let ref_db1 = sandbox.file_string("sketches1", TestDir::Input);
-        let ref_db2 = sandbox.file_string("sketches2", TestDir::Input);
-        let file_list_name = sandbox.file_string("fasta.txt", TestDir::Input);
-        let non_seq_files: Option<Vec<String>> = None;
-
-
-        let file_list: Option<String> = Some(file_list_name);
-        //get input files with file_list
-        log::info!("Getting input files for test");
-        let input_file_list = io::get_input_list(&file_list, &non_seq_files);
-        log::info!("Parsed {} samples in input list", input_file_list.len());
-
-        //check if any of the new files are already existant in the db
-        let db1_metadata: MultiSketch = MultiSketch::load(&ref_db1)
-            .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db1));
-        println!("{:?}", db1_metadata);
-
-        //check if any of the new files are already existant in the db
-        let db2_metadata: MultiSketch = MultiSketch::load(&ref_db2)
-            .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db2));
-        println!("{:?}", db2_metadata);
-
-        // Test case 1:
-        assert!(
-            !db1_metadata.concat_competibility(&input_file_list),
-            "Sketches should not be compatible"
-        );
-    }
+   
 
     #[test]
     fn test_concat_sketches() {
@@ -62,7 +30,6 @@ mod tests {
             .args(&["-o", "part1"])
             .assert()
             .success();
-        log::info!("Part 1 Sketched");
 
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
@@ -75,7 +42,6 @@ mod tests {
             .args(&["-o", "part2"])
             .assert()
             .success();
-        log::info!("Part 2 Sketched");
 
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
@@ -90,7 +56,6 @@ mod tests {
             .args(&["-o", "concat_ref"])
             .assert()
             .success();
-        log::info!("concat_ref Sketched");
 
         // Overlapping labels fails
         Command::new(cargo_bin("sketchlib"))
@@ -107,7 +72,7 @@ mod tests {
 
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
-            .arg("concat")
+            .arg("append")
             .arg("part1")
             .arg("--seq-files")
             // .arg(sandbox.file_string("fasta_part2.txt", TestDir::Input))
@@ -117,7 +82,6 @@ mod tests {
             .args(&["-o", "concat_test"])
             .assert()
             .success();
-        log::info!("concat_test Sketched");
 
         // Check .skm the same
         let concat_sketch: MultiSketch =

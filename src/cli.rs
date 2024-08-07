@@ -161,9 +161,9 @@ pub enum Commands {
         #[arg(required = true, short)]
         output: String,
     },
-    /// Concat one sketch file (.skm and .skd pair) with new genomes (seq_files or files_list)
-    Concat {
-        /// The first .skd (sketch data) file
+    /// Append new genomes to be sketched to an existing sketch database
+    Append {
+        /// Sketching database basename (so without .skm or .skd)
         #[arg(required = true)]
         db: String,
 

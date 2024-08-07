@@ -1,4 +1,0 @@
-14412_3#82.contigs_velvet.fa	tests/test_files_in/14412_3#82.contigs_velvet.fa.gz
-14412_3#84.contigs_velvet.fa	tests/test_files_in/14412_3#84.contigs_velvet.fa.gz
-R6.fa	tests/test_files_in/R6.fa.gz
-TIGR4.fa	tests/test_files_in/TIGR4.fa.gz
