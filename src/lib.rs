@@ -113,7 +113,7 @@ pub fn main() -> Result<(), Error> {
                 &input_files,
                 *concat_fasta,
                 #[cfg(feature = "3di")]
-                convert_pdb,
+                *convert_pdb,
                 &kmers,
                 sketch_size,
                 &seq_type,

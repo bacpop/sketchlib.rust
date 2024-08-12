@@ -47,6 +47,10 @@ impl RollHash for NtHashIterator {
         self.acgt.iter().sum()
     }
 
+    fn seq(&self) -> &Vec<u8> {
+        &self.seq
+    }
+
     fn sketch_data(&self) -> (bool, [usize; 4], usize) {
         (self.reads, self.acgt, self.non_acgt)
     }
