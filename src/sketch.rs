@@ -285,7 +285,7 @@ pub fn sketch_files(
 
 
                     // Temporal (?) restrictions to the size of proteins and chains
-                    if seq_type == HashType::PDB {
+                    if *seq_type == HashType::PDB {
                         hash_its
                             .iter_mut()
                             .enumerate()

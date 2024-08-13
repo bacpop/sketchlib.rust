@@ -457,6 +457,8 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
+                #[cfg(feature = "3di")]
+                false,
                 kmers,
                 sketch_size,
                 &seq_type,

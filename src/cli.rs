@@ -69,6 +69,7 @@ pub enum Commands {
         file_list: Option<String>,
 
         /// Treat every sequence in an input file as a new sample (aa only)
+        // TODO: for now, could be extended to dna, but probably no need
         #[arg(long, default_value_t = false)]
         concat_fasta: bool,
 
