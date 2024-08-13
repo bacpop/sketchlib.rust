@@ -55,7 +55,7 @@ rayon = "1.8"
 num_cpus = "1.0"
 
 [build-dependencies]
-pyo3-build-config = {version = "*", optional = true}
+pyo3-build-config = {version = "0.22", optional = true}
 
 [dev-dependencies]
 # testing
