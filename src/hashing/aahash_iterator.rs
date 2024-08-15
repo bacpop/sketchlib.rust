@@ -111,8 +111,8 @@ impl AaHashIterator {
         hash_vec
     }
 
-    pub fn from_3di_file(file: &str, concat_fasta: bool) -> Vec<Self> {
-        Self::new(file, AaLevel::Level1, concat_fasta)
+    pub fn from_3di_file(file: &str) -> Vec<Self> {
+        Self::new(file, AaLevel::Level1, false)
     }
 
     pub fn from_3di_string(sequence: String) -> Vec<Self> {

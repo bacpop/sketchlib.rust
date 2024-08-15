@@ -15,8 +15,6 @@ def pdb_to_3di(struct_name: str, filename: str) -> str:
 
     structure_string = ""
     for chain in struct.get_chains():
-        #if len(list(chain.get_residues())) < 3: continue
-        #print(len(list(chain.get_residues())))
         try:
             states = encoder.encode_chain(chain)
             sequence = encoder.build_sequence(states)
@@ -24,8 +22,11 @@ def pdb_to_3di(struct_name: str, filename: str) -> str:
         except IndexError:
             warn("Not able to code into 3Di chain {} from protein ID {}".format(chain.__repr__(), struct_name), RuntimeWarning)
             continue
+
     structure_string = structure_string.removesuffix(",")
+
     #print(structure_string)
+
     return structure_string
 
 
@@ -40,8 +41,6 @@ def main():
     with open(thel[1], "r") as inf:
         for line in inf:
             tmpl = line.strip().split("\t")
-            #print(tmpl[1])
-            #print(pdb_to_3di(tmpl[0], tmpl[1]))
             pdb_to_3di(tmpl[0], tmpl[1])
 
 

@@ -275,7 +275,7 @@ pub fn sketch_files(
                                     .map(|it| Box::new(it) as Box<dyn RollHash>)
                                     .collect()
                             } else {
-                                AaHashIterator::from_3di_file(fastx1, concat_fasta)
+                                AaHashIterator::from_3di_file(fastx1)
                                     .into_iter()
                                     .map(|it| Box::new(it) as Box<dyn RollHash>)
                                     .collect()
@@ -283,48 +283,23 @@ pub fn sketch_files(
                         }
                     };
 
-
-                    // Temporal (?) restrictions to the size of proteins and chains
-                    if *seq_type == HashType::PDB {
-                        hash_its
-                            .iter_mut()
-                            .enumerate()
-                            .filter(|(_, hash_it)| hash_it.seq_len() > 100)
-                            .filter(|(_, hash_it)| std::str::from_utf8((hash_it).seq()).unwrap().split(",").all(|x| x.chars().count() > 64))
-                            .map(|(idx, hash_it)| {
-                                let sample_name = if concat_fasta {
-                                    format!("{name}_{}", idx + 1)
-                                } else {
-                                    name.to_string()
-                                };
-                                if hash_it.seq_len() == 0 {
-                                    panic!("{sample_name} has no valid sequence");
-                                }
-                                // Run the sketching
-                                // (&mut **? C++ called it wants its syntax back)
-                                Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
-                            })
-                            .collect::<Vec<Sketch>>()
-                    } else {
-                        hash_its
-                            .iter_mut()
-                            .enumerate()
-                            .map(|(idx, hash_it)| {
-                                let sample_name = if concat_fasta {
-                                    format!("{name}_{}", idx + 1)
-                                } else {
-                                    name.to_string()
-                                };
-                                if hash_it.seq_len() == 0 {
-                                    panic!("{sample_name} has no valid sequence");
-                                }
-                                // Run the sketching
-                                // (&mut **? C++ called it wants its syntax back)
-                                Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
-                            })
-                            .collect::<Vec<Sketch>>()
-                    }
-
+                    hash_its
+                        .iter_mut()
+                        .enumerate()
+                        .map(|(idx, hash_it)| {
+                            let sample_name = if concat_fasta {
+                                format!("{name}_{}", idx + 1)
+                            } else {
+                                name.to_string()
+                            };
+                            if hash_it.seq_len() == 0 {
+                                panic!("{sample_name} has no valid sequence");
+                            }
+                            // Run the sketching
+                            // (&mut **? C++ called it wants its syntax back)
+                            Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
+                        })
+                        .collect::<Vec<Sketch>>()
                 })
                 .for_each_with(tx, |tx, sketch| {
                     // Emit the sketch results to the writer thread
