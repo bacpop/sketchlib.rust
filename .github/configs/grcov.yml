@@ -6,4 +6,4 @@ output-type: lcov
 output-path: ./lcov.info
 excl-line: "#\\[cfg\\(test\\)\\]"
 excl-start: "mod tests \\{"
-excl-stop: "\\}"
+excl-stop: "\\}"git
