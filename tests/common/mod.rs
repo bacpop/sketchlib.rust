@@ -36,23 +36,43 @@ pub struct TestSetup {
 impl TestSetup {
     pub fn setup() -> Self {
         let wd = assert_fs::TempDir::new().unwrap();
-        wd.child(SYM_IN)
-            .symlink_to_dir(
-                Path::new(FILE_IN)
-                    .canonicalize()
-                    .expect("Could not link expected files"),
-            )
-            .unwrap();
-        wd.child(SYM_TEST)
-            .symlink_to_dir(
-                Path::new(FILE_TEST)
-                    .canonicalize()
-                    .expect("Could not link expected files"),
-            )
-            .unwrap();
+        
+        // Debug: Print current working directory
+        println!("Current working directory: {:?}", std::env::current_dir().unwrap());
+        
+        // Debug: Print FILE_IN and FILE_TEST paths
+        println!("FILE_IN path: {:?}", Path::new(FILE_IN).canonicalize());
+        println!("FILE_TEST path: {:?}", Path::new(FILE_TEST).canonicalize());
+        
+        // Attempt to create symlink for SYM_IN
+        match wd.child(SYM_IN).symlink_to_dir(
+            Path::new(FILE_IN)
+                .canonicalize()
+                .expect("Could not canonicalize FILE_IN path")
+        ) {
+            Ok(_) => println!("Successfully created symlink for {}", SYM_IN),
+            Err(e) => println!("Failed to create symlink for {}: {:?}", SYM_IN, e),
+        }
+        
+        // Attempt to create symlink for SYM_TEST
+        match wd.child(SYM_TEST).symlink_to_dir(
+            Path::new(FILE_TEST)
+                .canonicalize()
+                .expect("Could not canonicalize FILE_TEST path")
+        ) {
+            Ok(_) => println!("Successfully created symlink for {}", SYM_TEST),
+            Err(e) => println!("Failed to create symlink for {}: {:?}", SYM_TEST, e),
+        }
+        
+        // Debug: Print contents of temporary directory
+        println!("Contents of temporary directory:");
+        for entry in std::fs::read_dir(&wd.path()).unwrap() {
+            let entry = entry.unwrap();
+            println!("  {:?}", entry.path());
+        }
+        
         Self { wd }
     }
-
     pub fn get_wd(&self) -> String {
         self.wd.path().display().to_string()
     }
