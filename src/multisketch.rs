@@ -1,5 +1,5 @@
-use core::panic;
 use anyhow::Error;
+use core::panic;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -147,11 +147,6 @@ impl MultiSketch {
         s1_slice
     }
 
-    pub fn remove_sketches(&self, ids: &[String]) {
-        // TODO: remove sketch bins which belong to the duplicate ids
-        todo!();
-    }
-
     pub fn is_compatible_with(&self, sketch2: &Self) -> bool {
         self.kmer_lengths() == sketch2.kmer_lengths()
             && self.sketch_size == sketch2.sketch_size
@@ -196,6 +191,87 @@ impl MultiSketch {
 
         self
     }
+    pub fn remove_metadata(
+        &mut self,
+        input_prefix: &str,
+        output_file_name: &str,
+        genome_ids_to_remove: &[String],
+    ) -> std::io::Result<()> {
+        
+        println!("{}", self);
+        let mut new_sketch_metadata: Vec<Sketch> = Vec::with_capacity(self.sketch_metadata.len());
+
+        for sketch in &self.sketch_metadata {
+            if !genome_ids_to_remove.contains(&(*sketch.name()).to_string()) {
+                new_sketch_metadata.push(sketch.clone());
+            }
+        }
+        self.sketch_metadata = new_sketch_metadata;
+        self.save_metadata(output_file_name);
+        Ok(())
+    }
+
+    pub fn remove_genomes(
+        &mut self,
+        input_prefix: &str,
+        output_file: &str,
+        genome_ids_to_remove: &[String],
+    ) -> std::io::Result<()> {
+        // Check if all genome IDs to remove exist and get their positions
+        let mut positions_to_remove = Vec::new();
+        let mut missing_ids = Vec::new();
+
+        for id in genome_ids_to_remove {
+            println!("{}",id);
+            if let Some(&position) = self.name_map.get(id) {
+                positions_to_remove.push(position);
+            } else {
+                missing_ids.push(id);
+            }
+        }
+        if !missing_ids.is_empty() {
+            panic!("The following genome IDs were not found: {:?}", missing_ids);
+        }
+
+        // Create a list of indices to keep
+        let indices_to_keep: Vec<usize> = (0..self.sketch_metadata.len())
+            .filter(|&idx| !positions_to_remove.contains(&idx))
+            .collect();
+
+        let input_filename = format!("{}.skd", input_prefix);
+        let output_filename = format!("{}.skd", output_file);
+        SketchArrayFile::write_batch(
+            &input_filename,
+            &output_filename,
+            &indices_to_keep,
+            self.sample_stride,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("Error during batch write: {}", e);
+            std::process::exit(1);
+        });
+        println!("Output sketch data written to: {output_filename}",);
+
+        Ok(())
+    }
+
+    // pub fn get_genome_positions(&self, genome_ids: &[String], positions: &mut Vec<usize>) {
+    //     let mut missing_ids = Vec::new();
+
+    //     for id in genome_ids {
+    //         if let Some(&position) = self.name_map.get(id) {
+    //             positions.push(position);
+    //         } else {
+    //             missing_ids.push(id.clone());
+    //         }
+    //     }
+
+    //     if !missing_ids.is_empty() {
+    //         panic!("The following genome IDs were not found: {:?}", missing_ids);
+    //     }
+
+    //     positions.sort();
+    // }
 
     // This function is called when sketches are merged, not when they are
     // first sketched (this is handled by sketch::sketch_files())

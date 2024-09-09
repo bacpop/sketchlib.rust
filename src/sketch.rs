@@ -13,6 +13,8 @@ use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 use crate::sketch_datafile::SketchArrayFile;
 
+use std::path::Path;
+
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
@@ -148,6 +150,16 @@ impl Sketch {
         }
     }
 
+    fn clean_name(n: &str) -> String {
+        let stem = Path::new(n).file_stem().unwrap().to_str().unwrap();
+        stem.strip_suffix(".fa")
+           .or_else(|| stem.strip_suffix(".fasta"))
+           .or_else(|| stem.strip_suffix(".fa.gz"))
+           .or_else(|| stem.strip_suffix(".fasta.gz"))
+           .unwrap_or(stem)
+           .to_string()
+    }
+
     #[inline(always)]
     fn universal_hash(s: u64, t: u64) -> u64 {
         let x = s
@@ -257,10 +269,11 @@ pub fn sketch_files(
                         .iter_mut()
                         .enumerate()
                         .map(|(idx, hash_it)| {
+                            // changed how the sample name is processed
                             let sample_name = if concat_fasta {
                                 format!("{name}_{}", idx + 1)
                             } else {
-                                name.to_string()
+                                Sketch::clean_name(name)
                             };
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");

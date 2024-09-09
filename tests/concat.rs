@@ -11,9 +11,8 @@ use sketchlib::multisketch::MultiSketch;
 #[cfg(test)]
 
 mod tests {
-    use sketchlib::io;
     use super::*;
-   
+    use sketchlib::io;
 
     #[test]
     fn test_concat_sketches() {
