@@ -37,29 +37,34 @@ impl TestSetup {
     pub fn setup() -> Self {
         let wd = assert_fs::TempDir::new().unwrap();
         
-        // Debug: Print current working directory
         println!("Current working directory: {:?}", std::env::current_dir().unwrap());
         
         // Debug: Print FILE_IN and FILE_TEST paths
-        println!("FILE_IN path: {:?}", Path::new(FILE_IN).canonicalize());
-        println!("FILE_TEST path: {:?}", Path::new(FILE_TEST).canonicalize());
+        println!("FILE_IN constant value: {:?}", FILE_IN);
+        println!("FILE_TEST constant value: {:?}", FILE_TEST);
+        
+        let file_in_path = Path::new(FILE_IN);
+        let file_test_path = Path::new(FILE_TEST);
+        
+        println!("FILE_IN absolute path: {:?}", file_in_path.canonicalize());
+        println!("FILE_TEST absolute path: {:?}", file_test_path.canonicalize());
+        
+        // Check if the directories exist
+        println!("FILE_IN exists: {}", file_in_path.exists());
+        println!("FILE_TEST exists: {}", file_test_path.exists());
         
         // Attempt to create symlink for SYM_IN
-        match wd.child(SYM_IN).symlink_to_dir(
-            Path::new(FILE_IN)
-                .canonicalize()
-                .expect("Could not canonicalize FILE_IN path")
-        ) {
+        match wd.child(SYM_IN).symlink_to_dir(file_in_path.canonicalize().unwrap_or_else(|e| {
+            panic!("Failed to canonicalize FILE_IN path: {:?}. Error: {:?}", file_in_path, e);
+        })) {
             Ok(_) => println!("Successfully created symlink for {}", SYM_IN),
             Err(e) => println!("Failed to create symlink for {}: {:?}", SYM_IN, e),
         }
         
         // Attempt to create symlink for SYM_TEST
-        match wd.child(SYM_TEST).symlink_to_dir(
-            Path::new(FILE_TEST)
-                .canonicalize()
-                .expect("Could not canonicalize FILE_TEST path")
-        ) {
+        match wd.child(SYM_TEST).symlink_to_dir(file_test_path.canonicalize().unwrap_or_else(|e| {
+            panic!("Failed to canonicalize FILE_TEST path: {:?}. Error: {:?}", file_test_path, e);
+        })) {
             Ok(_) => println!("Successfully created symlink for {}", SYM_TEST),
             Err(e) => println!("Failed to create symlink for {}: {:?}", SYM_TEST, e),
         }
@@ -73,6 +78,7 @@ impl TestSetup {
         
         Self { wd }
     }
+
     pub fn get_wd(&self) -> String {
         self.wd.path().display().to_string()
     }
