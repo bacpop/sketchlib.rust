@@ -1,9 +1,5 @@
-branch: true
+branch: false
 ignore-not-existing: true
 llvm: true
-filter: covered
 output-type: lcov
-output-path: ./lcov.info
-excl-line: "#\\[cfg\\(test\\)\\]"
-excl-start: "mod tests \\{"
-excl-stop: "\\}"git
+output-file: ./lcov.info

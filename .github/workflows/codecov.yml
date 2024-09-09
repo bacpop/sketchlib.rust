@@ -10,15 +10,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  codecov:
+  build:
+
     runs-on: ubuntu-latest
+
     steps:
     - uses: actions/checkout@v3
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
         override: true
-        components: llvm-tools-preview
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -27,13 +28,19 @@ jobs:
         CARGO_INCREMENTAL: '0'
         RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
         RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
-        RUST_BACKTRACE: 'full'
     - name: rust-grcov
-      uses: xnuter/grcov@master
+      # You may pin to the exact commit or the version.
+      # uses: actions-rs/grcov@bb47b1ed7883a1502fa6875d562727ace2511248
+      uses: actions-rs/grcov@v0.1.5
       with:
         config: .github/config/grcov.yml
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+    - name: Codecov
+      # You may pin to the exact commit or the version.
+      # uses: codecov/codecov-action@81cd2dc8148241f03f5839d295e000b8f761e378
+      uses: codecov/codecov-action@v3.1.0
       with:
+        # Repository upload token - get it from codecov.io. Required only for private repositories
+        token: ${{ secrets.CODECOV_TOKEN }}
+        # Specify whether the Codecov output should be verbose
         verbose: true
         fail_ci_if_error: true
