@@ -193,7 +193,6 @@ impl MultiSketch {
     }
     pub fn remove_metadata(
         &mut self,
-        input_prefix: &str,
         output_file_name: &str,
         genome_ids_to_remove: &[String],
     ) -> std::io::Result<()> {
@@ -207,7 +206,7 @@ impl MultiSketch {
             }
         }
         self.sketch_metadata = new_sketch_metadata;
-        self.save_metadata(output_file_name);
+        let _ = self.save_metadata(output_file_name);
         Ok(())
     }
 
@@ -255,23 +254,6 @@ impl MultiSketch {
         Ok(())
     }
 
-    // pub fn get_genome_positions(&self, genome_ids: &[String], positions: &mut Vec<usize>) {
-    //     let mut missing_ids = Vec::new();
-
-    //     for id in genome_ids {
-    //         if let Some(&position) = self.name_map.get(id) {
-    //             positions.push(position);
-    //         } else {
-    //             missing_ids.push(id.clone());
-    //         }
-    //     }
-
-    //     if !missing_ids.is_empty() {
-    //         panic!("The following genome IDs were not found: {:?}", missing_ids);
-    //     }
-
-    //     positions.sort();
-    // }
 
     // This function is called when sketches are merged, not when they are
     // first sketched (this is handled by sketch::sketch_files())

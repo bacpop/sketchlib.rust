@@ -493,12 +493,13 @@ pub fn main() -> Result<(), Error> {
 
             log::info!("Reaging input genomes");
             let path = Path::new(genome_ids);
-            let file = File::open(&path)?;
+            let file = File::open(path)?;
             let reader = std::io::BufReader::new(file);
 
             // Read in genomes to
-            let ids: Vec<String> = reader.lines().filter_map(|line| line.ok()).collect();
-
+            // let ids: Vec<String> = reader.lines().filter_map(|line| line.ok()).collect();
+            let ids: Vec<String> = reader.lines().map_while(Result::ok).collect();
+            
             log::info!("Reading input metadata");
             let mut sketches: MultiSketch = MultiSketch::load(ref_db)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
@@ -506,7 +507,7 @@ pub fn main() -> Result<(), Error> {
             
             println!("BLUB");
             // write new .skm 
-            sketches.remove_metadata(ref_db, output_file, &ids);
+            let _ = sketches.remove_metadata(output_file, &ids);
 
             // remove samples from .skd file
             log::info!("Remove genomes and writing output");
