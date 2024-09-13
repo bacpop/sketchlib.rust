@@ -73,6 +73,11 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         concat_fasta: bool,
 
+        /// Input files are .pdb, convert them to 3Di first
+        #[cfg(feature = "3di")]
+        #[arg(long, default_value_t = false)]
+        convert_pdb: bool,
+
         /// Output prefix
         #[arg(short)]
         output: String,

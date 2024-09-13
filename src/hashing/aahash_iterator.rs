@@ -34,7 +34,7 @@ impl RollHash for AaHashIterator {
             self.fh = new_it.0;
             self.index = new_it.1;
         } else {
-            panic!("K-mer larger than smallest valid sequence");
+            panic!("K-mer larger than smallest valid sequence, which is:\n{}", std::str::from_utf8(&self.seq).unwrap());
         }
     }
 
@@ -49,6 +49,10 @@ impl RollHash for AaHashIterator {
 
     fn seq_len(&self) -> usize {
         self.seq.len()
+    }
+
+    fn seq(&self) -> &Vec<u8> {
+        &self.seq
     }
 
     fn sketch_data(&self) -> (bool, [usize; 4], usize) {
@@ -105,6 +109,16 @@ impl AaHashIterator {
             }
         }
         hash_vec
+    }
+
+    pub fn from_3di_file(file: &str) -> Vec<Self> {
+        Self::new(file, AaLevel::Level1, false)
+    }
+
+    pub fn from_3di_string(sequence: String) -> Vec<Self> {
+        let mut hash_it = Self::default(AaLevel::Level1);
+        hash_it.seq = sequence.into_bytes();
+        vec![hash_it]
     }
 
     fn new_iterator(

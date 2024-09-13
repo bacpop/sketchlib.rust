@@ -16,10 +16,17 @@ include = [
     "/LICENSE",
     "/NOTICE",
     "/src",
+    "/python_mini3di",
     "/tests"
 ]
 keywords = ["bioinformatics", "genomics", "sequencing", "k-mer", "sketch"]
 categories = ["command-line-utilities", "science"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+3di = ["dep:pyo3", "dep:pyo3-build-config"]
 
 [dependencies]
 # data structures
@@ -33,6 +40,8 @@ ciborium = "0.2"
 snap = "1.1"
 memmap2 = "0.9"
 arrayref = "0.3"
+# ffi
+pyo3 = { version = "0.21", features = ["auto-initialize"], optional = true }
 # logging
 log = "0.4"
 simple_logger = { version = "4", features = ["stderr"] }
@@ -44,6 +53,9 @@ anyhow = "1.0"
 # parallelisation
 rayon = "1.8"
 num_cpus = "1.0"
+
+[build-dependencies]
+pyo3-build-config = {version = "0.22", optional = true}
 
 [dev-dependencies]
 # testing
