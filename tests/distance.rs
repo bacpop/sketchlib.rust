@@ -24,14 +24,14 @@ mod tests {
         let rounded_expected = (expected * 1000.0).round() / 1000.0;
     
         let abs_tolerance = 0.05;
-        let diff = (actual - expected).abs();
+        let diff = (rounded_actual - rounded_expected).abs();
     
         assert!(
             diff <= abs_tolerance,
             "Absolute difference exceeds tolerance of {}. Actual: {}, Expected: {}",
             abs_tolerance,
-            actual,
-            expected
+            rounded_actual,
+            rounded_expected
         );
     }
 
