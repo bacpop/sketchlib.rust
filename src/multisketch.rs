@@ -196,7 +196,6 @@ impl MultiSketch {
         output_file_name: &str,
         genome_ids_to_remove: &[String],
     ) -> std::io::Result<()> {
-        
         println!("{}", self);
         let mut new_sketch_metadata: Vec<Sketch> = Vec::with_capacity(self.sketch_metadata.len());
 
@@ -221,7 +220,7 @@ impl MultiSketch {
         let mut missing_ids = Vec::new();
 
         for id in genome_ids_to_remove {
-            println!("{}",id);
+            println!("{}", id);
             if let Some(&position) = self.name_map.get(id) {
                 positions_to_remove.push(position);
             } else {
@@ -253,7 +252,6 @@ impl MultiSketch {
 
         Ok(())
     }
-
 
     // This function is called when sketches are merged, not when they are
     // first sketched (this is handled by sketch::sketch_files())

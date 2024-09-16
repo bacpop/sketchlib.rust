@@ -153,11 +153,11 @@ impl Sketch {
     fn clean_name(n: &str) -> String {
         let stem = Path::new(n).file_stem().unwrap().to_str().unwrap();
         stem.strip_suffix(".fa")
-           .or_else(|| stem.strip_suffix(".fasta"))
-           .or_else(|| stem.strip_suffix(".fa.gz"))
-           .or_else(|| stem.strip_suffix(".fasta.gz"))
-           .unwrap_or(stem)
-           .to_string()
+            .or_else(|| stem.strip_suffix(".fasta"))
+            .or_else(|| stem.strip_suffix(".fa.gz"))
+            .or_else(|| stem.strip_suffix(".fasta.gz"))
+            .unwrap_or(stem)
+            .to_string()
     }
 
     #[inline(always)]

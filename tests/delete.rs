@@ -55,29 +55,26 @@ mod tests {
             .assert()
             .success();
 
+        let predicate_file = predicate::path::eq_file(Path::new(
+            &sandbox.file_string("deleted_db.skd", TestDir::Output),
+        ));
+        assert_eq!(
+            true,
+            predicate_file.eval(Path::new(
+                &sandbox.file_string("result_db.skd", TestDir::Output)
+            )),
+            "Merged sketch data does not match"
+        );
 
-            let predicate_file = predicate::path::eq_file(Path::new(
-                &sandbox.file_string("deleted_db.skd", TestDir::Output),
-            ));
-            assert_eq!(
-                true,
-                predicate_file.eval(Path::new(
-                    &sandbox.file_string("result_db.skd", TestDir::Output)
-                )),
-                "Merged sketch data does not match"
-            );
-    
-            // Check .skm the same
-            let merged_sketch: MultiSketch =
-                MultiSketch::load(&sandbox.file_string("deleted_db", TestDir::Output))
-                    .expect("Failed to load output merged sketch");
-            let expected_sketch =
-                MultiSketch::load(&sandbox.file_string("result_db", TestDir::Output))
-                    .expect("Failed to load expected merged sketch");
-            assert_eq!(
-                merged_sketch, expected_sketch,
-                "Merged sketch metadata does not match"
-            );
-        }
+        // Check .skm the same
+        let merged_sketch: MultiSketch =
+            MultiSketch::load(&sandbox.file_string("deleted_db", TestDir::Output))
+                .expect("Failed to load output merged sketch");
+        let expected_sketch = MultiSketch::load(&sandbox.file_string("result_db", TestDir::Output))
+            .expect("Failed to load expected merged sketch");
+        assert_eq!(
+            merged_sketch, expected_sketch,
+            "Merged sketch metadata does not match"
+        );
     }
-    
+}
