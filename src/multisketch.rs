@@ -200,8 +200,6 @@ impl MultiSketch {
         output_file_name: &str,
         genome_ids_to_remove: &[String],
     ) -> anyhow::Result<()> {
-        // error for write batch
-        // error for if IDs are missing
         let mut new_sketch_metadata: Vec<Sketch> =
             Vec::with_capacity(self.sketch_metadata.len() - genome_ids_to_remove.len());
         let mut removed_samples = Vec::new();
@@ -220,7 +218,7 @@ impl MultiSketch {
         let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
         let missing: Vec<&&str> = set2.difference(&set1).collect();
         if !missing.is_empty() {
-            bail!("Elements in set2 not found in set1: {:?}", missing);
+            bail!("The following samples have not been found in the database: {:?}", missing);
         }        
 
         self.sketch_metadata = new_sketch_metadata;
@@ -262,7 +260,7 @@ impl MultiSketch {
             &indices_to_keep,
             self.sample_stride,
         ) {
-            return Err(anyhow!("Error during batch write: {}", e).into());
+            return Err(anyhow!("Error during batch write: {}", e));
         }
 
         Ok(())

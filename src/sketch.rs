@@ -59,7 +59,7 @@ impl Sketch {
         let mut minhash_sum = 0.0;
         let mut densified = false;
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
-        let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
+        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
             // Setup storage for each k

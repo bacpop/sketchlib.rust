@@ -230,7 +230,7 @@ mod tests {
         // TEST 2:
         let rust_whole_genome: f64 = BufReader::new(
             File::open(sandbox.file_string("test2_rust_results", TestDir::Output))
-                .expect("Failed tojj open file"),
+                .expect("Failed to open file"),
         )
         .lines()
         .next()

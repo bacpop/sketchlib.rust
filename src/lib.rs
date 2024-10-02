@@ -503,7 +503,6 @@ pub fn main() -> Result<(), Error> {
             let mut sketches: MultiSketch = MultiSketch::load(ref_db)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
 
-            //TODO: check if all genome IDs have been found in meta and sketchdata
             // write new .skm
             sketches.remove_metadata(output_file, &ids)?;
 
