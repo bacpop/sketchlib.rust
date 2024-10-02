@@ -207,13 +207,13 @@ pub enum Commands {
 
     /// Delete genome(s) from a database (input: one id per line)
     Delete {
-        /// Sketching database basename (so without .skm or .skd)
+        /// Sketching database
         #[arg(required = true)]
         db: String,
 
         /// Input file with IDs to delete (one ID per line)
         #[arg(required = true)]
-        genome_ids: String,
+        samples: String,
 
         /// output file name
         #[arg(required = true)]

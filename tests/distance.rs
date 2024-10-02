@@ -22,10 +22,10 @@ mod tests {
     fn assert_with_tolerance(actual: f64, expected: f64) {
         let rounded_actual = (actual * 1000.0).round() / 1000.0;
         let rounded_expected = (expected * 1000.0).round() / 1000.0;
-    
+
         let abs_tolerance = 0.05;
         let diff = (rounded_actual - rounded_expected).abs();
-    
+
         assert!(
             diff <= abs_tolerance,
             "Absolute difference exceeds tolerance of {}. Actual: {}, Expected: {}",
@@ -33,6 +33,53 @@ mod tests {
             rounded_actual,
             rounded_expected
         );
+    }
+
+    fn read_expected_distances(
+        true_output: &str,
+        sketchlib_true_dict: &mut HashMap<String, Vec<f64>>,
+    ) {
+        let sandbox = TestSetup::setup();
+
+        let file = File::open(sandbox.file_string(true_output, TestDir::Correct))
+            .expect("Failed to open file");
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line.expect("Failed to read line");
+            let parts: Vec<&str> = line.splitn(2, ": ").collect();
+            if parts.len() == 2 {
+                let key = parts[0].to_string();
+                let value_str = parts[1].trim();
+
+                if value_str.starts_with('[') && value_str.ends_with(']') {
+                    // Handle list case
+                    let values: Vec<f64> = value_str[1..value_str.len() - 1]
+                        .split(',')
+                        .map(|s| s.trim().parse().expect("Failed to parse float in list"))
+                        .collect();
+                    sketchlib_true_dict.insert(key, values);
+                } else {
+                    // Handle single value case
+                    let value = value_str.parse().expect("Failed to parse float");
+                    sketchlib_true_dict.insert(key, vec![value]);
+                }
+            }
+        }
+    }
+
+    fn read_calculated_distances(full_file_name: &str) -> f64 {
+        //Read in the rust sketchlib results from file
+        BufReader::new(File::open(full_file_name).expect("Failed to open file"))
+            .lines()
+            .next()
+            .expect("File is empty")
+            .expect("Failed to read line")
+            .split_whitespace()
+            .last()
+            .expect("Line has incorrect format")
+            .parse()
+            .expect("Failed to parse number")
     }
 
     #[test]
@@ -165,52 +212,15 @@ mod tests {
         };
 
         let mut sketchlib_true_dict: HashMap<String, Vec<f64>> = HashMap::new();
-
-        let file = File::open(sandbox.file_string("sketchlib_output_true.txt", TestDir::Correct))
-            .expect("Failed to open file");
-        let reader = BufReader::new(file);
-
-        for line in reader.lines() {
-            let line = line.expect("Failed to read line");
-            let parts: Vec<&str> = line.splitn(2, ": ").collect();
-            if parts.len() == 2 {
-                let key = parts[0].to_string();
-                let value_str = parts[1].trim();
-
-                if value_str.starts_with('[') && value_str.ends_with(']') {
-                    // Handle list case
-                    let values: Vec<f64> = value_str[1..value_str.len() - 1]
-                        .split(',')
-                        .map(|s| s.trim().parse().expect("Failed to parse float in list"))
-                        .collect();
-                    sketchlib_true_dict.insert(key, values);
-                } else {
-                    // Handle single value case
-                    let value = value_str.parse().expect("Failed to parse float");
-                    sketchlib_true_dict.insert(key, vec![value]);
-                }
-            }
-        }
+        read_expected_distances("sketchlib_output_true.txt", &mut sketchlib_true_dict);
 
         let sketchlib_dist_3 = sketchlib_true_dict
             .get("short_sequence_jaccard_dists_3")
             .expect("Key not found");
-        println!("{:?}", sketchlib_dist_3);
 
-        //Read in the rust sketchlib results from file
-        let rust_dist_3: f64 = BufReader::new(
-            File::open(sandbox.file_string("short_sequence_dist_3", TestDir::Output))
-                .expect("Failed to open file"),
-        )
-        .lines()
-        .next()
-        .expect("File is empty")
-        .expect("Failed to read line")
-        .split_whitespace()
-        .last()
-        .expect("Line has incorrect format")
-        .parse()
-        .expect("Failed to parse number");
+        let rust_dist_3 = read_calculated_distances(
+            &sandbox.file_string("short_sequence_dist_3", TestDir::Output),
+        );
 
         // Assert or use the value as needed
         let sketchlib_dist_3 = sketchlib_dist_3[0];
@@ -220,7 +230,7 @@ mod tests {
         // TEST 2:
         let rust_whole_genome: f64 = BufReader::new(
             File::open(sandbox.file_string("test2_rust_results", TestDir::Output))
-                .expect("Failed to open file"),
+                .expect("Failed tojj open file"),
         )
         .lines()
         .next()
@@ -258,8 +268,6 @@ mod tests {
             .get("multiple_genomes")
             .expect("Key not found");
 
-        println!("{:?}", multiple_genome_rust);
-        // TODO: do loop to assert each item of the list with variance
         for (_i, (v1, v2)) in multiple_genome_c
             .iter()
             .zip(multiple_genome_rust.iter())

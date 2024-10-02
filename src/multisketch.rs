@@ -1,4 +1,7 @@
+use anyhow::bail;
 use anyhow::Error;
+use anyhow::{Result, anyhow};
+// use thiserror::Error;
 use core::panic;
 use std::fmt;
 use std::fs::File;
@@ -12,6 +15,7 @@ use crate::hashing::HashType;
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
+use std::collections::HashSet;
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     pub sketch_size: u64,
@@ -195,17 +199,32 @@ impl MultiSketch {
         &mut self,
         output_file_name: &str,
         genome_ids_to_remove: &[String],
-    ) -> std::io::Result<()> {
-        println!("{}", self);
-        let mut new_sketch_metadata: Vec<Sketch> = Vec::with_capacity(self.sketch_metadata.len());
+    ) -> anyhow::Result<()> {
+        // error for write batch
+        // error for if IDs are missing
+        let mut new_sketch_metadata: Vec<Sketch> =
+            Vec::with_capacity(self.sketch_metadata.len() - genome_ids_to_remove.len());
+        let mut removed_samples = Vec::new();
 
         for sketch in &self.sketch_metadata {
+            
             if !genome_ids_to_remove.contains(&(*sketch.name()).to_string()) {
                 new_sketch_metadata.push(sketch.clone());
+
+            } else {
+                removed_samples.push(sketch.name());
             }
         }
+
+        let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
+        let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
+        let missing: Vec<&&str> = set2.difference(&set1).collect();
+        if !missing.is_empty() {
+            bail!("Elements in set2 not found in set1: {:?}", missing);
+        }        
+
         self.sketch_metadata = new_sketch_metadata;
-        let _ = self.save_metadata(output_file_name);
+        self.save_metadata(output_file_name)?;
         Ok(())
     }
 
@@ -214,21 +233,20 @@ impl MultiSketch {
         input_prefix: &str,
         output_file: &str,
         genome_ids_to_remove: &[String],
-    ) -> std::io::Result<()> {
-        // Check if all genome IDs to remove exist and get their positions
+    ) -> anyhow::Result<()>  {
         let mut positions_to_remove = Vec::new();
         let mut missing_ids = Vec::new();
 
         for id in genome_ids_to_remove {
-            println!("{}", id);
             if let Some(&position) = self.name_map.get(id) {
                 positions_to_remove.push(position);
             } else {
                 missing_ids.push(id);
             }
         }
+
         if !missing_ids.is_empty() {
-            panic!("The following genome IDs were not found: {:?}", missing_ids);
+            bail!("The following genome IDs were not found: {:?}", missing_ids);
         }
 
         // Create a list of indices to keep
@@ -238,17 +256,14 @@ impl MultiSketch {
 
         let input_filename = format!("{}.skd", input_prefix);
         let output_filename = format!("{}.skd", output_file);
-        SketchArrayFile::write_batch(
+        if let Err(e) = SketchArrayFile::write_batch(
             &input_filename,
             &output_filename,
             &indices_to_keep,
             self.sample_stride,
-        )
-        .unwrap_or_else(|e| {
-            eprintln!("Error during batch write: {}", e);
-            std::process::exit(1);
-        });
-        println!("Output sketch data written to: {output_filename}",);
+        ) {
+            return Err(anyhow!("Error during batch write: {}", e).into());
+        }
 
         Ok(())
     }

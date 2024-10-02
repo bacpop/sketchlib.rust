@@ -150,7 +150,7 @@ impl Sketch {
         }
     }
 
-    fn clean_name(n: &str) -> String {
+    fn remove_extension(n: &str) -> String {
         let stem = Path::new(n).file_stem().unwrap().to_str().unwrap();
         stem.strip_suffix(".fa")
             .or_else(|| stem.strip_suffix(".fasta"))
@@ -269,11 +269,10 @@ pub fn sketch_files(
                         .iter_mut()
                         .enumerate()
                         .map(|(idx, hash_it)| {
-                            // changed how the sample name is processed
                             let sample_name = if concat_fasta {
                                 format!("{name}_{}", idx + 1)
                             } else {
-                                Sketch::clean_name(name)
+                                Sketch::remove_extension(name)
                             };
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");

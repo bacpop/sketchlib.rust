@@ -486,13 +486,13 @@ pub fn main() -> Result<(), Error> {
 
         Commands::Delete {
             db,
-            genome_ids,
+            samples,
             output_file,
         } => {
             let ref_db = utils::strip_sketch_extension(db);
 
             log::info!("Reading input genomes");
-            let path = Path::new(genome_ids);
+            let path = Path::new(samples);
             let file = File::open(path)?;
             let reader = std::io::BufReader::new(file);
 
@@ -503,8 +503,9 @@ pub fn main() -> Result<(), Error> {
             let mut sketches: MultiSketch = MultiSketch::load(ref_db)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
 
+            //TODO: check if all genome IDs have been found in meta and sketchdata
             // write new .skm
-            let _ = sketches.remove_metadata(output_file, &ids);
+            sketches.remove_metadata(output_file, &ids)?;
 
             // remove samples from .skd file
             log::info!("Remove genomes and writing output");
