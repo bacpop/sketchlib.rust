@@ -89,6 +89,33 @@ impl SketchArrayFile {
         flat_sketch_array
     }
 
+    pub fn write_batch(
+        input_filename: &str,
+        output_filename: &str,
+        sample_indices: &[usize],
+        sample_stride: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mmap = Self::memmap_file(input_filename)
+            .unwrap_or_else(|_| panic!("Could not memory map {input_filename}"));
+
+        let output_file = File::create(output_filename)?;
+        let mut writer = BufWriter::new(output_file);
+
+        for &sample_idx in sample_indices {
+            let mut sample_data = Vec::with_capacity(sample_stride);
+            for bin_idx in 0..sample_stride {
+                let start_byte = (sample_idx * sample_stride + bin_idx) * mem::size_of::<u64>();
+                let bin_val =
+                    u64::from_le_bytes(*array_ref![mmap, start_byte, mem::size_of::<u64>()]);
+                sample_data.push(bin_val);
+            }
+            Self::write_sketch_data(&mut writer, &sample_data)?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
     fn memmap_file(filename: &str) -> Result<Mmap, Box<dyn Error>> {
         let file = File::open(filename)?;
         let mmap = unsafe { Mmap::map(&file)? };

@@ -4,16 +4,13 @@ use std::path::Path;
 
 pub mod common;
 use crate::common::*;
-use sketchlib::io::*;
 
 use sketchlib::multisketch::MultiSketch;
 
 #[cfg(test)]
 
 mod tests {
-    use sketchlib::io;
     use super::*;
-   
 
     #[test]
     fn test_concat_sketches() {

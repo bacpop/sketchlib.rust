@@ -209,6 +209,22 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
         level: AaLevel,
     },
+
+    /// Delete genome(s) from a database (input: one id per line)
+    Delete {
+        /// Sketching database
+        #[arg(required = true)]
+        db: String,
+
+        /// Input file with IDs to delete (one ID per line)
+        #[arg(required = true)]
+        samples: String,
+
+        /// output file name
+        #[arg(required = true)]
+        output_file: String,
+    },
+
     /// Print information about a .skm file
     Info {
         /// Sketch metadata file (.skm) to describe

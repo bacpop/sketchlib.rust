@@ -15,6 +15,8 @@ use crate::sketch_datafile::SketchArrayFile;
 #[cfg(feature = "3di")]
 use crate::structures::pdb_to_3di;
 
+use std::path::Path;
+
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
@@ -59,7 +61,7 @@ impl Sketch {
         let mut minhash_sum = 0.0;
         let mut densified = false;
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
-        let bin_size: u64 = (SIGN_MOD + num_bins - 1) / num_bins;
+        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
             // Setup storage for each k
@@ -148,6 +150,16 @@ impl Sketch {
                 usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
             }
         }
+    }
+
+    fn remove_extension(n: &str) -> String {
+        let stem = Path::new(n).file_stem().unwrap().to_str().unwrap();
+        stem.strip_suffix(".fa")
+            .or_else(|| stem.strip_suffix(".fasta"))
+            .or_else(|| stem.strip_suffix(".fa.gz"))
+            .or_else(|| stem.strip_suffix(".fasta.gz"))
+            .unwrap_or(stem)
+            .to_string()
     }
 
     #[inline(always)]
@@ -290,7 +302,7 @@ pub fn sketch_files(
                             let sample_name = if concat_fasta {
                                 format!("{name}_{}", idx + 1)
                             } else {
-                                name.to_string()
+                                Sketch::remove_extension(name)
                             };
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");

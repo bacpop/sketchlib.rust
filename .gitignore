@@ -1,4 +1,5 @@
 tests/files_out/*
+tests/sketchlib_c/*
 
 # venvs
 3di_venv

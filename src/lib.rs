@@ -43,6 +43,9 @@ pub mod utils;
 use std::fs::{File, OpenOptions};
 use std::io::copy;
 
+use std::io::BufRead;
+use std::path::Path;
+
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 17;
 /// Chunk size in parallel distance calculations
@@ -485,6 +488,37 @@ pub fn main() -> Result<(), Error> {
             concat_metadata
                 .save_metadata(output)
                 .unwrap_or_else(|_| panic!("Could not save metadata to {}", output));
+            Ok(())
+        }
+
+        Commands::Delete {
+            db,
+            samples,
+            output_file,
+        } => {
+            let ref_db = utils::strip_sketch_extension(db);
+
+            log::info!("Reading input genomes");
+            let path = Path::new(samples);
+            let file = File::open(path)?;
+            let reader = std::io::BufReader::new(file);
+
+            // Read in genomes to
+            let ids: Vec<String> = reader.lines().map_while(Result::ok).collect();
+
+            log::info!("Reading input metadata");
+            let mut sketches: MultiSketch = MultiSketch::load(ref_db)
+                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
+
+            // write new .skm
+            sketches.remove_metadata(output_file, &ids)?;
+
+            // remove samples from .skd file
+            log::info!("Remove genomes and writing output");
+            sketches.remove_genomes(ref_db, output_file, &ids)?;
+
+            log::info!("Finished writing filtered sketch data to {}", output_file);
+
             Ok(())
         }
 
