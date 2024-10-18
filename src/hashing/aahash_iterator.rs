@@ -79,9 +79,9 @@ impl AaHashIterator {
         log::debug!("Preprocessing sequence");
         let mut reader =
             parse_fastx_file(file).unwrap_or_else(|_| panic!("Invalid path/file: {file}"));
+        let mut seq_hash_it = Self::default(level.clone());
         loop {
             let record_read = reader.next();
-            let mut seq_hash_it = Self::default(level.clone());
             if let Some(record) = record_read {
                 let seqrec = record.expect("Invalid FASTA/Q record");
                 if seqrec.qual().is_some() {
@@ -98,6 +98,7 @@ impl AaHashIterator {
                 }
                 if concat_fasta {
                     hash_vec.push(seq_hash_it);
+                    seq_hash_it = Self::default(level.clone());
                 } else {
                     seq_hash_it.seq.push(SEQSEP);
                 }
