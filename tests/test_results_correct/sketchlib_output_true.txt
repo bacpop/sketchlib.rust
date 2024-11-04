@@ -1,7 +1,7 @@
 short_sequence_dists_5: 0.753806
 short_sequence_jaccard_dists_5: 0.7538061
-short_sequence_dists_3: 1
-short_sequence_jaccard_dists_3: 1
-whole_genome_block_removed: 0.9982973
-multiple_genomes: [0.59244794, 0.0, 0.0, 0.0, 0.0, 0.6295072]
-multiple_genomes_10000: [0.59244794, 0.0, 0.0, 0.0, 0.0, 0.6295072]
+short_sequence_dists_3: 0
+short_sequence_jaccard_dists_3: 0
+whole_genome_block_removed: 0.0017027
+multiple_genomes: [0.40755, 1.0, 1.0, 1.0, 1.0, 0.37049]
+multiple_genomes_10000: [0.40755, 1.0, 1.0, 1.0, 1.0, 0.37049]
