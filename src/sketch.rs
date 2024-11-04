@@ -299,7 +299,6 @@ pub fn sketch_files(
                         .iter_mut()
                         .enumerate()
                         .map(|(idx, hash_it)| {
-                            // changed how the sample name is processed
                             let sample_name = if concat_fasta {
                                 format!("{name}_{}", idx + 1)
                             } else {
