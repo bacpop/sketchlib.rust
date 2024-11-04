@@ -223,7 +223,7 @@ pub fn main() -> Result<(), Error> {
                                                 references.get_sketch_slice(j, k),
                                                 references.sketch_size,
                                             );
-                                            dist = if *ani { ani_pois(dist, k_f32) } else { 1 as f32 - dist };
+                                            dist = if *ani { ani_pois(dist, k_f32) } else { 1.0_f32 - dist };
                                             dist_slice[dist_idx] = dist;
                                         } else {
                                             let dist =
@@ -275,7 +275,7 @@ pub fn main() -> Result<(), Error> {
                                                     references.sketch_size,
                                                 );
                                                 dist =
-                                                    if *ani { ani_pois(dist, k_f32) } else { 1 as f32 - dist };
+                                                    if *ani { ani_pois(dist, k_f32) } else { 1.0_f32 - dist };
                                                 let dist_item = SparseJaccard(j, dist);
                                                 if heap.len() < nn
                                                     || dist_item < *heap.peek().unwrap()
@@ -350,7 +350,7 @@ pub fn main() -> Result<(), Error> {
                                         query_db.get_sketch_slice(j, k),
                                         references.sketch_size,
                                     );
-                                    dist = if *ani { ani_pois(dist, k_f32) } else { 1 as f32 - dist };
+                                    dist = if *ani { ani_pois(dist, k_f32) } else { 1.0_f32 - dist };
                                     dist_slice[dist_idx] = dist;
                                 } else {
                                     let dist = core_acc_dist(&references, &query_db, i, j);
