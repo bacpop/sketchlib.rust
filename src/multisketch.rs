@@ -205,7 +205,7 @@ impl MultiSketch {
         let mut removed_samples = Vec::new();
 
         for sketch in &self.sketch_metadata {
-            
+
             if !genome_ids_to_remove.contains(&(*sketch.name()).to_string()) {
                 new_sketch_metadata.push(sketch.clone());
 
@@ -219,7 +219,7 @@ impl MultiSketch {
         let missing: Vec<&&str> = set2.difference(&set1).collect();
         if !missing.is_empty() {
             bail!("The following samples have not been found in the database: {:?}", missing);
-        }        
+        }
 
         self.sketch_metadata = new_sketch_metadata;
         self.save_metadata(output_file_name)?;

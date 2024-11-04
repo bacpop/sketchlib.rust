@@ -223,7 +223,7 @@ pub fn main() -> Result<(), Error> {
                                                 references.get_sketch_slice(j, k),
                                                 references.sketch_size,
                                             );
-                                            dist = if *ani { ani_pois(dist, k_f32) } else { dist };
+                                            dist = if *ani { ani_pois(dist, k_f32) } else { 1.0_f32 - dist };
                                             dist_slice[dist_idx] = dist;
                                         } else {
                                             let dist =
@@ -275,7 +275,7 @@ pub fn main() -> Result<(), Error> {
                                                     references.sketch_size,
                                                 );
                                                 dist =
-                                                    if *ani { ani_pois(dist, k_f32) } else { dist };
+                                                    if *ani { ani_pois(dist, k_f32) } else { 1.0_f32 - dist };
                                                 let dist_item = SparseJaccard(j, dist);
                                                 if heap.len() < nn
                                                     || dist_item < *heap.peek().unwrap()
@@ -333,6 +333,7 @@ pub fn main() -> Result<(), Error> {
                     let mut distances =
                         DistanceMatrix::new(&references, Some(&query_db), dist_type);
                     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
+                    let nq = query_db.number_samples_loaded();
                     distances
                         .dists_mut()
                         .par_chunks_mut(par_chunk)
@@ -341,7 +342,7 @@ pub fn main() -> Result<(), Error> {
                         .for_each(|(chunk_idx, dist_slice)| {
                             // Get first i, j index for the chunk
                             let start_dist_idx = chunk_idx * CHUNK_SIZE;
-                            let (mut i, mut j) = calc_query_indices(start_dist_idx, n);
+                            let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
                             for dist_idx in 0..CHUNK_SIZE {
                                 if let Some(k) = k_idx {
                                     let mut dist = jaccard_dist(
@@ -349,7 +350,7 @@ pub fn main() -> Result<(), Error> {
                                         query_db.get_sketch_slice(j, k),
                                         references.sketch_size,
                                     );
-                                    dist = if *ani { ani_pois(dist, k_f32) } else { dist };
+                                    dist = if *ani { ani_pois(dist, k_f32) } else { 1.0_f32 - dist };
                                     dist_slice[dist_idx] = dist;
                                 } else {
                                     let dist = core_acc_dist(&references, &query_db, i, j);
@@ -359,7 +360,7 @@ pub fn main() -> Result<(), Error> {
 
                                 // Move to next index
                                 j += 1;
-                                if j >= n {
+                                if j >= nq {
                                     i += 1;
                                     j = 0;
                                     // End of all dists reached (final chunk)
