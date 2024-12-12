@@ -123,6 +123,11 @@ impl Sketch {
         std::mem::take(&mut self.usigs)
     }
 
+    // DEBUG THEN REMOVE
+    pub fn get_usigs_debug(&self) -> &Vec<u64> {
+        &self.usigs
+    }
+
     fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {
         let binidx = (sign / binsize) as usize;
         // log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
@@ -224,31 +229,41 @@ pub fn sketch_files(
     rc: bool,
     min_count: u16,
     min_qual: u8,
+    inverted: bool,
 ) -> Vec<Sketch> {
+    println!("Debug: Starting sketch_files with inverted={}", inverted);
+    
+    println!("Debug: sketchsize in sketchfiles={}", sketch_size);
+    println!("Debug: k.len={}", k.len());
+    println!("Debug: BBITS={}", BBITS);
+    // println!("Debug: kmer_stride={}", kmer_stride);
     let bin_stride = 1;
     let kmer_stride = (sketch_size * BBITS) as usize;
+    println!("Debug: kmer_stride={}", kmer_stride);
     let sample_stride = kmer_stride * k.len();
+
+    println!("Debug: bin_stride={}, kmer_stride={}, sample_stride={}", 
+             bin_stride, kmer_stride, sample_stride);
 
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
     let mut serial_writer =
         SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride);
 
-    // Set up sender (sketching) and receiver (writing)
     let (tx, rx) = mpsc::channel();
     let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 
     let bar_style =
         ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}")
             .unwrap();
-    // With thanks to https://stackoverflow.com/a/76963325
+
     rayon::scope(|s| {
         s.spawn(move |_| {
             input_files
                 .par_iter()
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
-                    // Read in sequence and set up rolling hash by alphabet type
+                    println!("Debug: Processing file: {}", name);
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                         HashType::DNA => {
                             NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
@@ -274,30 +289,41 @@ pub fn sketch_files(
                             } else {
                                 Sketch::remove_extension(name)
                             };
+                            println!("Debug: Creating sketch for {}", sample_name);
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");
                             }
-                            // Run the sketching
-                            // (&mut **? C++ called it wants its syntax back)
-                            Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
+                            let sketch = Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count);
+                            println!("Debug: Created sketch with {} usigs", sketch.get_usigs_debug().len());
+                            sketch
                         })
                         .collect::<Vec<Sketch>>()
                 })
                 .for_each_with(tx, |tx, sketch| {
-                    // Emit the sketch results to the writer thread
                     let _ = tx.send(sketch);
                 });
         });
-        // Write each sketch to the .skd file as it comes in
+
         for sketch_file in rx {
-            // Note double loop as single file may contain multiple samples with concat_fasta
             for mut sketch in sketch_file {
-                let index = serial_writer.write_sketch(&sketch.get_usigs());
+                println!("Debug: Writing sketch for {}", sketch.name());
+                println!("Debug: Sketch has {} usigs before writing", sketch.get_usigs_debug().len());
+                
+                let index = if inverted {
+                    serial_writer.write_sketch(sketch.get_usigs_debug())
+                } else {
+                    let usigs = sketch.get_usigs();
+                    serial_writer.write_sketch(&usigs)
+                };
+                
+                println!("Debug: Got index {} from writer", index);
                 sketch.set_index(index);
-                // Also append (without usigs) to the metadata, which is Vec<Sketch>
+                println!("Debug: Sketch has {} usigs after writing", sketch.get_usigs_debug().len());
                 sketches.push(sketch);
             }
         }
     });
+
+    println!("Debug: Returning {} sketches", sketches.len());
     sketches
 }

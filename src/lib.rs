@@ -118,8 +118,9 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
+                false,
             );
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, false);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
@@ -400,6 +401,106 @@ pub fn main() -> Result<(), Error> {
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
 
+        Commands::Inverted {
+            seq_files,
+            file_list,
+            output,
+            single_strand,
+            min_count,
+            min_qual,
+            concat_fasta,
+            threads,
+            level,
+        } => {
+            // An extra thread is needed for the writer. This doesn't 'overuse' CPU
+            check_threads(*threads + 1);
+            //get input files
+            log::info!("Getting input files");
+            let input_files: Vec<(String, String, Option<String>)> =
+                get_input_list(file_list, seq_files);
+            log::info!("Parsed {} samples in input list", input_files.len());
+            // read out sketching information needed to sketch the new files
+            let kmers: &[usize] = &[2];
+            let rc = !*single_strand;
+            let sketch_size = 3;
+            let seq_type = &HashType::DNA;
+            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
+                panic!("--concat-fasta currently only supported with --seq-type aa");
+            }
+
+            log::info!(
+                "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
+                kmers,
+                sketch_size * u64::BITS as u64,
+                seq_type,
+                threads,
+            );
+
+            let seq_type = if let HashType::AA(_) = seq_type {
+                HashType::AA(level.clone())
+            } else {
+                seq_type.clone()
+            };
+            // Before sketch_files
+            println!("Debug: Starting sketch_files with:");
+            println!("Debug: input_files: {:?}", input_files);
+            println!("Debug: kmers: {:?}", kmers);
+            println!("Debug: sketch_size: {}", sketch_size);
+            println!("Debug: seq_type: {:?}", seq_type);
+            println!("Debug: rc: {}", rc);
+            println!("Debug: min_count: {}", min_count);
+            println!("Debug: min_qual: {}", min_qual);
+
+            let mut mini_sketches = sketch_files(
+                output,
+                &input_files,
+                *concat_fasta,
+                &kmers,
+                sketch_size,
+                &seq_type,
+                rc,
+                *min_count,
+                *min_qual,
+                true,
+            );
+
+            println!("Debug: Sketches after sketch_files:");
+            for (i, sketch) in mini_sketches.iter().enumerate() {
+                println!("Debug: Sketch {}", i);
+                println!("Debug:   name: {}", sketch.name());
+                let usigs = sketch.get_usigs_debug();
+                println!("Debug:   usigs length: {}", usigs.len());
+                if !usigs.is_empty() {
+                    println!("Debug:   first few usigs: {:?}", &usigs[..usigs.len().min(5)]);
+                }
+            }
+
+            // After creating mini_sketches
+            println!("Debug: mini_sketches length: {}", mini_sketches.len());
+
+            // After creating sketch_vec
+            let sketch_vec = MultiSketch::new(&mut mini_sketches, sketch_size, &kmers, seq_type, true); 
+            println!("Debug: sketch_vec creation completed");
+            println!("Debug: sketch_vec.sketch_bins length: {}", MultiSketch::get_sketch_bins_len(&sketch_vec));
+            println!("Debug: sketch_vec contents: {:?}", sketch_vec);
+
+            // Before inverting index
+            println!("Debug: About to invert index");
+            let mini_inverted_index = MultiSketch::invert_index(&sketch_vec);
+
+                
+            // Write inverted index to a file
+            sketch_vec
+                .save_metadata(output)
+                .expect("Error saving metadata");
+            match MultiSketch::write_inverted_index_to_file(&mini_inverted_index, output) {
+                Ok(_) => println!("Successfully wrote inverted index to {}", output),
+                Err(e) => eprintln!("Error writing inverted index to file: {}", e),
+            }
+
+            Ok(())
+        }
+
         Commands::Append {
             db,
             seq_files,
@@ -461,13 +562,14 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
+                false,
             );
             let mut db2_metadata =
-                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type);
+                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, false);
 
             // save skd data from db1 and from freshly sketched input files
             log::info!("Merging and saving sketch data to {}.skd", output);
-            // let mut output_file = File::create(format!("{}.skd", output))?;
+
             let mut output_file = OpenOptions::new()
                 .create(true)
                 .append(true)
