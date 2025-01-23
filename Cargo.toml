@@ -3,7 +3,9 @@ name = "sketchlib"
 version = "0.1.0"
 authors = [
     "John Lees <jlees@ebi.ac.uk>",
-    "Nicholas Croucher <n.croucher@imperial.ac.uk>"
+    "Nicholas Croucher <n.croucher@imperial.ac.uk>",
+    "Johanna von Wachsmann <wachsmannj@ebi.ac.uk>",
+    "Victor Rodriguez Bouza <vrbouza@ebi.ac.uk>",
 ]
 edition = "2021"
 description = "Genome and amino-acid sketching"
