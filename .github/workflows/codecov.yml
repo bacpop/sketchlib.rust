@@ -32,13 +32,13 @@ jobs:
         RUSTDOCFLAGS: '-Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cinstrument-coverage'
 
     - name: Codecov
-        # You may pin to the exact commit or the version.
-        uses: codecov/codecov-action@v5.1.2
-        with:
-          # Repository upload token - get it from codecov.io. Required only for private repositories
-          token: ${{ secrets.CODECOV_TOKEN }}
-          file: ./lcov.info
-          # Specify whether the Codecov output should be verbose
-          verbose: true
-          fail_ci_if_error: true
+      # You may pin to the exact commit or the version.
+      uses: codecov/codecov-action@v5.1.2
+      with:
+        # Repository upload token - get it from codecov.io. Required only for private repositories
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./lcov.info
+        # Specify whether the Codecov output should be verbose
+        verbose: true
+        fail_ci_if_error: true
 
