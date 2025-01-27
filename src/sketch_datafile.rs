@@ -1,3 +1,4 @@
+//! I/O support and memory mapping used by for lower level read/write to .skd
 use memmap2::Mmap;
 use std::error::Error;
 use std::fs::File;

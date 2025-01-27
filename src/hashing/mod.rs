@@ -1,3 +1,4 @@
+//! [nthash](https://github.com/bcgsc/ntHash[) and [aahash](https://github.com/bcgsc/ntHash) iterators
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 

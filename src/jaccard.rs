@@ -1,3 +1,4 @@
+//! Implementation of Jaccard, core and accessory distance calculations
 use crate::multisketch::MultiSketch;
 use crate::sketch::BBITS;
 
