@@ -1,3 +1,4 @@
+//! Support for .pdb files and the 3di alphabet
 use anyhow::Error;
 use crate::io::InputFastx;
 

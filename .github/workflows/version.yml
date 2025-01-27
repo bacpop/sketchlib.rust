@@ -1,7 +1,7 @@
 on:
   pull_request:
     branches:
-      - master
+      - main
 
 # This runs on PRs so error can be seen before merging
 name: Version check

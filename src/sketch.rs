@@ -1,3 +1,4 @@
+//! Methods to create single sample's sketch
 use std::cmp::Ordering;
 use std::fmt;
 use std::sync::mpsc;

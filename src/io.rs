@@ -1,3 +1,4 @@
+//! Functions to read input fasta/fastq files
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;

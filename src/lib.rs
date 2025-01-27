@@ -1,5 +1,10 @@
-//! DOCS
+//! Fast distance calculations between biological sequences (DNA, AA or structures
+//! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
+//! distance, with the PopPUNK method to calculate core and accessory distances. nthash/aahash
+//! are used for hash functions to create the sketches
 //!
+//! This package is a work in progress, but is mature enough for research use. See README.md
+//! for current CLI usage.
 
 // #![warn(missing_docs)]
 

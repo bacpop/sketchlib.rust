@@ -1,3 +1,4 @@
+//! Functions and traits for calculating and storing distances
 use std::cmp::Ordering;
 use std::fmt;
 

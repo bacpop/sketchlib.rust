@@ -1,3 +1,4 @@
+//! The class to support .skm/.skd reading and writing, containing multiple [`Sketch`] objects
 use anyhow::bail;
 use anyhow::Error;
 use anyhow::{Result, anyhow};
