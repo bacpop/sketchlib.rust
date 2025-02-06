@@ -83,10 +83,10 @@ impl MultiSketch {
             (),
         )?;
         // Iterate over metadata and add to database
-        for (index, metadata) in self.sketch_metadata.iter().enumerate() {
+        for metadata in self.sketch_metadata.iter() {
             conn.execute(
                 "INSERT INTO sketch_metadata (id, name, length) VALUES (?1, ?2, ?3)",
-                (index, metadata.name(), metadata.seq_length()),
+                (metadata.get_index(), metadata.name(), metadata.seq_length()),
             )?;
         }
         Ok(())

@@ -122,7 +122,8 @@ impl Sketch {
     }
 
     pub fn get_index(&self) -> usize {
-        self.index.unwrap()
+        self.index
+            .expect("Trying to unwrap index value of a Sketch that is None")
     }
 
     // Take the (transposed) sketch, emptying it from the [`Sketch`]
