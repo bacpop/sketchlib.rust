@@ -113,6 +113,10 @@ impl Sketch {
         &self.name
     }
 
+    pub fn seq_length(&self) -> usize {
+        self.seq_length
+    }
+
     pub fn set_index(&mut self, index: usize) {
         self.index = Some(index);
     }
@@ -221,8 +225,7 @@ pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
     concat_fasta: bool,
-    #[cfg(feature = "3di")]
-    convert_pdb: bool,
+    #[cfg(feature = "3di")] convert_pdb: bool,
     k: &[usize],
     sketch_size: u64,
     seq_type: &HashType,

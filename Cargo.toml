@@ -42,7 +42,7 @@ ciborium = "0.2"
 snap = "1.1"
 memmap2 = "0.9"
 arrayref = "0.3"
-mysql = "26.0.0"
+rusqlite = "0.33.0"
 # ffi
 pyo3 = { version = "0.21", features = ["auto-initialize"], optional = true }
 # logging

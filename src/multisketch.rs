@@ -1,7 +1,7 @@
 //! The class to support .skm/.skd reading and writing, containing multiple [`Sketch`] objects
+use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Error;
-use anyhow::{Result, anyhow};
 // use thiserror::Error;
 use core::panic;
 use std::fmt;
@@ -17,6 +17,9 @@ use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
 use std::collections::HashSet;
+
+use rusqlite::{params, Connection, Result};
+
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     pub sketch_size: u64,
@@ -66,12 +69,33 @@ impl MultiSketch {
 
     /// Saves the metadata
     pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
-        let filename = format!("{}.skm", file_prefix);
+        let filename = format!("{}.db", file_prefix);
         log::info!("Saving sketch metadata to {filename}");
-        let serial_file = BufWriter::new(File::create(filename)?);
-        let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
-        ciborium::ser::into_writer(self, &mut compress_writer)?;
+        // Creates database
+        let conn = Connection::open(filename)?;
+        // Initialise table in database
+        conn.execute(
+            "CREATE TABLE sketch_metadata (
+                            id INTEGER PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            length INTEGER
+                           )",
+            (),
+        )?;
+        // Iterate over metadata and add to database
+        for (index, metadata) in self.sketch_metadata.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO sketch_metadata (id, name, length) VALUES (?1, ?2, ?3)",
+                (index, metadata.name(), metadata.seq_length()),
+            )?;
+        }
         Ok(())
+    }
+
+    pub fn query_metadata<T>(path: String, args: T) -> Result<Option<Vec<usize>>, Error> {
+        let conn = Connection::open(path)?;
+        conn.execute("SELECT id FROM sketch_metadata WHERE", ())?;
+        todo!()
     }
 
     pub fn load(file_prefix: &str) -> Result<Self, Error> {
@@ -206,10 +230,8 @@ impl MultiSketch {
         let mut removed_samples = Vec::new();
 
         for sketch in &self.sketch_metadata {
-
             if !genome_ids_to_remove.contains(&(*sketch.name()).to_string()) {
                 new_sketch_metadata.push(sketch.clone());
-
             } else {
                 removed_samples.push(sketch.name());
             }
@@ -219,7 +241,10 @@ impl MultiSketch {
         let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
         let missing: Vec<&&str> = set2.difference(&set1).collect();
         if !missing.is_empty() {
-            bail!("The following samples have not been found in the database: {:?}", missing);
+            bail!(
+                "The following samples have not been found in the database: {:?}",
+                missing
+            );
         }
 
         self.sketch_metadata = new_sketch_metadata;
@@ -232,7 +257,7 @@ impl MultiSketch {
         input_prefix: &str,
         output_file: &str,
         genome_ids_to_remove: &[String],
-    ) -> anyhow::Result<()>  {
+    ) -> anyhow::Result<()> {
         let mut positions_to_remove = Vec::new();
         let mut missing_ids = Vec::new();
 
