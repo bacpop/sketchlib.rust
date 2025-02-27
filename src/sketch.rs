@@ -153,16 +153,6 @@ impl Sketch {
         }
     }
 
-    fn remove_extension(n: &str) -> String {
-        let stem = Path::new(n).file_stem().unwrap().to_str().unwrap();
-        stem.strip_suffix(".fa")
-            .or_else(|| stem.strip_suffix(".fasta"))
-            .or_else(|| stem.strip_suffix(".fa.gz"))
-            .or_else(|| stem.strip_suffix(".fasta.gz"))
-            .unwrap_or(stem)
-            .to_string()
-    }
-
     #[inline(always)]
     fn universal_hash(s: u64, t: u64) -> u64 {
         let x = s
@@ -303,7 +293,7 @@ pub fn sketch_files(
                             let sample_name = if concat_fasta {
                                 format!("{name}_{}", idx + 1)
                             } else {
-                                Sketch::remove_extension(name)
+                                name.to_string()
                             };
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");
