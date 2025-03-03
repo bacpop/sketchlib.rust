@@ -16,7 +16,7 @@ use std::time::Instant;
 extern crate arrayref;
 extern crate num_cpus;
 use anyhow::Error;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 pub mod cli;
@@ -80,8 +80,7 @@ pub fn main() -> Result<(), Error> {
             #[cfg(feature = "3di")]
             convert_pdb,
             output,
-            k_vals,
-            k_seq,
+            kmers,
             mut sketch_size,
             seq_type,
             level,
@@ -101,7 +100,7 @@ pub fn main() -> Result<(), Error> {
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
             log::info!("Parsed {} samples in input list", input_files.len());
-            let kmers = parse_kmers(k_vals, k_seq);
+            let kmers = parse_kmers(kmers);
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize

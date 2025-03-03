@@ -1,5 +1,5 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 
 use super::hashing::{AaLevel, HashType, DEFAULT_LEVEL};
 
@@ -40,7 +40,7 @@ pub fn check_threads(threads: usize) {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
-pub struct Args {
+pub struct MainArgs {
     #[doc(hidden)]
     #[command(subcommand)]
     pub command: Commands,
@@ -54,6 +54,18 @@ pub struct Args {
     pub quiet: bool,
 }
 
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+pub struct Kmers {
+    /// K-mer list (comma separated k-mer values to sketch at)
+    #[arg(short, long, required = true, value_delimiter = ',')]
+    pub k_vals: Option<Vec<usize>>,
+
+    /// K-mer linear sequence (start,end,step)
+    #[arg(long, required = true, value_delimiter = ',')]
+    pub k_seq: Option<Vec<usize>>,
+}
+
 /// Subcommands and their specific options
 #[derive(Subcommand)]
 pub enum Commands {
@@ -65,10 +77,10 @@ pub enum Commands {
     /// Create sketches from input data
     Sketch {
         /// List of input FASTA files
-        #[arg(long, group = "input", num_args = 1.., value_delimiter = ',')]
+        #[arg(group = "input")]
         seq_files: Option<Vec<String>>,
 
-        /// File listing input files (tab separated name, sequences)
+        /// File listing input files (tab separated name, sequences, see README)
         #[arg(short, group = "input")]
         file_list: Option<String>,
 
@@ -86,13 +98,8 @@ pub enum Commands {
         #[arg(short)]
         output: String,
 
-        /// K-mer list
-        #[arg(short, long, group = "kmer", required = true, num_args = 1.., value_delimiter = ',')]
-        k_vals: Option<Vec<usize>>,
-
-        /// K-mer sequence: start end step
-        #[arg(long, group = "kmer", required = true, num_args = 3)]
-        k_seq: Option<Vec<usize>>,
+        #[command(flatten)]
+        kmers: Kmers,
 
         /// Sketch size
         #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
@@ -240,7 +247,7 @@ pub enum Commands {
     },
 }
 
-/// Function to parse command line args into [`Args`] struct
-pub fn cli_args() -> Args {
-    Args::parse()
+/// Function to parse command line args into [`MainArgs`] struct
+pub fn cli_args() -> MainArgs {
+    MainArgs::parse()
 }

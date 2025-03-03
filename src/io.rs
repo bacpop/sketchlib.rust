@@ -1,4 +1,6 @@
 //! Functions to read input fasta/fastq files
+use crate::cli::Kmers;
+
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -24,14 +26,14 @@ pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     input_files
 }
 
-pub fn parse_kmers(k_list: &Option<Vec<usize>>, k_seq: &Option<Vec<usize>>) -> Vec<usize> {
-    if k_list.is_some() && k_seq.is_some() {
+pub fn parse_kmers(k: &Kmers) -> Vec<usize> {
+    if k.k_vals.is_some() && k.k_seq.is_some() {
         panic!("Only one of --k-vals or --k-seq should be specified");
     }
 
-    let mut kmers = if let Some(k) = k_list {
+    let mut kmers = if let Some(k) = &k.k_vals {
         k.clone().to_vec()
-    } else if let Some(k) = k_seq {
+    } else if let Some(k) = &k.k_seq {
         (k[0]..=k[1]).step_by(k[2]).collect()
     } else {
         panic!("Must specify --k-vals or --k-seq");
@@ -85,7 +87,11 @@ pub fn get_input_list(
                 let parsed_input = match fields.len() {
                     1 => ((fields[0].to_string()), fields[0].to_string(), None),
                     2 => ((fields[0].to_string()), fields[1].to_string(), None),
-                    3 => ((fields[0].to_string()), fields[0].to_string(), Some(fields[2].to_string())),
+                    3 => (
+                        (fields[0].to_string()),
+                        fields[0].to_string(),
+                        Some(fields[2].to_string()),
+                    ),
                     _ => {
                         panic!("Unable to parse line in file_list")
                     }
