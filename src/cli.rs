@@ -48,6 +48,10 @@ pub struct Args {
     /// Show progress messages
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Don't show any messages
+    #[arg(long, global = true)]
+    pub quiet: bool,
 }
 
 /// Subcommands and their specific options

@@ -34,7 +34,10 @@ impl RollHash for AaHashIterator {
             self.fh = new_it.0;
             self.index = new_it.1;
         } else {
-            panic!("K-mer larger than smallest valid sequence, which is:\n{}", std::str::from_utf8(&self.seq).unwrap());
+            panic!(
+                "K-mer larger than smallest valid sequence, which is:\n{}",
+                std::str::from_utf8(&self.seq).unwrap()
+            );
         }
     }
 

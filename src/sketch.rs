@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::mpsc;
 
 extern crate needletail;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +15,7 @@ use crate::io::InputFastx;
 use crate::sketch_datafile::SketchArrayFile;
 #[cfg(feature = "3di")]
 use crate::structures::pdb_to_3di;
-
-use std::path::Path;
+use crate::utils::get_progress_bar;
 
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
@@ -211,14 +210,14 @@ pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
     concat_fasta: bool,
-    #[cfg(feature = "3di")]
-    convert_pdb: bool,
+    #[cfg(feature = "3di")] convert_pdb: bool,
     k: &[usize],
     sketch_size: u64,
     seq_type: &HashType,
     rc: bool,
     min_count: u16,
     min_qual: u8,
+    quiet: bool,
 ) -> Vec<Sketch> {
     let bin_stride = 1;
     let kmer_stride = (sketch_size * BBITS) as usize;
@@ -245,15 +244,14 @@ pub fn sketch_files(
     let (tx, rx) = mpsc::channel();
     let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 
-    let bar_style =
-        ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}")
-            .unwrap();
+    let percent = false;
+    let progress_bar = get_progress_bar(input_files.len(), percent, quiet);
     // With thanks to https://stackoverflow.com/a/76963325
     rayon::scope(|s| {
         s.spawn(move |_| {
             input_files
                 .par_iter()
-                .progress_with_style(bar_style)
+                .progress_with(progress_bar)
                 .enumerate()
                 .map(|(idx, (name, fastx1, fastx2))| {
                     // Read in sequence and set up rolling hash by alphabet type
