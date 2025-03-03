@@ -22,9 +22,11 @@ With all options we typically recommend using `-v` to see all progress during th
 
 Using input fasta/fastq files, create a sketch database. Run `sketchlib sketch -h` to see the help.
 
-- List .fasta files on the command line, or use `-f` to provide a file(s). From file,
-these are one line per sample listing the name and fasta file, or name and two read files
-(fastq). Inputs can be gzipped or not, this is automatically detected.
+- List .fasta files on the command line, or use `-f` to provide a file(s). Inputs can be gzipped or not, this is automatically detected.
+From file, these are one line per sample listing:
+    - One column (fasta input): file name, which is also used as the sample name
+    - Two columns (fasta input): sample name and file name
+    - Three columns (fastq input): sample name and two read files
 - To set the k-mer size in the sketch database you can either give a list of sizes with `--k-vals`
 or a sequence `--k-seq` with start,stop,step. e.g. `--k-seq 17,29,4` would sketch at k=17, 21, 25 and 29.
 - Set the sketch size with `-s`. Typically 1000 is enough for species level resolution, 10000 for within-species/strain
