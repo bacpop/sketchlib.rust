@@ -22,7 +22,7 @@ mod tests {
             .args(&["--k-vals", "17"])
             .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
             .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
-            .arg("-v")
+            .arg("--quiet")
             .args(&["-o", "part1"])
             .assert()
             .success();
