@@ -10,9 +10,9 @@ pub type InputFastx = (String, String, Option<String>);
 pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     let mut input_files = Vec::new();
     // matches the file name (no extension) in a full path
-    let re_path = Regex::new(r"^.+/(.+)\.(?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
+    let re_path = Regex::new(r"^.+/(.+\.?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
     // matches the file name (no extension) with no path
-    let re_name = Regex::new(r"^(.+)\.(?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
+    let re_name = Regex::new(r"^(.+\.?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
     for file in seq_files {
         let caps = re_path.captures(file).or(re_name.captures(file));
         let name = match caps {
