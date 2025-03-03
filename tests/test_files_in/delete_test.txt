@@ -1,2 +1,2 @@
-TIGR4
-R6
+TIGR4.fa.gz
+R6.fa.gz

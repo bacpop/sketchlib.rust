@@ -184,7 +184,7 @@ pub enum Commands {
         db: String,
 
         /// List of input FASTA files
-        #[arg(long, group = "input", num_args = 1.., value_delimiter = ',')]
+        #[arg(group = "input")]
         seq_files: Option<Vec<String>>,
 
         /// File listing input files (tab separated name, sequences)
