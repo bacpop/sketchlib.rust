@@ -16,27 +16,23 @@ mod tests {
     fn test_delete_sketches() {
         let sandbox = TestSetup::setup();
 
+        let rfile1 = sandbox.create_rfile(&vec!["14412_3#82.contigs_velvet.fa.gz", "14412_3#84.contigs_velvet.fa.gz", "R6.fa.gz", "TIGR4.fa.gz"]);
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
-            .arg("--seq-files")
-            .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("R6.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("TIGR4.fa.gz", TestDir::Input))
+            .args(&["-f", rfile1])
             .arg("-v")
             .args(&["-o", "full_db"])
             .assert()
             .success();
 
+        let rfile2 = sandbox.create_rfile(&vec!["14412_3#82.contigs_velvet.fa.gz", "14412_3#84.contigs_velvet.fa.gz"]);
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
-            .arg("--seq-files")
-            .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
+            .args(&["-f", rfile2])
             .arg("-v")
             .args(&["-o", "result_db"])
             .assert()

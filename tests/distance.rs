@@ -93,7 +93,6 @@ mod tests {
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "3"])
-            .arg("--seq-files")
             .arg(sandbox.file_string("short_sequence.fa", TestDir::Input))
             .arg("-v")
             .args(&["-o", "test1_part1"])
@@ -106,7 +105,6 @@ mod tests {
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "3"])
-            .arg("--seq-files")
             .arg(sandbox.file_string("short_sequence_SNP.fa", TestDir::Input))
             .arg("-v")
             .args(&["-o", "test1_part2"])
@@ -132,7 +130,6 @@ mod tests {
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
-            .arg("--seq-files")
             .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
             .arg("-v")
             .args(&["-o", "test2_part1"])
@@ -146,7 +143,6 @@ mod tests {
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
-            .arg("--seq-files")
             .arg(sandbox.file_string(
                 "14412_3#82.contigs_velvet_removed_block.fa.gz",
                 TestDir::Input,
@@ -176,7 +172,6 @@ mod tests {
             .arg("sketch")
             .args(&["--k-vals", "31"])
             .args(&["-s", "10000"])
-            .arg("--seq-files")
             .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
             .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
             .arg(sandbox.file_string("R6.fa.gz", TestDir::Input))

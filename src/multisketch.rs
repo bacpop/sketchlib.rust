@@ -1,7 +1,7 @@
 //! The class to support .skm/.skd reading and writing, containing multiple [`Sketch`] objects
 use anyhow::bail;
 use anyhow::Error;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 // use thiserror::Error;
 use core::panic;
 use std::fmt;
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::hashing::HashType;
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
+use crate::utils::get_progress_bar;
 
 use std::collections::HashSet;
 #[derive(Serialize, Deserialize)]
@@ -206,10 +207,8 @@ impl MultiSketch {
         let mut removed_samples = Vec::new();
 
         for sketch in &self.sketch_metadata {
-
             if !genome_ids_to_remove.contains(&(*sketch.name()).to_string()) {
                 new_sketch_metadata.push(sketch.clone());
-
             } else {
                 removed_samples.push(sketch.name());
             }
@@ -219,7 +218,10 @@ impl MultiSketch {
         let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
         let missing: Vec<&&str> = set2.difference(&set1).collect();
         if !missing.is_empty() {
-            bail!("The following samples have not been found in the database: {:?}", missing);
+            bail!(
+                "The following samples have not been found in the database: {:?}",
+                missing
+            );
         }
 
         self.sketch_metadata = new_sketch_metadata;
@@ -232,7 +234,7 @@ impl MultiSketch {
         input_prefix: &str,
         output_file: &str,
         genome_ids_to_remove: &[String],
-    ) -> anyhow::Result<()>  {
+    ) -> anyhow::Result<()> {
         let mut positions_to_remove = Vec::new();
         let mut missing_ids = Vec::new();
 

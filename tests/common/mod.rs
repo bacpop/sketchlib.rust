@@ -105,60 +105,24 @@ impl TestSetup {
         predicate_fn.eval(self.wd.child(name_out).path())
     }
 
-    pub fn create_rfile(&self, prefix: &str, fx_type: FxType) -> &str {
+    pub fn create_rfile(&self, filenames: &[&str]) -> &str {
         // Create an rfile in the tmp dir
         let mut rfile = LineWriter::new(
             File::create(format!("{}/{}", self.get_wd(), RFILE_NAME))
                 .expect("Could not write rfile"),
         );
-        match fx_type {
-            FxType::Fastq => {
-                writeln!(
-                    rfile,
-                    "{}",
-                    &format!(
-                        "{}_1\t{}\t{}",
-                        prefix,
-                        self.file_string(&format!("{}_1_fwd.fastq.gz", prefix), TestDir::Input),
-                        self.file_string(&format!("{}_1_rev.fastq.gz", prefix), TestDir::Input),
-                    )
+        for file in filenames {
+            writeln!(
+                rfile,
+                "{}",
+                &format!(
+                    "{}\t{}",
+                    file,
+                    self.file_string(file, TestDir::Input),
                 )
-                .unwrap();
-                writeln!(
-                    rfile,
-                    "{}",
-                    &format!(
-                        "{}_2\t{}\t{}",
-                        prefix,
-                        self.file_string(&format!("{}_2_fwd.fastq.gz", prefix), TestDir::Input),
-                        self.file_string(&format!("{}_2_rev.fastq.gz", prefix), TestDir::Input),
-                    )
-                )
-                .unwrap();
-            }
-            FxType::Fasta => {
-                writeln!(
-                    rfile,
-                    "{}",
-                    &format!(
-                        "{}_1\t{}",
-                        prefix,
-                        self.file_string(&format!("{}_1.fa", prefix), TestDir::Input),
-                    )
-                )
-                .unwrap();
-                writeln!(
-                    rfile,
-                    "{}",
-                    &format!(
-                        "{}_2\t{}",
-                        prefix,
-                        self.file_string(&format!("{}_2.fa", prefix), TestDir::Input),
-                    )
-                )
-                .unwrap();
-            }
-        };
+            )
+            .unwrap();
+        }
         RFILE_NAME
     }
 
