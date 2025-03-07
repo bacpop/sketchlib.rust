@@ -89,7 +89,7 @@ pub fn get_input_list(
                     2 => ((fields[0].to_string()), fields[1].to_string(), None),
                     3 => (
                         (fields[0].to_string()),
-                        fields[0].to_string(),
+                        fields[1].to_string(),
                         Some(fields[2].to_string()),
                     ),
                     _ => {
