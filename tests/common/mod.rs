@@ -126,16 +126,24 @@ impl TestSetup {
         RFILE_NAME
     }
 
-    pub fn create_par_rfile(&self) -> &str {
+    /// Create an rfile wtih two fastqs in the tmp dir
+    pub fn create_fastq_rfile(&self, prefix: &str) -> &str {
         let mut rfile = LineWriter::new(
             File::create(format!("{}/{}", self.get_wd(), RFILE_NAME))
                 .expect("Could not write rfile"),
         );
-
-        let paths = read_dir(self.file_string("par_test", TestDir::Input)).unwrap();
-        for path in paths {
-            let path_str = path.unwrap().path().display().to_string();
-            writeln!(rfile, "{path_str}\t{path_str}").unwrap();
+        for file_idx in 1..=2 {
+            let sample_name = format!("{prefix}_{file_idx}");
+            writeln!(
+                rfile,
+                "{}",
+                &format!(
+                    "{sample_name}\t{}\t{}",
+                    self.file_string(&format!("{sample_name}_fwd.fastq.gz"), TestDir::Input),
+                    self.file_string(&format!("{sample_name}_rev.fastq.gz"), TestDir::Input),
+                )
+            )
+            .unwrap();
         }
         RFILE_NAME
     }

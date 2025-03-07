@@ -1,0 +1,4 @@
+Name	Sequence length	Base frequencies	Missing/ambig bases	From reads	Single strand	Densified
+test_1	1	[603, 330, 334, 603]	0	true	false	true
+test_2	1	[617, 312, 314, 617]	0	true	false	true
+
