@@ -1,7 +1,10 @@
 //! Support for .pdb files and the 3di alphabet
+#[cfg(feature = "3di")]
 use crate::io::InputFastx;
+#[cfg(feature = "3di")]
 use anyhow::Error;
 
+#[cfg(feature = "3di")]
 use indicatif::{ProgressIterator, ProgressStyle};
 #[cfg(feature = "3di")]
 use pyo3::prelude::*;

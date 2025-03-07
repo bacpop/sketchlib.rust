@@ -115,11 +115,7 @@ impl TestSetup {
             writeln!(
                 rfile,
                 "{}",
-                &format!(
-                    "{}\t{}",
-                    file,
-                    self.file_string(file, TestDir::Input),
-                )
+                &format!("{}\t{}", file, self.file_string(file, TestDir::Input),)
             )
             .unwrap();
         }

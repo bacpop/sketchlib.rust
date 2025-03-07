@@ -36,7 +36,9 @@ mod tests {
             .arg("info")
             .arg("assembly")
             .assert()
-            .stdout_matches_path(sandbox.file_string("assembly_sketch_info.stdout", TestDir::Correct));
+            .stdout_matches_path(
+                sandbox.file_string("assembly_sketch_info.stdout", TestDir::Correct),
+            );
 
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
@@ -45,7 +47,9 @@ mod tests {
             .arg("assembly")
             .arg("-v")
             .assert()
-            .stdout_matches_path(sandbox.file_string("assembly_sketch_full_info.stdout", TestDir::Correct));
+            .stdout_matches_path(
+                sandbox.file_string("assembly_sketch_full_info.stdout", TestDir::Correct),
+            );
     }
 
     #[test]
@@ -82,6 +86,8 @@ mod tests {
             .arg("reads")
             .arg("-v")
             .assert()
-            .stdout_matches_path(sandbox.file_string("read_sketch_full_info.stdout", TestDir::Correct));
+            .stdout_matches_path(
+                sandbox.file_string("read_sketch_full_info.stdout", TestDir::Correct),
+            );
     }
 }

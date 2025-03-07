@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use crate::hashing::HashType;
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
-use crate::utils::get_progress_bar;
 
 use std::collections::HashSet;
 #[derive(Serialize, Deserialize)]
