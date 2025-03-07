@@ -137,7 +137,7 @@ impl<'a> Distances<'a> for DistanceMatrix<'a> {
     }
 }
 
-impl<'a> fmt::Display for DistanceMatrix<'a> {
+impl fmt::Display for DistanceMatrix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut dist_idx = 0;
         if let Some(queries) = &self.query_names {
@@ -267,7 +267,7 @@ impl<'a> Distances<'a> for SparseDistanceMatrix<'a> {
     }
 }
 
-impl<'a> fmt::Display for SparseDistanceMatrix<'a> {
+impl fmt::Display for SparseDistanceMatrix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut ref_name_iter = self.ref_names.iter();
         let mut ref_name = ref_name_iter.next().unwrap();
