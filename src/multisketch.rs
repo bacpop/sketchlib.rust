@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::mem;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
@@ -16,7 +16,7 @@ use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
 use rayon::prelude::*;
-use std::collections::HashSet;
+// use std::collections::HashSet;
 
 use std::io::Write;
 use std::path::Path;
@@ -40,16 +40,50 @@ pub struct MultiSketch {
 }
 
 impl MultiSketch {
+    // pub fn new(
+    //     sketches: &mut Vec<Sketch>,
+    //     sketch_size: u64,
+    //     kmer_lengths: &[usize],
+    //     hash_type: HashType,
+    //     inverted: bool,
+    // ) -> Self {
+    //     let mut name_map = HashMap::with_capacity(sketches.len());
+    //     for sketch in sketches.iter() {
+    //         name_map.insert(sketch.name().to_string(), sketch.get_index());
+    //     }
+
+    //     let kmer_stride = (sketch_size * BBITS) as usize;
+    //     Self {
+    //         sketch_size,
+    //         kmer_lengths: kmer_lengths.to_vec(),
+    //         sketch_metadata: mem::take(sketches),
+    //         name_map,
+    //         block_reindex: None,
+    //         sketch_bins: Vec::new(),
+    //         bin_stride: 1,
+    //         kmer_stride,
+    //         sample_stride: kmer_stride * kmer_lengths.len(),
+    //         sketch_version: env!("CARGO_PKG_VERSION").to_string(),
+    //         hash_type,
+    //     }
+
+    // }
     pub fn new(
         sketches: &mut Vec<Sketch>,
         sketch_size: u64,
         kmer_lengths: &[usize],
         hash_type: HashType,
         inverted: bool,
+        with_bins: bool,
     ) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
-        for sketch in sketches.iter() {
+        let mut sketch_bins = Vec::new();
+
+        for sketch in sketches.iter_mut() {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
+            if with_bins {
+                sketch_bins.extend(sketch.get_usigs());
+            }
         }
 
         let kmer_stride = (sketch_size * BBITS) as usize;
@@ -59,7 +93,7 @@ impl MultiSketch {
             sketch_metadata: mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins: Vec::new(),
+            sketch_bins,
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
@@ -67,8 +101,6 @@ impl MultiSketch {
             hash_type,
         }
     }
-
-    
 
     /// Saves the metadata
     pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
@@ -219,19 +251,35 @@ impl MultiSketch {
             }
         }
 
-        let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
-        let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
-        let missing: Vec<&&str> = set2.difference(&set1).collect();
-        if !missing.is_empty() {
-            bail!(
-                "The following samples have not been found in the database: {:?}",
-                missing
-            );
+        {
+            let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
+            let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
+            let missing: Vec<&&str> = set2.difference(&set1).collect();
+            if !missing.is_empty() {
+                bail!(
+                    "The following samples have not been found in the database: {:?}",
+                    missing
+                );
+            }
         }
 
         self.sketch_metadata = new_sketch_metadata;
         self.save_metadata(output_file_name)?;
         Ok(())
+        // new implementations has scope added to drop sets so there is no borrowing issue.
+        // let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
+        // let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
+        // let missing: Vec<&&str> = set2.difference(&set1).collect();
+        // if !missing.is_empty() {
+        //     bail!(
+        //         "The following samples have not been found in the database: {:?}",
+        //         missing
+        //     );
+        // }
+
+        // self.sketch_metadata = new_sketch_metadata;
+        // self.save_metadata(output_file_name)?;
+        // Ok(())
     }
 
     pub fn remove_genomes(
@@ -275,25 +323,15 @@ impl MultiSketch {
     }
 
     pub fn invert_index(sketches: &MultiSketch) -> HashMap<u64, HashSet<usize>> {
-        println!("Debug: Starting invert_index function");
-        println!("Debug: Sample stride: {}", sketches.sample_stride);
-        println!("Debug: Sketch bins length: {}", sketches.sketch_bins.len());
-    
         // HashMap storing the inverted index
         let mut inverted_index: HashMap<u64, HashSet<usize>> = HashMap::default();
-    
+
         // Parallise the inversion for each sample
         let local_indices: Vec<HashMap<u64, HashSet<usize>>> = sketches
             .sketch_bins
             .par_chunks(sketches.sample_stride)
             .enumerate()
             .map(|(genome_id, sample_hash)| {
-                println!("Debug: Processing genome_id: {}", genome_id);
-                println!("Debug: Sample hash length: {}", sample_hash.len());
-                
-                // Print all hashes for this genome
-                println!("Debug: Hashes for genome {}: {:?}", genome_id, sample_hash);
-    
                 let mut local_index: HashMap<u64, HashSet<usize>> = HashMap::default();
                 for &hash in sample_hash {
                     local_index
@@ -301,18 +339,12 @@ impl MultiSketch {
                         .or_insert_with(HashSet::default)
                         .insert(genome_id);
                 }
-                println!("Debug: Local index for genome {} size: {}", genome_id, local_index.len());
-                // Print the hash-to-genome mappings for this local index
-                println!("Debug: Local index contents for genome {}: {:?}", genome_id, local_index);
                 local_index
             })
             .collect();
-    
-        println!("Debug: Number of local indices: {}", local_indices.len());
-    
+
         // Merge all local inverted indices into a global one
         for (i, local) in local_indices.iter().enumerate() {
-            println!("Debug: Merging local index {}, size: {}", i, local.len());
             for (hash, genome_set) in local {
                 inverted_index
                     .entry(*hash)
@@ -320,10 +352,7 @@ impl MultiSketch {
                     .extend(genome_set);
             }
         }
-    
-        println!("Debug: Final inverted index size: {}", inverted_index.len());
-        println!("Debug: Inverted index contents: {:?}", inverted_index);
-    
+
         inverted_index
     }
     // remove, only need this for debugging
@@ -336,18 +365,28 @@ impl MultiSketch {
         file_path: P,
     ) -> std::io::Result<()> {
         let mut file = File::create(file_path)?;
-    
+
         for (hash, genome_set) in inverted_index {
             writeln!(
                 file,
                 "{} {}",
                 hash,
-                genome_set.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(" ")
+                genome_set
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             )?;
         }
-    
+
         Ok(())
     }
+    // pub fn update_sketches(&mut self) {
+    //     for (sketch_idx, sketch) in self.sketch_metadata.iter_mut().enumerate() {
+    //         let bins = self.get_sketch_slice(sketch_idx, 0);  // only have on k-mer length for inverted
+    //         sketch.usigs = bins;
+    //     }
+    // }
 }
 
 // This function is called when sketches are merged, not when they are

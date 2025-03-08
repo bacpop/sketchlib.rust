@@ -3,7 +3,9 @@ use std::fmt;
 use std::sync::mpsc;
 
 extern crate needletail;
+use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
+use needletail::kmer;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +106,34 @@ impl Sketch {
             acgt,
             non_acgt,
         }
+    }
+
+    pub fn get_signs<H: RollHash + ?Sized>(
+        seq_hashes: &mut H,
+        kmer_lengths: &usize,
+        num_bins: u64,
+        min_count: u16,
+    ) -> Vec<u64> {
+        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
+        let mut signs = vec![u64::MAX; num_bins as usize];
+
+        let mut read_filter = if seq_hashes.reads() {
+            let mut filter = KmerFilter::new(min_count);
+            filter.init();
+            Some(filter)
+        } else {
+            None
+        };
+
+        seq_hashes.set_k(*kmer_lengths);
+
+        // Calculate bin minima across all sequence
+        for hash in seq_hashes.iter() {
+            Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
+        }
+        // Densify
+        Self::densify_bin(&mut signs);
+        signs
     }
 
     pub fn name(&self) -> &str {
@@ -231,19 +261,10 @@ pub fn sketch_files(
     min_qual: u8,
     inverted: bool,
 ) -> Vec<Sketch> {
-    println!("Debug: Starting sketch_files with inverted={}", inverted);
-    
-    println!("Debug: sketchsize in sketchfiles={}", sketch_size);
-    println!("Debug: k.len={}", k.len());
-    println!("Debug: BBITS={}", BBITS);
     // println!("Debug: kmer_stride={}", kmer_stride);
     let bin_stride = 1;
     let kmer_stride = (sketch_size * BBITS) as usize;
-    println!("Debug: kmer_stride={}", kmer_stride);
     let sample_stride = kmer_stride * k.len();
-
-    println!("Debug: bin_stride={}, kmer_stride={}, sample_stride={}", 
-             bin_stride, kmer_stride, sample_stride);
 
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
@@ -263,7 +284,6 @@ pub fn sketch_files(
                 .par_iter()
                 .progress_with_style(bar_style)
                 .map(|(name, fastx1, fastx2)| {
-                    println!("Debug: Processing file: {}", name);
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                         HashType::DNA => {
                             NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
@@ -289,12 +309,17 @@ pub fn sketch_files(
                             } else {
                                 Sketch::remove_extension(name)
                             };
-                            println!("Debug: Creating sketch for {}", sample_name);
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");
                             }
-                            let sketch = Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count);
-                            println!("Debug: Created sketch with {} usigs", sketch.get_usigs_debug().len());
+                            let sketch = Sketch::new(
+                                &mut **hash_it,
+                                &sample_name,
+                                k,
+                                sketch_size,
+                                rc,
+                                min_count,
+                            );
                             sketch
                         })
                         .collect::<Vec<Sketch>>()
@@ -306,24 +331,18 @@ pub fn sketch_files(
 
         for sketch_file in rx {
             for mut sketch in sketch_file {
-                println!("Debug: Writing sketch for {}", sketch.name());
-                println!("Debug: Sketch has {} usigs before writing", sketch.get_usigs_debug().len());
-                
                 let index = if inverted {
                     serial_writer.write_sketch(sketch.get_usigs_debug())
                 } else {
                     let usigs = sketch.get_usigs();
                     serial_writer.write_sketch(&usigs)
                 };
-                
-                println!("Debug: Got index {} from writer", index);
+
                 sketch.set_index(index);
-                println!("Debug: Sketch has {} usigs after writing", sketch.get_usigs_debug().len());
                 sketches.push(sketch);
             }
         }
     });
 
-    println!("Debug: Returning {} sketches", sketches.len());
     sketches
 }

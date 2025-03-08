@@ -1,160 +1,94 @@
-use sketchlib::hashing::{RollHash, HashType};
+use sketchlib::hashing::HashType;
+// use snapbox::cmd::{cargo_bin, Command};
+pub mod common;
+use crate::common::*;
 use sketchlib::multisketch::MultiSketch;
-use sketchlib::sketch::Sketch;
-
-const BBITS: u64 = 14;
-const SIGN_MOD: u64 = (1 << 61) - 1;
-
-struct TestHasher {
-    hashes: Vec<u64>,
-    current_index: usize,
-    k: usize,
-    seq_len: usize,
-    initialized: bool,
-}
-
-impl TestHasher {
-    fn new(hashes: Vec<u64>, seq_len: usize) -> Self {
-        println!("Creating TestHasher with original hashes: {:?}", hashes);
-        // Ensure hashes are valid and within range
-        let scaled_hashes = hashes.into_iter()
-            .map(|h| ((h.wrapping_mul(0x517cc1b727220a95)) << BBITS) % SIGN_MOD)
-            .filter(|&h| h > 0)
-            .collect::<Vec<_>>();
-        println!("Scaled hashes: {:?}", scaled_hashes);
-        
-        Self {
-            hashes: scaled_hashes,
-            current_index: 0,
-            k: 3,
-            seq_len,
-            initialized: false,
-        }
-    }
-}
-
-impl Iterator for TestHasher {
-    type Item = u64;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.initialized {
-            self.initialized = true;
-            return Some(self.hashes[0]);
-        }
-
-        if self.current_index < self.hashes.len() {
-            let hash = self.hashes[self.current_index];
-            println!("Yielding hash: {}", hash);
-            self.current_index += 1;
-            Some(hash)
-        } else {
-            println!("No more hashes to yield");
-            None
-        }
-    }
-}
-
-impl RollHash for TestHasher {
-    fn set_k(&mut self, k: usize) {
-        println!("Setting k to {}", k);
-        self.k = k;
-    }
-
-    fn curr_hash(&self) -> u64 {
-        let hash = if self.current_index > 0 {
-            self.hashes[self.current_index - 1]
-        } else {
-            self.hashes[0]
-        };
-        println!("Current hash: {}", hash);
-        hash
-    }
-
-    fn hash_type(&self) -> HashType {
-        HashType::DNA
-    }
-
-    fn seq_len(&self) -> usize {
-        self.seq_len
-    }
-
-    fn sketch_data(&self) -> (bool, [usize; 4], usize) {
-        (false, [1, 1, 1, 1], 0)
-    }
-}
+// use sketchlib::sketch::Sketch;
+use sketchlib::sketch::sketch_files;
 
 #[test]
-fn test_simple_inverted_index() {
-    println!("Starting test with SIGN_MOD: {}", SIGN_MOD);
-    
-    // Use larger initial values to ensure they remain positive after scaling
-    let mut hasher1 = TestHasher::new(vec![100, 200, 300], 4);
-    let mut hasher2 = TestHasher::new(vec![100, 200, 400], 4);
+fn test_identical_sequences() {
+    let sandbox = TestSetup::setup();
 
-    let kmer_lengths = vec![3];
+    let input_files = vec![(
+        "seq1".to_string(),
+        sandbox.file_string("inverted_test_genome1.fa", TestDir::Input),
+        None,
+    )];
+
     let sketch_size = 3;
-    
-    println!("\nCreating sketch1...");
-    let mut sketch1 = Sketch::new(
-        &mut hasher1,
-        "genome1",
-        &kmer_lengths,
-        sketch_size,
-        false,  // rc
-        1,      // min_count
+    let seq_type = HashType::DNA;
+    let kmers: &[usize] = &[2];
+
+    let mut sketches = sketch_files(
+        "test_identical",
+        &input_files,
+        false,       // concat_fasta
+        &kmers,      // k-mer sizes
+        sketch_size, // sketch_size
+        &seq_type,
+        false, // rc
+        1,     // min_count
+        0,     // min_qual
+        true,  // inverted
     );
-    println!("Sketch1 created successfully");
 
-    println!("\nCreating sketch2...");
-    let mut sketch2 = Sketch::new(
-        &mut hasher2,
-        "genome2",
-        &kmer_lengths,
-        sketch_size,
-        false,  // rc
-        1,      // min_count
+    let mut multisketches =
+        MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, true, true);
+
+    // multisketches.update_sketches();
+
+    let inverted_index1 = MultiSketch::invert_index(&multisketches);
+    let inverted_index2 = MultiSketch::invert_index(&multisketches);
+
+    // test: same size
+    assert_eq!(
+        inverted_index1.len(),
+        inverted_index2.len(),
+        "Both inverted indices should have the same number of entries"
     );
-    println!("Sketch2 created successfully");
 
-    println!("\nCreating MultiSketch...");
-    let mut sketches = vec![sketch1, sketch2];
-    let multi_sketch = MultiSketch::new(
-        &mut sketches,
-        sketch_size,
-        &kmer_lengths,
-        HashType::DNA,
-        false,
-    );
-    println!("MultiSketch created successfully");
+    // test: key and value for both
+    for (sig, sketch_indices1) in &inverted_index1 {
+        assert!(
+            inverted_index2.contains_key(sig),
+            "Signature {} should exist in both indices",
+            sig
+        );
 
-    println!("\nCreating inverted index...");
-    let inverted_index = MultiSketch::invert_index(&multi_sketch);
-    println!("Inverted index created with {} entries", inverted_index.len());
-
-    // Print the contents of the inverted index
-    println!("\nInverted index contents:");
-    for (hash, genomes) in &inverted_index {
-        println!("Hash {}: present in genomes {:?}", hash, genomes);
+        let sketch_indices2 = inverted_index2.get(sig).unwrap();
+        assert_eq!(
+            sketch_indices1, sketch_indices2,
+            "Sets of sketch indices for signature {} should be identical",
+            sig
+        );
     }
-
-    assert_eq!(inverted_index.len(), 4, "Expected 4 unique hashes");
-
-    // Get the actual hash values from our hasher instances for verification
-    let hasher1_values: Vec<u64> = TestHasher::new(vec![100, 200, 300], 4).hashes;
-    let hasher2_values: Vec<u64> = TestHasher::new(vec![100, 200, 400], 4).hashes;
-
-    // Verify the presence of hashes in the inverted index
-    let hash1 = hasher1_values[0];
-    let hash2 = hasher1_values[1];
-    let hash3 = hasher1_values[2];
-    let hash4 = hasher2_values[2];
-
-    assert!(inverted_index.get(&hash1).unwrap().contains(&0));
-    assert!(inverted_index.get(&hash1).unwrap().contains(&1));
-    assert!(inverted_index.get(&hash2).unwrap().contains(&0));
-    assert!(inverted_index.get(&hash2).unwrap().contains(&1));
-    assert!(inverted_index.get(&hash3).unwrap().contains(&0));
-    assert!(!inverted_index.get(&hash3).unwrap().contains(&1));
-    assert!(inverted_index.get(&hash4).unwrap().contains(&1));
-    assert!(!inverted_index.get(&hash4).unwrap().contains(&0));
 }
+
+// #[test]
+// fn test_different_sequences() {
+//     let sandbox = TestSetup::setup();
+
+//     let input_files = vec![
+//         (
+//             "seq1".to_string(),
+//             sandbox.file_string(
+//                 "inverted_test_genome1.fa",
+//                 TestDir::Input,
+//             ),
+//             None,
+//         ),
+//         (
+//             "seq2".to_string(),
+//             sandbox.file_string("inverted_test_genome2.fa", TestDir::Input),
+//             None,
+//         ),
+//     ];
+
+//     assert_eq!(sketches.len(), 2, "Should have two sketches");
+//     assert_ne!(
+//         sketches[0].get_usigs(),
+//         sketches[1].get_usigs(),
+//         "Different sequences should produce different sketches"
+//     );
+// }

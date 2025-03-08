@@ -1,6 +1,8 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
 use clap::{ArgGroup, Parser, Subcommand};
 
+use crate::DEFAULT_KMER;
+
 use super::hashing::{AaLevel, HashType, DEFAULT_LEVEL};
 
 /// Default single strand (which is equivalent to !rc)
@@ -173,11 +175,6 @@ pub enum Commands {
         #[arg(long, default_value_t = DEFAULT_MINQUAL)]
         min_qual: u8,
 
-        /// Treat every sequence in an input file as a new sample (aa only)
-        // TODO: for now, could be extended to dna, but probably no need
-        #[arg(long, default_value_t = false)]
-        concat_fasta: bool,
-
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
@@ -185,6 +182,14 @@ pub enum Commands {
         /// aaHash 'level'
         #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
         level: AaLevel,
+
+        /// Sketch size
+        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
+        sketch_size: u64,
+
+        /// K-mer size
+        #[arg(short, long, default_value_t = DEFAULT_KMER)]
+        kmer_length: usize,
     },
     /// Merge two sketch files (.skm and .skd pair)
     Merge {

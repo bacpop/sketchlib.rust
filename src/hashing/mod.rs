@@ -125,6 +125,4 @@ pub trait RollHash: Iterator<Item = u64> {
     fn reads(&self) -> bool {
         false
     }
-
-    
 }
