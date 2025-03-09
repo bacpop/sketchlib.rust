@@ -33,6 +33,7 @@ impl Inverted {
         min_qual: u8,
         quiet: bool,
     ) -> Self {
+        log::info!("Creating sketches");
         let (sketches, sample_names) = Self::sketch_files_inverted(
             input_files,
             k,
@@ -43,9 +44,9 @@ impl Inverted {
             min_qual,
             quiet,
         );
-        let inverted_index = Self::build_inverted_index(&sketches, sketch_size);
+        log::info!("Inverting sketch order");
         Self {
-            index: inverted_index,
+            index: Self::build_inverted_index(&sketches, sketch_size),
             sample_names,
         }
     }
