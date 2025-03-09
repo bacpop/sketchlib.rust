@@ -473,6 +473,7 @@ pub fn main() -> Result<(), Error> {
             Ok(())
         }
 
+        // TODO check and enable this code
         // Commands::InvertedQuery {
         //     query_seq_files,
         //     query_file_list,

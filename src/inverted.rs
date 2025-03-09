@@ -178,6 +178,11 @@ impl Inverted {
         (sketch_results, sample_names)
     }
 
+    // TODOs for possible efficiency (also check issues on github)
+    // - Change Vec<u32> to roaring bitmap
+    // - Implement phylogenetic ordering of some sort
+    //      This might need to be a separate option. Would just doing it on the small sketch be ok?
+    // - u64 could be clipped and become u32?
     fn build_inverted_index(
         genome_sketches: &Vec<Vec<u64>>,
         sketch_size: u64,
