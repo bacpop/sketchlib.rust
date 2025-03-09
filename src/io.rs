@@ -1,3 +1,6 @@
+//! Functions to read input fasta/fastq files
+use crate::cli::Kmers;
+
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -9,9 +12,9 @@ pub type InputFastx = (String, String, Option<String>);
 pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     let mut input_files = Vec::new();
     // matches the file name (no extension) in a full path
-    let re_path = Regex::new(r"^.+/(.+)\.(?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
+    let re_path = Regex::new(r"^.+/(.+\.?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
     // matches the file name (no extension) with no path
-    let re_name = Regex::new(r"^(.+)\.(?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
+    let re_name = Regex::new(r"^(.+\.?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
     for file in seq_files {
         let caps = re_path.captures(file).or(re_name.captures(file));
         let name = match caps {
@@ -23,14 +26,14 @@ pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     input_files
 }
 
-pub fn parse_kmers(k_list: &Option<Vec<usize>>, k_seq: &Option<Vec<usize>>) -> Vec<usize> {
-    if k_list.is_some() && k_seq.is_some() {
+pub fn parse_kmers(k: &Kmers) -> Vec<usize> {
+    if k.k_vals.is_some() && k.k_seq.is_some() {
         panic!("Only one of --k-vals or --k-seq should be specified");
     }
 
-    let mut kmers = if let Some(k) = k_list {
+    let mut kmers = if let Some(k) = &k.k_vals {
         k.clone().to_vec()
-    } else if let Some(k) = k_seq {
+    } else if let Some(k) = &k.k_seq {
         (k[0]..=k[1]).step_by(k[2]).collect()
     } else {
         panic!("Must specify --k-vals or --k-seq");
@@ -78,18 +81,22 @@ pub fn get_input_list(
             for line in f.lines() {
                 let line = line.expect("Unable to read line in file_list");
                 let fields: Vec<&str> = line.split_whitespace().collect();
-                // Should be 2 entries for fasta, 3 for fastq
-                let second_file = match fields.len() {
-                    0..=1 => {
-                        panic!("Unable to parse line in file_list")
-                    }
-                    2 => None,
-                    3 => Some(fields[2].to_string()),
+                // 1 entry: fasta with name = file
+                // 2 entries: fasta name, file
+                // 3 entries: fastq name, file1, file2
+                let parsed_input = match fields.len() {
+                    1 => ((fields[0].to_string()), fields[0].to_string(), None),
+                    2 => ((fields[0].to_string()), fields[1].to_string(), None),
+                    3 => (
+                        (fields[0].to_string()),
+                        fields[1].to_string(),
+                        Some(fields[2].to_string()),
+                    ),
                     _ => {
                         panic!("Unable to parse line in file_list")
                     }
                 };
-                input_files.push((fields[0].to_string(), fields[1].to_string(), second_file));
+                input_files.push(parsed_input);
             }
             input_files
         }

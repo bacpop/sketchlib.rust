@@ -1,9 +1,12 @@
 [package]
 name = "sketchlib"
-version = "0.1.0"
+version = "0.1.3"
 authors = [
     "John Lees <jlees@ebi.ac.uk>",
-    "Nicholas Croucher <n.croucher@imperial.ac.uk>"
+    "Nicholas Croucher <n.croucher@imperial.ac.uk>",
+    "Johanna von Wachsmann <wachsmannj@ebi.ac.uk>",
+    "Victor Rodriguez Bouza <vrbouza@ebi.ac.uk>",
+    "Joel Hellewell <joel@ebi.ac.uk",
 ]
 edition = "2021"
 description = "Genome and amino-acid sketching"
@@ -16,10 +19,17 @@ include = [
     "/LICENSE",
     "/NOTICE",
     "/src",
+    "/python_mini3di",
     "/tests"
 ]
 keywords = ["bioinformatics", "genomics", "sequencing", "k-mer", "sketch"]
 categories = ["command-line-utilities", "science"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+3di = ["dep:pyo3", "dep:pyo3-build-config"]
 
 [dependencies]
 # data structures
@@ -33,6 +43,8 @@ ciborium = "0.2"
 snap = "1.1"
 memmap2 = "0.9"
 arrayref = "0.3"
+# ffi
+pyo3 = { version = "0.21", features = ["auto-initialize"], optional = true }
 # logging
 log = "0.4"
 simple_logger = { version = "4", features = ["stderr"] }
@@ -45,6 +57,9 @@ anyhow = "1.0"
 rayon = "1.8"
 num_cpus = "1.0"
 
+[build-dependencies]
+pyo3-build-config = {version = "0.22", optional = true}
+
 [dev-dependencies]
 # testing
 snapbox = "0.4.3"
@@ -53,4 +68,4 @@ assert_fs = "1.0.10"
 pretty_assertions = "1.3.0"
 
 [profile.release]
-debug = true
+lto = true

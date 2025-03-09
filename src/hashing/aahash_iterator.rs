@@ -34,7 +34,10 @@ impl RollHash for AaHashIterator {
             self.fh = new_it.0;
             self.index = new_it.1;
         } else {
-            panic!("K-mer larger than smallest valid sequence");
+            panic!(
+                "K-mer larger than smallest valid sequence, which is:\n{}",
+                std::str::from_utf8(&self.seq).unwrap()
+            );
         }
     }
 
@@ -49,6 +52,10 @@ impl RollHash for AaHashIterator {
 
     fn seq_len(&self) -> usize {
         self.seq.len()
+    }
+
+    fn seq(&self) -> &Vec<u8> {
+        &self.seq
     }
 
     fn sketch_data(&self) -> (bool, [usize; 4], usize) {
@@ -75,9 +82,9 @@ impl AaHashIterator {
         log::debug!("Preprocessing sequence");
         let mut reader =
             parse_fastx_file(file).unwrap_or_else(|_| panic!("Invalid path/file: {file}"));
+        let mut seq_hash_it = Self::default(level.clone());
         loop {
             let record_read = reader.next();
-            let mut seq_hash_it = Self::default(level.clone());
             if let Some(record) = record_read {
                 let seqrec = record.expect("Invalid FASTA/Q record");
                 if seqrec.qual().is_some() {
@@ -94,6 +101,7 @@ impl AaHashIterator {
                 }
                 if concat_fasta {
                     hash_vec.push(seq_hash_it);
+                    seq_hash_it = Self::default(level.clone());
                 } else {
                     seq_hash_it.seq.push(SEQSEP);
                 }
@@ -105,6 +113,16 @@ impl AaHashIterator {
             }
         }
         hash_vec
+    }
+
+    pub fn from_3di_file(file: &str) -> Vec<Self> {
+        Self::new(file, AaLevel::Level1, false)
+    }
+
+    pub fn from_3di_string(sequence: String) -> Vec<Self> {
+        let mut hash_it = Self::default(AaLevel::Level1);
+        hash_it.seq = sequence.into_bytes();
+        vec![hash_it]
     }
 
     fn new_iterator(

@@ -1,8 +1,8 @@
+//! Methods to create single sample's sketch
 use std::cmp::Ordering;
 use std::fmt;
 use std::sync::mpsc;
 
-extern crate needletail;
 use hashbrown::HashMap;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use needletail::kmer;
@@ -14,8 +14,9 @@ use crate::bloom_filter::KmerFilter;
 use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 use crate::sketch_datafile::SketchArrayFile;
-
-use std::path::Path;
+#[cfg(feature = "3di")]
+use crate::structures::pdb_to_3di;
+use crate::utils::get_progress_bar;
 
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
@@ -185,16 +186,6 @@ impl Sketch {
         }
     }
 
-    fn remove_extension(n: &str) -> String {
-        let stem = Path::new(n).file_stem().unwrap().to_str().unwrap();
-        stem.strip_suffix(".fa")
-            .or_else(|| stem.strip_suffix(".fasta"))
-            .or_else(|| stem.strip_suffix(".fa.gz"))
-            .or_else(|| stem.strip_suffix(".fasta.gz"))
-            .unwrap_or(stem)
-            .to_string()
-    }
-
     #[inline(always)]
     fn universal_hash(s: u64, t: u64) -> u64 {
         let x = s
@@ -204,7 +195,7 @@ impl Sketch {
     }
 
     // TODO could use newer method
-    //  http://proceedings.mlr.press/v115/mai20a.html
+    // http://proceedings.mlr.press/v115/mai20a.html
     // https://github.com/zhaoxiaofei/bindash/blob/eb4f81e50b3c42a1fdc00901290b35d0fa9a1e8d/src/hashutils.hpp#L109
     fn densify_bin(signs: &mut [u64]) -> bool {
         let mut minval = u64::MAX;
@@ -253,6 +244,7 @@ pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
     concat_fasta: bool,
+    #[cfg(feature = "3di")] convert_pdb: bool,
     k: &[usize],
     sketch_size: u64,
     seq_type: &HashType,
@@ -260,11 +252,24 @@ pub fn sketch_files(
     min_count: u16,
     min_qual: u8,
     inverted: bool,
+    quiet: bool,
 ) -> Vec<Sketch> {
     // println!("Debug: kmer_stride={}", kmer_stride);
     let bin_stride = 1;
     let kmer_stride = (sketch_size * BBITS) as usize;
     let sample_stride = kmer_stride * k.len();
+
+    #[cfg(feature = "3di")]
+    let struct_strings = if convert_pdb {
+        log::info!("Converting PDB files into 3Di representations");
+        Some(pdb_to_3di(input_files).expect("Error converting to 3Di"))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "3di"))]
+    let struct_strings: Option<Vec<String>> = None;
+
+    log::trace!("{:?}", struct_strings);
 
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
@@ -274,16 +279,17 @@ pub fn sketch_files(
     let (tx, rx) = mpsc::channel();
     let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 
-    let bar_style =
-        ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}")
-            .unwrap();
-
+    let percent = false;
+    let progress_bar = get_progress_bar(input_files.len(), percent, quiet);
+    // With thanks to https://stackoverflow.com/a/76963325
     rayon::scope(|s| {
         s.spawn(move |_| {
             input_files
                 .par_iter()
-                .progress_with_style(bar_style)
-                .map(|(name, fastx1, fastx2)| {
+                .progress_with(progress_bar)
+                .enumerate()
+                .map(|(idx, (name, fastx1, fastx2))| {
+                    // Read in sequence and set up rolling hash by alphabet type
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                         HashType::DNA => {
                             NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
@@ -297,7 +303,20 @@ pub fn sketch_files(
                                 .map(|it| Box::new(it) as Box<dyn RollHash>)
                                 .collect()
                         }
-                        _ => todo!(),
+                        HashType::PDB => {
+                            if let Some(di) = &struct_strings {
+                                log::trace!("Length of string: {}", di.len());
+                                AaHashIterator::from_3di_string(di[idx].clone()) // TODO: clone is not ideal
+                                    .into_iter()
+                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                    .collect()
+                            } else {
+                                AaHashIterator::from_3di_file(fastx1)
+                                    .into_iter()
+                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                    .collect()
+                            }
+                        }
                     };
 
                     hash_its
@@ -307,7 +326,7 @@ pub fn sketch_files(
                             let sample_name = if concat_fasta {
                                 format!("{name}_{}", idx + 1)
                             } else {
-                                Sketch::remove_extension(name)
+                                name.to_string()
                             };
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");

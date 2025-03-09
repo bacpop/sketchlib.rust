@@ -1,5 +1,10 @@
-//! DOCS
+//! Fast distance calculations between biological sequences (DNA, AA or structures
+//! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
+//! distance, with the PopPUNK method to calculate core and accessory distances. nthash/aahash
+//! are used for hash functions to create the sketches
 //!
+//! This package is a work in progress, but is mature enough for research use. See README.md
+//! for current CLI usage.
 
 // #![warn(missing_docs)]
 
@@ -11,7 +16,7 @@ use std::time::Instant;
 extern crate arrayref;
 extern crate num_cpus;
 use anyhow::Error;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 pub mod cli;
@@ -37,11 +42,14 @@ use crate::distances::*;
 
 pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
+pub mod structures;
 
 pub mod bloom_filter;
 pub mod hashing;
 
 pub mod utils;
+use crate::utils::get_progress_bar;
+
 use std::fs::{File, OpenOptions};
 use std::io::copy;
 
@@ -56,7 +64,9 @@ pub const CHUNK_SIZE: usize = 1000;
 #[doc(hidden)]
 pub fn main() -> Result<(), Error> {
     let args = cli_args();
-    if args.verbose {
+    if args.quiet {
+        simple_logger::init_with_level(log::Level::Error).unwrap();
+    } else if args.verbose {
         simple_logger::init_with_level(log::Level::Info).unwrap();
         // simple_logger::init_with_level(log::Level::Trace).unwrap();
     } else {
@@ -70,9 +80,10 @@ pub fn main() -> Result<(), Error> {
             seq_files,
             file_list,
             concat_fasta,
+            #[cfg(feature = "3di")]
+            convert_pdb,
             output,
-            k_vals,
-            k_seq,
+            kmers,
             mut sketch_size,
             seq_type,
             level,
@@ -92,7 +103,7 @@ pub fn main() -> Result<(), Error> {
             log::info!("Getting input files");
             let input_files = get_input_list(file_list, seq_files);
             log::info!("Parsed {} samples in input list", input_files.len());
-            let kmers = parse_kmers(k_vals, k_seq);
+            let kmers = parse_kmers(kmers);
             // Build, merge
             let rc = !*single_strand;
             // Set expected sketchsize
@@ -115,6 +126,8 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
+                #[cfg(feature = "3di")]
+                *convert_pdb,
                 &kmers,
                 sketch_size,
                 &seq_type,
@@ -122,6 +135,7 @@ pub fn main() -> Result<(), Error> {
                 *min_count,
                 *min_qual,
                 false,
+                args.quiet,
             );
             let sketch_vec =
                 MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, false, false);
@@ -191,8 +205,8 @@ pub fn main() -> Result<(), Error> {
             };
             log::info!("{dist_type}");
 
-            let bar_style =
-                ProgressStyle::with_template("{percent}% {bar:80.cyan/blue} eta:{eta}").unwrap();
+            let percent = true; // In progress bar, don't show total number as huge
+
             // TODO: possible improvement would be to load sketch slices when i, j change
             // This would require a change to core_acc where multiple k-mer lengths are loaded at once
             // Overall this would be nicer I think (not sure about speed)
@@ -205,10 +219,11 @@ pub fn main() -> Result<(), Error> {
                             log::info!("Calculating all ref vs ref distances");
                             let mut distances = DistanceMatrix::new(&references, None, dist_type);
                             let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
+                            let progress_bar = get_progress_bar(par_chunk, percent, args.quiet);
                             distances
                                 .dists_mut()
                                 .par_chunks_mut(par_chunk)
-                                .progress_with_style(bar_style)
+                                .progress_with(progress_bar)
                                 .enumerate()
                                 .for_each(|(chunk_idx, dist_slice)| {
                                     // Get first i, j index for the chunk
@@ -223,7 +238,11 @@ pub fn main() -> Result<(), Error> {
                                                 references.get_sketch_slice(j, k),
                                                 references.sketch_size,
                                             );
-                                            dist = if *ani { ani_pois(dist, k_f32) } else { dist };
+                                            dist = if *ani {
+                                                ani_pois(dist, k_f32)
+                                            } else {
+                                                1.0_f32 - dist
+                                            };
                                             dist_slice[dist_idx] = dist;
                                         } else {
                                             let dist =
@@ -254,13 +273,14 @@ pub fn main() -> Result<(), Error> {
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
                             let mut sp_distances =
                                 SparseDistanceMatrix::new(&references, nn, dist_type);
+                            let progress_bar = get_progress_bar(nn, percent, args.quiet);
                             // TODO is it possible to add a template to the trait so this code is only written once? Maybe not
                             match sp_distances.dists_mut() {
                                 DistVec::Jaccard(distances) => {
                                     let k = k_idx.unwrap();
                                     distances
                                         .par_chunks_mut(nn)
-                                        .progress_with_style(bar_style)
+                                        .progress_with(progress_bar)
                                         .enumerate()
                                         .for_each(|(i, row_dist_slice)| {
                                             let mut heap = BinaryHeap::with_capacity(nn);
@@ -274,8 +294,11 @@ pub fn main() -> Result<(), Error> {
                                                     references.get_sketch_slice(j, k),
                                                     references.sketch_size,
                                                 );
-                                                dist =
-                                                    if *ani { ani_pois(dist, k_f32) } else { dist };
+                                                dist = if *ani {
+                                                    ani_pois(dist, k_f32)
+                                                } else {
+                                                    1.0_f32 - dist
+                                                };
                                                 let dist_item = SparseJaccard(j, dist);
                                                 if heap.len() < nn
                                                     || dist_item < *heap.peek().unwrap()
@@ -294,7 +317,7 @@ pub fn main() -> Result<(), Error> {
                                 DistVec::CoreAcc(distances) => {
                                     distances
                                         .par_chunks_mut(nn)
-                                        .progress_with_style(bar_style)
+                                        .progress_with(progress_bar)
                                         .enumerate()
                                         .for_each(|(i, row_dist_slice)| {
                                             let mut heap = BinaryHeap::with_capacity(nn);
@@ -333,15 +356,17 @@ pub fn main() -> Result<(), Error> {
                     let mut distances =
                         DistanceMatrix::new(&references, Some(&query_db), dist_type);
                     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
+                    let nq = query_db.number_samples_loaded();
+                    let progress_bar = get_progress_bar(par_chunk, percent, args.quiet);
                     distances
                         .dists_mut()
                         .par_chunks_mut(par_chunk)
-                        .progress_with_style(bar_style)
+                        .progress_with(progress_bar)
                         .enumerate()
                         .for_each(|(chunk_idx, dist_slice)| {
                             // Get first i, j index for the chunk
                             let start_dist_idx = chunk_idx * CHUNK_SIZE;
-                            let (mut i, mut j) = calc_query_indices(start_dist_idx, n);
+                            let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
                             for dist_idx in 0..CHUNK_SIZE {
                                 if let Some(k) = k_idx {
                                     let mut dist = jaccard_dist(
@@ -349,7 +374,11 @@ pub fn main() -> Result<(), Error> {
                                         query_db.get_sketch_slice(j, k),
                                         references.sketch_size,
                                     );
-                                    dist = if *ani { ani_pois(dist, k_f32) } else { dist };
+                                    dist = if *ani {
+                                        ani_pois(dist, k_f32)
+                                    } else {
+                                        1.0_f32 - dist
+                                    };
                                     dist_slice[dist_idx] = dist;
                                 } else {
                                     let dist = core_acc_dist(&references, &query_db, i, j);
@@ -359,7 +388,7 @@ pub fn main() -> Result<(), Error> {
 
                                 // Move to next index
                                 j += 1;
-                                if j >= n {
+                                if j >= nq {
                                     i += 1;
                                     j = 0;
                                     // End of all dists reached (final chunk)
@@ -492,13 +521,10 @@ pub fn main() -> Result<(), Error> {
         //         *min_qual,
         //     );
 
-
         //     let match_counts = inverted.query_against_inverted_index(query_sketches, n_samples);
-
 
         //     Ok(())
         // }
-
         Commands::Append {
             db,
             seq_files,
@@ -554,12 +580,15 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
+                #[cfg(feature = "3di")]
+                false,
                 kmers,
                 sketch_size,
                 &seq_type,
                 rc,
                 *min_count,
                 *min_qual,
+                false,
                 false,
             );
             let mut db2_metadata = MultiSketch::new(
@@ -647,7 +676,7 @@ pub fn main() -> Result<(), Error> {
     let end = Instant::now();
 
     log::info!("Complete");
-    if print_success {
+    if print_success && !args.quiet {
         eprintln!(
             "🧬🖋️ sketchlib done in {}s",
             end.duration_since(start).as_secs()

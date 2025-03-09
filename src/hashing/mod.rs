@@ -1,3 +1,4 @@
+//! [nthash](https://github.com/bcgsc/ntHash[) and [aahash](https://github.com/bcgsc/ntHash) iterators
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +117,7 @@ pub trait RollHash: Iterator<Item = u64> {
     fn curr_hash(&self) -> u64;
     fn hash_type(&self) -> HashType;
     fn seq_len(&self) -> usize;
+    fn seq(&self) -> &Vec<u8>;
     fn sketch_data(&self) -> (bool, [usize; 4], usize);
 
     fn iter(&mut self) -> Box<dyn Iterator<Item = u64> + '_> {

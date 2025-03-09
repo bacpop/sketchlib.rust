@@ -1,0 +1,4 @@
+Name	Sequence length	Base frequencies	Missing/ambig bases	From reads	Single strand	Densified
+[..]14412_3#82.contigs_velvet.fa.gz	1832266	[571702, 352572, 343740, 564252]	579	false	false	false
+[..]14412_3#84.contigs_velvet.fa.gz	1823561	[571676, 350424, 342380, 559081]	1663	false	false	false
+

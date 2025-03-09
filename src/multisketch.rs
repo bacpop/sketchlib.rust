@@ -1,3 +1,4 @@
+//! The class to support .skm/.skd reading and writing, containing multiple [`Sketch`] objects
 use anyhow::bail;
 use anyhow::Error;
 use anyhow::{anyhow, Result};
@@ -251,16 +252,14 @@ impl MultiSketch {
             }
         }
 
-        {
-            let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
-            let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
-            let missing: Vec<&&str> = set2.difference(&set1).collect();
-            if !missing.is_empty() {
-                bail!(
-                    "The following samples have not been found in the database: {:?}",
-                    missing
-                );
-            }
+        let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
+        let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
+        let missing: Vec<&&str> = set2.difference(&set1).collect();
+        if !missing.is_empty() {
+            bail!(
+                "The following samples have not been found in the database: {:?}",
+                missing
+            );
         }
 
         self.sketch_metadata = new_sketch_metadata;
