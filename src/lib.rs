@@ -443,7 +443,7 @@ pub fn main() -> Result<(), Error> {
             min_qual,
             threads,
             level,
-            mut sketch_size,
+            sketch_size,
             kmer_length,
         } => {
             // An extra thread is needed for the writer
@@ -462,7 +462,7 @@ pub fn main() -> Result<(), Error> {
             let inverted = Inverted::new(
                 &input_files,
                 *kmer_length,
-                sketch_size,
+                *sketch_size,
                 &seq_type,
                 rc,
                 *min_count,

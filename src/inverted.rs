@@ -130,13 +130,7 @@ impl Inverted {
                                     .map(|it| Box::new(it) as Box<dyn RollHash>)
                                     .collect()
                             }
-                            HashType::AA(level) => {
-                                AaHashIterator::new(fastx1, level.clone(), false)
-                                    .into_iter()
-                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                    .collect()
-                            }
-                            _ => unimplemented!("Inverted index for PDB files not supported"),
+                            _ => unimplemented!("Inverted index only supported for DNA"),
                         };
 
                         if let Some(hash_it) = hash_its.first_mut() {
