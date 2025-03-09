@@ -467,6 +467,7 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
+                args.quiet,
             );
             inverted.save(output)?;
             Ok(())

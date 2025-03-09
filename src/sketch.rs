@@ -3,9 +3,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::mpsc;
 
-use hashbrown::HashMap;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
-use needletail::kmer;
+use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 

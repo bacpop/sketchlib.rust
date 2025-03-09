@@ -165,19 +165,27 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    /// Uses an inverted index for faster and sparser pairwise comparisons
+    /// Create sketches from input data and store in an inverted index structure
     Inverted {
         /// List of input FASTA files
-        #[arg(long, group = "input", num_args = 1.., value_delimiter = ',')]
+        #[arg(group = "input")]
         seq_files: Option<Vec<String>>,
 
-        /// File listing input files (tab separated name, sequences)
+        /// File listing input files (tab separated name, sequences, see README)
         #[arg(short, group = "input")]
         file_list: Option<String>,
 
         /// Output filename for the merged sketch
         #[arg(required = true, short)]
         output: String,
+
+        /// Sketch size
+        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
+        sketch_size: u64,
+
+        /// K-mer size
+        #[arg(short, long, default_value_t = DEFAULT_KMER)]
+        kmer_length: usize,
 
         /// Ignore reverse complement (all contigs are oriented along same strand)
         #[arg(long, default_value_t = DEFAULT_STRAND)]
@@ -198,14 +206,6 @@ pub enum Commands {
         /// aaHash 'level'
         #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
         level: AaLevel,
-
-        /// Sketch size
-        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
-        sketch_size: u64,
-
-        /// K-mer size
-        #[arg(short, long, default_value_t = DEFAULT_KMER)]
-        kmer_length: usize,
     },
     /// Merge two sketch files (.skm and .skd pair)
     Merge {

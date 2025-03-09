@@ -10,14 +10,10 @@ use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 use crate::sketch::*;
+use crate::utils::get_progress_bar;
 use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-
-/// Bin bits (lowest of 64-bits to keep)
-pub const BBITS: u64 = 14;
-/// Total width of all bins (used as sign % sign_mod)
-pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Inverted {
@@ -34,6 +30,7 @@ impl Inverted {
         rc: bool,
         min_count: u16,
         min_qual: u8,
+        quiet: bool,
     ) -> Self {
         let (sketches, sample_names) = Self::sketch_files_inverted(
             input_files,
@@ -43,6 +40,7 @@ impl Inverted {
             rc,
             min_count,
             min_qual,
+            quiet,
         );
         let inverted_index = Self::build_inverted_index(&sketches, sketch_size);
         Self {
@@ -103,6 +101,7 @@ impl Inverted {
         rc: bool,
         min_count: u16,
         min_qual: u8,
+        quiet: bool,
     ) -> (Vec<Vec<u64>>, Vec<String>) {
         let (tx, rx) = mpsc::channel();
         let sample_names: Vec<String> = input_files
@@ -110,16 +109,15 @@ impl Inverted {
             .map(|(name, _, _)| name.clone())
             .collect();
 
-        let bar_style =
-            ProgressStyle::with_template("{human_pos}/{human_len} {bar:80.cyan/blue} eta:{eta}")
-                .unwrap();
+        let percent = false;
+        let progress_bar = get_progress_bar(input_files.len(), percent, quiet);
 
         rayon::scope(|s| {
             s.spawn(move |_| {
                 input_files
                     .par_iter()
                     .enumerate()
-                    .progress_with_style(bar_style)
+                    .progress_with(progress_bar)
                     .map(|(genome_idx, (name, fastx1, fastx2))| {
                         let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                             HashType::DNA => {
@@ -134,7 +132,7 @@ impl Inverted {
                                     .map(|it| Box::new(it) as Box<dyn RollHash>)
                                     .collect()
                             }
-                            _ => todo!(),
+                            _ => unimplemented!("Inverted index for PDB files not supported"),
                         };
 
                         if let Some(hash_it) = hash_its.first_mut() {
