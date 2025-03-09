@@ -397,7 +397,7 @@ impl fmt::Debug for MultiSketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmers={:?}",
+            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmers={:?}\ninverted=false",
             self.sketch_version,
             self.hash_type,
             self.sketch_size * u64::BITS as u64,

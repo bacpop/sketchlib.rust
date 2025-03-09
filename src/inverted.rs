@@ -1,4 +1,5 @@
 use std::sync::mpsc;
+use std::fmt;
 
 extern crate needletail;
 use hashbrown::HashMap;
@@ -16,10 +17,13 @@ use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
     index: Vec<HashMap<u64, Vec<u32>>>,
     sample_names: Vec<String>,
+    kmer_size: usize,
+    sketch_version: String,
+    hash_type: HashType,
 }
 
 impl Inverted {
@@ -48,6 +52,9 @@ impl Inverted {
         Self {
             index: Self::build_inverted_index(&sketches, sketch_size),
             sample_names,
+            kmer_size: k,
+            sketch_version: env!("CARGO_PKG_VERSION").to_string(),
+            hash_type: seq_type.clone(),
         }
     }
 
@@ -196,5 +203,29 @@ impl Inverted {
             }
         }
         inverted_index
+    }
+}
+
+impl fmt::Debug for Inverted {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmer={}\ninverted=true",
+            self.sketch_version,
+            self.hash_type,
+            self.index.len(),
+            self.sample_names.len(),
+            self.kmer_size,
+        )
+    }
+}
+
+impl fmt::Display for Inverted {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "Name")?;
+        for sketch in &self.sample_names {
+            writeln!(f, "{sketch}")?;
+        }
+        Ok(())
     }
 }

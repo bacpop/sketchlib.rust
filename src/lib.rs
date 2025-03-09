@@ -655,21 +655,36 @@ pub fn main() -> Result<(), Error> {
             skm_file,
             sample_info,
         } => {
-            let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
-                &skm_file[0..skm_file.len() - 4]
+            if skm_file.ends_with(".ski") {
+                let ski_file = &skm_file[0..skm_file.len() - 4];
+                let index = Inverted::load(ski_file).unwrap_or_else(|_| {
+                    panic!("Could not read inverted index from {ski_file}.ski")
+                });
+                if *sample_info {
+                    log::info!("Printing sample info");
+                    println!("{index}");
+                } else {
+                    log::info!("Printing inverted index info");
+                    println!("{index:?}");
+                }
             } else {
-                skm_file.as_str()
-            };
-            let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {ref_db_name}.skm")
-            });
-            if *sample_info {
-                log::info!("Printing sample info");
-                println!("{sketches}");
-            } else {
-                log::info!("Printing database info");
-                println!("{sketches:?}");
+                let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
+                    &skm_file[0..skm_file.len() - 4]
+                } else {
+                    skm_file.as_str()
+                };
+                let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {ref_db_name}.skm")
+                });
+                if *sample_info {
+                    log::info!("Printing sample info");
+                    println!("{sketches}");
+                } else {
+                    log::info!("Printing database info");
+                    println!("{sketches:?}");
+                }
             }
+
             print_success = false; // Turn the final message off
             Ok(())
         }
