@@ -461,7 +461,7 @@ pub fn main() -> Result<(), Error> {
             // Create an Inverted instance using the new method
             let inverted = Inverted::new(
                 &input_files,
-                kmer_length,
+                *kmer_length,
                 sketch_size,
                 &seq_type,
                 rc,

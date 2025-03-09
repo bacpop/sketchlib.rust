@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 extern crate needletail;
 use hashbrown::HashMap;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +11,7 @@ use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 use crate::sketch::*;
 use crate::utils::get_progress_bar;
+use crate::bloom_filter::KmerFilter;
 use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -24,7 +25,7 @@ pub struct Inverted {
 impl Inverted {
     pub fn new(
         input_files: &[InputFastx],
-        k: &usize,
+        k: usize,
         sketch_size: u64,
         seq_type: &HashType,
         rc: bool,
@@ -95,7 +96,7 @@ impl Inverted {
 
     fn sketch_files_inverted(
         input_files: &[InputFastx],
-        k: &usize,
+        k: usize,
         sketch_size: u64,
         seq_type: &HashType,
         rc: bool,
@@ -139,12 +140,19 @@ impl Inverted {
                             if hash_it.seq_len() == 0 {
                                 panic!("Genome {} has no valid sequence", genome_idx);
                             }
-                            (
-                                genome_idx,
-                                Sketch::get_signs(&mut **hash_it, k, sketch_size, min_count),
-                            )
+
+                            let mut read_filter = if hash_it.reads() {
+                                let mut filter = KmerFilter::new(min_count);
+                                filter.init();
+                                Some(filter)
+                            } else {
+                                None
+                            };
+
+                            let (signs, densified) =  Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size);
+                            (genome_idx, signs)
                         } else {
-                            (genome_idx, Vec::new())
+                            panic!("Empty hash iterator for {name}");
                         }
                     })
                     .for_each_with(tx, |tx, result| {

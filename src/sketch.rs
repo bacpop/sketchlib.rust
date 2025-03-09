@@ -60,23 +60,11 @@ impl Sketch {
         let mut minhash_sum = 0.0;
         let mut densified = false;
         let num_bins: u64 = sketch_size * (u64::BITS as u64);
-        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
             // Setup storage for each k
-            let mut signs = vec![u64::MAX; num_bins as usize];
-            seq_hashes.set_k(*k);
-            if let Some(ref mut filter) = read_filter {
-                filter.clear();
-            }
-
-            // Calculate bin minima across all sequence
-            for hash in seq_hashes.iter() {
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
-            }
-
-            // Densify
-            densified |= Self::densify_bin(&mut signs);
+            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, num_bins);
+            densified |= k_densified;
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
             // Transpose the bins and save to the sketch map
@@ -109,30 +97,24 @@ impl Sketch {
 
     pub fn get_signs<H: RollHash + ?Sized>(
         seq_hashes: &mut H,
-        kmer_lengths: &usize,
+        kmer_size: usize,
+        filter: &mut Option<KmerFilter>,
         num_bins: u64,
-        min_count: u16,
-    ) -> Vec<u64> {
+    ) -> (Vec<u64>, bool) {
         let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
         let mut signs = vec![u64::MAX; num_bins as usize];
-
-        let mut read_filter = if seq_hashes.reads() {
-            let mut filter = KmerFilter::new(min_count);
-            filter.init();
-            Some(filter)
-        } else {
-            None
-        };
-
-        seq_hashes.set_k(*kmer_lengths);
+        if let Some(read_filter) = filter {
+            read_filter.clear();
+        }
+        seq_hashes.set_k(kmer_size);
 
         // Calculate bin minima across all sequence
         for hash in seq_hashes.iter() {
-            Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
+            Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, filter);
         }
         // Densify
-        Self::densify_bin(&mut signs);
-        signs
+        let densified = Self::densify_bin(&mut signs);
+        (signs, densified)
     }
 
     pub fn name(&self) -> &str {
