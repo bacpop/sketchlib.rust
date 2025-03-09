@@ -21,7 +21,7 @@ fn test_identical_sequences() {
     let kmers: &[usize] = &[2];
 
     let mut sketches = sketch_files(
-        "test_identical",
+        format!("{}/test_identical", sandbox.get_wd()).as_str(),
         &input_files,
         false,       // concat_fasta
         &kmers,      // k-mer sizes
