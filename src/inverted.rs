@@ -105,14 +105,9 @@ impl Inverted {
         quiet: bool,
     ) -> (Vec<Vec<u64>>, Vec<String>) {
         let (tx, rx) = mpsc::channel();
-        let sample_names: Vec<String> = input_files
-            .iter()
-            .map(|(name, _, _)| name.clone())
-            .collect();
 
         let percent = false;
         let progress_bar = get_progress_bar(input_files.len(), percent, quiet);
-
         rayon::scope(|s| {
             s.spawn(move |_| {
                 input_files
@@ -150,6 +145,9 @@ impl Inverted {
                             };
 
                             let (signs, densified) =  Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size);
+                            if densified {
+                                log::trace!("{name} was densified");
+                            }
                             (genome_idx, signs)
                         } else {
                             panic!("Empty hash iterator for {name}");
@@ -168,6 +166,12 @@ impl Inverted {
             }
             sketch_results[genome_idx] = sketch;
         }
+
+        // TODO: this feels unnecessary -- can't we just extract from input files when needed?
+        let sample_names: Vec<String> = input_files
+            .iter()
+            .map(|(name, _, _)| name.clone())
+            .collect();
 
         (sketch_results, sample_names)
     }
