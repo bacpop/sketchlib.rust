@@ -31,6 +31,7 @@ fn test_identical_sequences() {
         1,     // min_count
         0,     // min_qual
         true,  // inverted
+        false, // quiet
     );
 
     let mut multisketches =
