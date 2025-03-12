@@ -6,9 +6,9 @@ use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use roaring::RoaringBitmap;
 
 use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
-use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 use crate::sketch::*;
 use crate::utils::get_progress_bar;
@@ -19,7 +19,7 @@ use std::io::{BufReader, BufWriter};
 
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
-    index: Vec<HashMap<u64, Vec<u32>>>,
+    index: Vec<HashMap<u64, RoaringBitmap>>,
     sample_names: Vec<String>,
     kmer_size: usize,
     sketch_version: String,
@@ -81,7 +81,7 @@ impl Inverted {
 
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
             if let Some(matching_samples) = self.index[bin_idx].get(query_bin_hash) {
-                for &sample_idx in matching_samples {
+                for sample_idx in matching_samples {
                     match_counts[sample_idx as usize] += 1;
                 }
             }
@@ -179,6 +179,7 @@ impl Inverted {
     }
 
     // TODOs for possible efficiency (also check issues on github)
+    // See https://github.com/bacpop/sketchlib.rust/issues/21
     // - Change Vec<u32> to roaring bitmap
     // - Implement phylogenetic ordering of some sort
     //      This might need to be a separate option. Would just doing it on the small sketch be ok?
@@ -186,9 +187,9 @@ impl Inverted {
     fn build_inverted_index(
         genome_sketches: &Vec<Vec<u64>>,
         sketch_size: u64,
-    ) -> Vec<HashMap<u64, Vec<u32>>> {
+    ) -> Vec<HashMap<u64, RoaringBitmap>> {
         // initialize inverted index structure
-        let mut inverted_index: Vec<HashMap<u64, Vec<u32>>> =
+        let mut inverted_index: Vec<HashMap<u64, RoaringBitmap>> =
             vec![HashMap::new(); sketch_size as usize];
 
         // process each sketch
@@ -197,8 +198,8 @@ impl Inverted {
                 // add current genome to the inverted index at the current position
                 inverted_index[i]
                     .entry(*hash)
-                    .and_modify(|genome_list| genome_list.push(genome_idx as u32))
-                    .or_insert(vec![genome_idx as u32]);
+                    .and_modify(|genome_list| {genome_list.insert(genome_idx as u32);})
+                    .or_insert_with(|| {let mut rb = RoaringBitmap::new(); rb.insert(genome_idx as u32); rb});
             }
         }
         inverted_index
