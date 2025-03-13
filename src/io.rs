@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
+use hashbrown::HashMap;
 use regex::Regex;
 
 pub type InputFastx = (String, String, Option<String>);
@@ -24,6 +25,59 @@ pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
         input_files.push((name, file.to_string(), None));
     }
     input_files
+}
+
+/// Give a reordering for input files given some labels, putting the same labels next to each other
+pub fn reorder_input_files(
+    input_files: &Vec<(String, String, Option<String>)>,
+    species_name_file: &str,
+) -> Vec<usize> {
+    let f = File::open(species_name_file).unwrap_or_else(|_| {
+        panic!(
+            "Unable to
+        open species name file {species_name_file}"
+        )
+    });
+    let f = BufReader::new(f);
+    let mut species_labels: HashMap<String, usize> = HashMap::new(); // Stores [species, species order index]
+    let mut label_order: Vec<(String, usize)> = Vec::with_capacity(input_files.len());
+    let mut order_idx = 0;
+    // Read through labels, assign each name to a cluster in increasing order
+    for line in f.lines() {
+        let line = line.expect("Unable to read line in species_list");
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if let Some(idx) = species_labels.get(fields[1]) {
+            label_order.push((fields[0].to_string(), *idx));
+        } else {
+            species_labels.insert(fields[1].to_string(), order_idx);
+            order_idx += 1;
+            label_order.push((fields[0].to_string(), order_idx));
+        }
+    }
+    // Order the found labels by cluster they are associated with
+    label_order.sort_unstable_by_key(|k| k.1);
+
+    // Create a lookup table for name -> new index
+    let mut reordered_dict = HashMap::with_capacity(label_order.len());
+    let mut new_idx = 0;
+    for (reordered_name, _) in label_order {
+        reordered_dict.insert(reordered_name, new_idx);
+        new_idx += 1;
+    }
+
+    // Use lookup table to create a list of new index for each input sample
+    new_idx -= 1;
+    let mut sample_order = Vec::with_capacity(input_files.len());
+    for sample_name in input_files {
+        let sample_idx = if let Some(order) = reordered_dict.get(&sample_name.0) {
+            *order
+        } else {
+            new_idx += 1;
+            new_idx
+        };
+        sample_order.push(sample_idx);
+    }
+    sample_order
 }
 
 pub fn parse_kmers(k: &Kmers) -> Vec<usize> {
@@ -76,7 +130,12 @@ pub fn get_input_list(
     match file_list {
         Some(files) => {
             let mut input_files: Vec<InputFastx> = Vec::new();
-            let f = File::open(files).expect("Unable to open file_list");
+            let f = File::open(files).unwrap_or_else(|_| {
+                panic!(
+                    "
+            Unable to open file_list {files}"
+                )
+            });
             let f = BufReader::new(f);
             for line in f.lines() {
                 let line = line.expect("Unable to read line in file_list");

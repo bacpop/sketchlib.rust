@@ -74,7 +74,6 @@ impl MultiSketch {
         sketch_size: u64,
         kmer_lengths: &[usize],
         hash_type: HashType,
-        inverted: bool,
         with_bins: bool,
     ) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
@@ -345,7 +344,7 @@ impl MultiSketch {
             .collect();
 
         // Merge all local inverted indices into a global one
-        for (i, local) in local_indices.iter().enumerate() {
+        for local in local_indices.iter() {
             for (hash, genome_set) in local {
                 inverted_index
                     .entry(*hash)

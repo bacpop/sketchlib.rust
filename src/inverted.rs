@@ -1,25 +1,25 @@
-use std::sync::mpsc;
 use std::fmt;
+use std::sync::mpsc;
 
 extern crate needletail;
 use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 
 use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
+use crate::bloom_filter::KmerFilter;
 use crate::io::InputFastx;
 use crate::sketch::*;
 use crate::utils::get_progress_bar;
-use crate::bloom_filter::KmerFilter;
 use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
-    index: Vec<HashMap<u64, RoaringBitmap>>,
+    index: Vec<HashMap<u16, RoaringBitmap>>,
     sample_names: Vec<String>,
     kmer_size: usize,
     sketch_version: String,
@@ -29,6 +29,7 @@ pub struct Inverted {
 impl Inverted {
     pub fn new(
         input_files: &[InputFastx],
+        file_order: &mut Option<Vec<usize>>,
         k: usize,
         sketch_size: u64,
         seq_type: &HashType,
@@ -38,7 +39,7 @@ impl Inverted {
         quiet: bool,
     ) -> Self {
         log::info!("Creating sketches");
-        let (sketches, sample_names) = Self::sketch_files_inverted(
+        let (mut sketches, mut sample_names) = Self::sketch_files_inverted(
             input_files,
             k,
             sketch_size,
@@ -48,6 +49,17 @@ impl Inverted {
             min_qual,
             quiet,
         );
+        if let Some(indices) = file_order {
+            log::info!("Reordering sketches by species names");
+            for i in 0..indices.len() {
+                while i != indices[i] {
+                    let new_i = indices[i];
+                    indices.swap(i, new_i);
+                    sketches.swap(i, new_i);
+                    sample_names.swap(i, new_i)
+                }
+            }
+        }
         log::info!("Inverting sketch order");
         Self {
             index: Self::build_inverted_index(&sketches, sketch_size),
@@ -76,7 +88,7 @@ impl Inverted {
         Ok(ski_obj)
     }
 
-    pub fn query_against_inverted_index(&self, query_sigs: &[u64], n_samples: usize) -> Vec<u32> {
+    pub fn query_against_inverted_index(&self, query_sigs: &[u16], n_samples: usize) -> Vec<u32> {
         let mut match_counts = vec![0; n_samples];
 
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
@@ -146,7 +158,8 @@ impl Inverted {
                                 None
                             };
 
-                            let (signs, densified) =  Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size);
+                            let (signs, densified) =
+                                Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size);
                             if densified {
                                 log::trace!("{name} was densified");
                             }
@@ -180,26 +193,30 @@ impl Inverted {
 
     // TODOs for possible efficiency (also check issues on github)
     // See https://github.com/bacpop/sketchlib.rust/issues/21
-    // - Change Vec<u32> to roaring bitmap
     // - Implement phylogenetic ordering of some sort
     //      This might need to be a separate option. Would just doing it on the small sketch be ok?
-    // - u64 could be clipped and become u32?
     fn build_inverted_index(
-        genome_sketches: &Vec<Vec<u64>>,
+        genome_sketches: &[Vec<u64>],
         sketch_size: u64,
-    ) -> Vec<HashMap<u64, RoaringBitmap>> {
+    ) -> Vec<HashMap<u16, RoaringBitmap>> {
         // initialize inverted index structure
-        let mut inverted_index: Vec<HashMap<u64, RoaringBitmap>> =
+        let mut inverted_index: Vec<HashMap<u16, RoaringBitmap>> =
             vec![HashMap::new(); sketch_size as usize];
 
         // process each sketch
-        for (genome_idx, genome_signs) in genome_sketches.into_iter().enumerate() {
+        for (genome_idx, genome_signs) in genome_sketches.iter().enumerate() {
             for (i, hash) in genome_signs.iter().enumerate() {
                 // add current genome to the inverted index at the current position
                 inverted_index[i]
-                    .entry(*hash)
-                    .and_modify(|genome_list| {genome_list.insert(genome_idx as u32);})
-                    .or_insert_with(|| {let mut rb = RoaringBitmap::new(); rb.insert(genome_idx as u32); rb});
+                    .entry(*hash as u16)
+                    .and_modify(|genome_list| {
+                        genome_list.insert(genome_idx as u32);
+                    })
+                    .or_insert_with(|| {
+                        let mut rb = RoaringBitmap::new();
+                        rb.insert(genome_idx as u32);
+                        rb
+                    });
             }
         }
         inverted_index

@@ -41,7 +41,7 @@ pub mod distances;
 use crate::distances::*;
 
 pub mod io;
-use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
+use crate::io::{get_input_list, parse_kmers, read_subset_names, reorder_input_files, set_ostream};
 pub mod structures;
 
 pub mod bloom_filter;
@@ -137,8 +137,7 @@ pub fn main() -> Result<(), Error> {
                 false,
                 args.quiet,
             );
-            let sketch_vec =
-                MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, false, false);
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, false);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
@@ -438,32 +437,36 @@ pub fn main() -> Result<(), Error> {
             seq_files,
             file_list,
             output,
+            species_names,
             single_strand,
             min_count,
             min_qual,
             threads,
-            level,
             sketch_size,
             kmer_length,
         } => {
             // An extra thread is needed for the writer
             check_threads(*threads + 1);
 
-            //get input files
+            // Get input files
             log::info!("Getting input files");
             let input_files: Vec<(String, String, Option<String>)> =
                 get_input_list(file_list, seq_files);
             log::info!("Parsed {} samples in input list", input_files.len());
 
-            let rc = !*single_strand;
-            let seq_type = &HashType::DNA;
+            let mut file_order = species_names
+                .as_ref()
+                .map(|species_name_file| reorder_input_files(&input_files, species_name_file));
 
             // Create an Inverted instance using the new method
+            let rc = !*single_strand;
+            let seq_type = &HashType::DNA;
             let inverted = Inverted::new(
                 &input_files,
+                &mut file_order,
                 *kmer_length,
                 *sketch_size,
-                &seq_type,
+                seq_type,
                 rc,
                 *min_count,
                 *min_qual,
@@ -593,14 +596,8 @@ pub fn main() -> Result<(), Error> {
                 false,
                 false,
             );
-            let mut db2_metadata = MultiSketch::new(
-                &mut db2_sketches,
-                sketch_size,
-                kmers,
-                seq_type,
-                false,
-                false,
-            );
+            let mut db2_metadata =
+                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, false);
 
             // save skd data from db1 and from freshly sketched input files
             log::info!("Merging and saving sketch data to {}.skd", output);

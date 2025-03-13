@@ -179,6 +179,10 @@ pub enum Commands {
         #[arg(required = true, short)]
         output: String,
 
+        /// File listing species names, or clusters, for phylogenetic ordering
+        #[arg(long)]
+        species_names: Option<String>,
+
         /// Sketch size
         #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
         sketch_size: u64,
@@ -202,10 +206,6 @@ pub enum Commands {
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
-
-        /// aaHash 'level'
-        #[arg(long, value_enum, default_value_t = DEFAULT_LEVEL)]
-        level: AaLevel,
     },
     /// Merge two sketch files (.skm and .skd pair)
     Merge {

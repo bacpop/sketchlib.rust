@@ -311,15 +311,7 @@ pub fn sketch_files(
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");
                             }
-                            let sketch = Sketch::new(
-                                &mut **hash_it,
-                                &sample_name,
-                                k,
-                                sketch_size,
-                                rc,
-                                min_count,
-                            );
-                            sketch
+                            Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
                         })
                         .collect::<Vec<Sketch>>()
                 })
