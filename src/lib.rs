@@ -454,16 +454,19 @@ pub fn main() -> Result<(), Error> {
                 get_input_list(file_list, seq_files);
             log::info!("Parsed {} samples in input list", input_files.len());
 
-            let mut file_order = species_names
-                .as_ref()
-                .map(|species_name_file| reorder_input_files(&input_files, species_name_file));
+            // Reordering by species, or default
+            let file_order = if let Some(species_name_file) = species_names {
+                reorder_input_files(&input_files, species_name_file)
+            } else {
+                (0..input_files.len()).collect()
+            };
 
             // Create an Inverted instance using the new method
             let rc = !*single_strand;
             let seq_type = &HashType::DNA;
             let inverted = Inverted::new(
                 &input_files,
-                &mut file_order,
+                &file_order,
                 *kmer_length,
                 *sketch_size,
                 seq_type,

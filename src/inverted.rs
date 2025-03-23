@@ -29,7 +29,7 @@ pub struct Inverted {
 impl Inverted {
     pub fn new(
         input_files: &[InputFastx],
-        file_order: &mut Option<Vec<usize>>,
+        file_order: &[usize],
         k: usize,
         sketch_size: u64,
         seq_type: &HashType,
@@ -41,6 +41,7 @@ impl Inverted {
         log::info!("Creating sketches");
         let (mut sketches, mut sample_names) = Self::sketch_files_inverted(
             input_files,
+            file_order,
             k,
             sketch_size,
             seq_type,
@@ -49,17 +50,6 @@ impl Inverted {
             min_qual,
             quiet,
         );
-        if let Some(indices) = file_order {
-            log::info!("Reordering sketches by species names");
-            for i in 0..indices.len() {
-                while i != indices[i] {
-                    let new_i = indices[i];
-                    indices.swap(i, new_i);
-                    sketches.swap(i, new_i);
-                    sample_names.swap(i, new_i)
-                }
-            }
-        }
         log::info!("Inverting sketch order");
         Self {
             index: Self::build_inverted_index(&sketches, sketch_size),
@@ -116,6 +106,7 @@ impl Inverted {
 
     fn sketch_files_inverted(
         input_files: &[InputFastx],
+        file_order: &[usize],
         k: usize,
         sketch_size: u64,
         seq_type: &HashType,
@@ -132,9 +123,9 @@ impl Inverted {
             s.spawn(move |_| {
                 input_files
                     .par_iter()
-                    .enumerate()
+                    .zip(file_order)
                     .progress_with(progress_bar)
-                    .map(|(genome_idx, (name, fastx1, fastx2))| {
+                    .map(|((name, fastx1, fastx2), genome_idx)| {
                         let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                             HashType::DNA => {
                                 NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
@@ -163,7 +154,7 @@ impl Inverted {
                             if densified {
                                 log::trace!("{name} was densified");
                             }
-                            (genome_idx, signs)
+                            (*genome_idx, signs)
                         } else {
                             panic!("Empty hash iterator for {name}");
                         }
@@ -191,10 +182,6 @@ impl Inverted {
         (sketch_results, sample_names)
     }
 
-    // TODOs for possible efficiency (also check issues on github)
-    // See https://github.com/bacpop/sketchlib.rust/issues/21
-    // - Implement phylogenetic ordering of some sort
-    //      This might need to be a separate option. Would just doing it on the small sketch be ok?
     fn build_inverted_index(
         genome_sketches: &[Vec<u64>],
         sketch_size: u64,
