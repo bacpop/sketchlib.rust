@@ -34,7 +34,7 @@ fn test_identical_sequences() {
         false, // quiet
     );
 
-    let mut multisketches = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, true);
+    let multisketches = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, true);
 
     // multisketches.update_sketches();
 

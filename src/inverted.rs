@@ -39,7 +39,7 @@ impl Inverted {
         quiet: bool,
     ) -> Self {
         log::info!("Creating sketches");
-        let (mut sketches, mut sample_names) = Self::sketch_files_inverted(
+        let (sketches, sample_names) = Self::sketch_files_inverted(
             input_files,
             file_order,
             k,

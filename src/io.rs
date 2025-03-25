@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use regex::Regex;
 
 pub type InputFastx = (String, String, Option<String>);
@@ -32,6 +32,9 @@ pub fn reorder_input_files(
     input_files: &Vec<(String, String, Option<String>)>,
     species_name_file: &str,
 ) -> Vec<usize> {
+    // Set of names, so only these are read from the species order
+    let input_names: HashSet<String> = input_files.iter().map(|fastx| fastx.0.clone()).collect();
+
     let f = File::open(species_name_file).unwrap_or_else(|_| {
         panic!(
             "Unable to
@@ -46,12 +49,14 @@ pub fn reorder_input_files(
     for line in f.lines() {
         let line = line.expect("Unable to read line in species_list");
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if let Some(idx) = species_labels.get(fields[1]) {
-            label_order.push((fields[0].to_string(), *idx));
-        } else {
-            species_labels.insert(fields[1].to_string(), order_idx);
-            order_idx += 1;
-            label_order.push((fields[0].to_string(), order_idx));
+        if input_names.contains(fields[0]) {
+            if let Some(idx) = species_labels.get(fields[1]) {
+                label_order.push((fields[0].to_string(), *idx));
+            } else {
+                species_labels.insert(fields[1].to_string(), order_idx);
+                label_order.push((fields[0].to_string(), order_idx));
+                order_idx += 1;
+            }
         }
     }
     // Order the found labels by cluster they are associated with
@@ -59,14 +64,13 @@ pub fn reorder_input_files(
 
     // Create a lookup table for name -> new index
     let mut reordered_dict = HashMap::with_capacity(label_order.len());
-    let mut new_idx = 0;
-    for (reordered_name, _) in label_order {
+    for (new_idx, (reordered_name, _)) in label_order.iter().enumerate() {
         reordered_dict.insert(reordered_name, new_idx);
-        new_idx += 1;
     }
 
     // Use lookup table to create a list of new index for each input sample
-    new_idx -= 1;
+    // This deals with missing labels
+    let mut new_idx = reordered_dict.len() - 1;
     let mut sample_order = Vec::with_capacity(input_files.len());
     for sample_name in input_files {
         let sample_idx = if let Some(order) = reordered_dict.get(&sample_name.0) {
@@ -172,4 +176,34 @@ pub fn read_subset_names(subset_file: &str) -> Vec<String> {
     }
     log::info!("Read {} names to subset", subset_names.len());
     subset_names
+}
+
+#[cfg(test)]
+use pretty_assertions::assert_eq;
+#[cfg(test)]
+use tempfile::NamedTempFile;
+
+#[test]
+fn test_reorder_input_files() {
+    // Create a temporary file for species labels
+    let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+    writeln!(
+        temp_file,
+        "sample1 speciesA\nsample2 speciesB\nsample3 speciesA\nsample4 speciesC\nsample6 speciesD"
+    )
+    .expect("Failed to write to temp file");
+
+    let input_files = vec![
+        ("sample1".to_string(), "assembly1.fa".to_string(), None),
+        ("sample2".to_string(), "assembly2.fa".to_string(), None),
+        ("sample3".to_string(), "assembly3.fa".to_string(), None),
+        ("sample4".to_string(), "assembly4.fa".to_string(), None),
+        ("sample5".to_string(), "assembly5.fa".to_string(), None),
+    ];
+
+    let species_name_file = temp_file.path().to_str().unwrap();
+    let reordered_indices = reorder_input_files(&input_files, species_name_file);
+
+    assert_eq!(reordered_indices.len(), input_files.len());
+    assert_eq!(reordered_indices, vec![0, 2, 1, 3, 4]) // 1(A), 3(A), 2(B), 4(C), 5(NA) (sample6 not included)
 }
