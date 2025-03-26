@@ -134,10 +134,10 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
-                false,
                 args.quiet,
             );
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, false);
+            let transpose_bins = true;
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, transpose_bins);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
@@ -596,8 +596,7 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
-                false,
-                false,
+                args.quiet,
             );
             let mut db2_metadata =
                 MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, false);

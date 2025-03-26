@@ -134,11 +134,6 @@ impl Sketch {
         std::mem::take(&mut self.usigs)
     }
 
-    // DEBUG THEN REMOVE
-    pub fn get_usigs_debug(&self) -> &Vec<u64> {
-        &self.usigs
-    }
-
     fn bin_sign(signs: &mut [u64], sign: u64, binsize: u64, read_filter: &mut Option<KmerFilter>) {
         let binidx = (sign / binsize) as usize;
         // log::trace!("sign:{sign} idx:{binidx} curr_sign:{}", signs[binidx]);
@@ -231,10 +226,8 @@ pub fn sketch_files(
     rc: bool,
     min_count: u16,
     min_qual: u8,
-    inverted: bool,
     quiet: bool,
 ) -> Vec<Sketch> {
-    // println!("Debug: kmer_stride={}", kmer_stride);
     let bin_stride = 1;
     let kmer_stride = (sketch_size * BBITS) as usize;
     let sample_stride = kmer_stride * k.len();
@@ -322,13 +315,8 @@ pub fn sketch_files(
 
         for sketch_file in rx {
             for mut sketch in sketch_file {
-                let index = if inverted {
-                    serial_writer.write_sketch(sketch.get_usigs_debug())
-                } else {
-                    let usigs = sketch.get_usigs();
-                    serial_writer.write_sketch(&usigs)
-                };
-
+                let usigs = sketch.get_usigs();
+                let index = serial_writer.write_sketch(&usigs);
                 sketch.set_index(index);
                 sketches.push(sketch);
             }

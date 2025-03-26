@@ -31,7 +31,6 @@ fn test_identical_sequences() {
         1,     // min_count
         0,     // min_qual
         true,  // inverted
-        false, // quiet
     );
 
     let multisketches = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, true);

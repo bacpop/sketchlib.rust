@@ -2,7 +2,7 @@
 use anyhow::bail;
 use anyhow::Error;
 use anyhow::{anyhow, Result};
-// use thiserror::Error;
+
 use core::panic;
 use std::fmt;
 use std::fs::File;
@@ -17,10 +17,7 @@ use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
 use rayon::prelude::*;
-// use std::collections::HashSet;
 
-use std::io::Write;
-use std::path::Path;
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     pub sketch_size: u64,
@@ -41,52 +38,27 @@ pub struct MultiSketch {
 }
 
 impl MultiSketch {
-    // pub fn new(
-    //     sketches: &mut Vec<Sketch>,
-    //     sketch_size: u64,
-    //     kmer_lengths: &[usize],
-    //     hash_type: HashType,
-    //     inverted: bool,
-    // ) -> Self {
-    //     let mut name_map = HashMap::with_capacity(sketches.len());
-    //     for sketch in sketches.iter() {
-    //         name_map.insert(sketch.name().to_string(), sketch.get_index());
-    //     }
-
-    //     let kmer_stride = (sketch_size * BBITS) as usize;
-    //     Self {
-    //         sketch_size,
-    //         kmer_lengths: kmer_lengths.to_vec(),
-    //         sketch_metadata: mem::take(sketches),
-    //         name_map,
-    //         block_reindex: None,
-    //         sketch_bins: Vec::new(),
-    //         bin_stride: 1,
-    //         kmer_stride,
-    //         sample_stride: kmer_stride * kmer_lengths.len(),
-    //         sketch_version: env!("CARGO_PKG_VERSION").to_string(),
-    //         hash_type,
-    //     }
-
-    // }
     pub fn new(
         sketches: &mut Vec<Sketch>,
         sketch_size: u64,
         kmer_lengths: &[usize],
         hash_type: HashType,
-        with_bins: bool,
+        transpose_bins: bool, // the bindash approach of packing into 64-bit words, with bbits
     ) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
         let mut sketch_bins = Vec::new();
+        if transpose_bins {
+            sketch_bins.reserve_exact(sketches.len() * kmer_lengths.len() * (sketch_size * BBITS) as usize);
+        }
 
         for sketch in sketches.iter_mut() {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
-            if with_bins {
+            if transpose_bins {
                 sketch_bins.extend(sketch.get_usigs());
             }
         }
 
-        let kmer_stride = (sketch_size * BBITS) as usize;
+        let kmer_stride = if transpose_bins {(sketch_size * BBITS) as usize} else {sketch_size as usize};
         Self {
             sketch_size,
             kmer_lengths: kmer_lengths.to_vec(),
@@ -234,6 +206,7 @@ impl MultiSketch {
 
         self
     }
+
     pub fn remove_metadata(
         &mut self,
         output_file_name: &str,
@@ -266,20 +239,6 @@ impl MultiSketch {
         self.sketch_metadata = new_sketch_metadata;
         self.save_metadata(output_file_name)?;
         Ok(())
-        // new implementations has scope added to drop sets so there is no borrowing issue.
-        // let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
-        // let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
-        // let missing: Vec<&&str> = set2.difference(&set1).collect();
-        // if !missing.is_empty() {
-        //     bail!(
-        //         "The following samples have not been found in the database: {:?}",
-        //         missing
-        //     );
-        // }
-
-        // self.sketch_metadata = new_sketch_metadata;
-        // self.save_metadata(output_file_name)?;
-        // Ok(())
     }
 
     pub fn remove_genomes(
@@ -355,42 +314,7 @@ impl MultiSketch {
 
         inverted_index
     }
-    // remove, only need this for debugging
-    pub fn get_sketch_bins_len(&self) -> usize {
-        self.sketch_bins.len()
-    }
-
-    pub fn write_inverted_index_to_file<P: AsRef<Path>>(
-        inverted_index: &HashMap<u64, HashSet<usize>>,
-        file_path: P,
-    ) -> std::io::Result<()> {
-        let mut file = File::create(file_path)?;
-
-        for (hash, genome_set) in inverted_index {
-            writeln!(
-                file,
-                "{} {}",
-                hash,
-                genome_set
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )?;
-        }
-
-        Ok(())
-    }
-    // pub fn update_sketches(&mut self) {
-    //     for (sketch_idx, sketch) in self.sketch_metadata.iter_mut().enumerate() {
-    //         let bins = self.get_sketch_slice(sketch_idx, 0);  // only have on k-mer length for inverted
-    //         sketch.usigs = bins;
-    //     }
-    // }
 }
-
-// This function is called when sketches are merged, not when they are
-// first sketched (this is handled by sketch::sketch_files())
 
 impl fmt::Debug for MultiSketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
