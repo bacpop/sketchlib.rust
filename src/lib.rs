@@ -598,8 +598,9 @@ pub fn main() -> Result<(), Error> {
                 *min_qual,
                 args.quiet,
             );
+            let transpose_bins = true;
             let mut db2_metadata =
-                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, false);
+                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, transpose_bins);
 
             // save skd data from db1 and from freshly sketched input files
             log::info!("Merging and saving sketch data to {}.skd", output);

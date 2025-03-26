@@ -280,40 +280,6 @@ impl MultiSketch {
 
         Ok(())
     }
-
-    pub fn invert_index(sketches: &MultiSketch) -> HashMap<u64, HashSet<usize>> {
-        // HashMap storing the inverted index
-        let mut inverted_index: HashMap<u64, HashSet<usize>> = HashMap::default();
-
-        // Parallise the inversion for each sample
-        let local_indices: Vec<HashMap<u64, HashSet<usize>>> = sketches
-            .sketch_bins
-            .par_chunks(sketches.sample_stride)
-            .enumerate()
-            .map(|(genome_id, sample_hash)| {
-                let mut local_index: HashMap<u64, HashSet<usize>> = HashMap::default();
-                for &hash in sample_hash {
-                    local_index
-                        .entry(hash)
-                        .or_insert_with(HashSet::default)
-                        .insert(genome_id);
-                }
-                local_index
-            })
-            .collect();
-
-        // Merge all local inverted indices into a global one
-        for local in local_indices.iter() {
-            for (hash, genome_set) in local {
-                inverted_index
-                    .entry(*hash)
-                    .or_insert_with(HashSet::default)
-                    .extend(genome_set);
-            }
-        }
-
-        inverted_index
-    }
 }
 
 impl fmt::Debug for MultiSketch {
