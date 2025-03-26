@@ -17,6 +17,8 @@ use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
+type InvSketches = (Vec<Vec<u64>>, Vec<String>);
+
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
     index: Vec<HashMap<u16, RoaringBitmap>>,
@@ -39,7 +41,7 @@ impl Inverted {
         quiet: bool,
     ) -> Self {
         log::info!("Creating sketches");
-        let (sketches, sample_names) = Self::sketch_files_inverted(
+        let sketches = Self::sketch_files_inverted(
             input_files,
             file_order,
             k,
@@ -52,8 +54,8 @@ impl Inverted {
         );
         log::info!("Inverting sketch order");
         Self {
-            index: Self::build_inverted_index(&sketches, sketch_size),
-            sample_names,
+            index: Self::build_inverted_index(&sketches.0, sketch_size),
+            sample_names: sketches.1,
             kmer_size: k,
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
             hash_type: seq_type.clone(),
@@ -114,7 +116,7 @@ impl Inverted {
         min_count: u16,
         min_qual: u8,
         quiet: bool,
-    ) -> (Vec<Vec<u64>>, Vec<String>) {
+    ) -> InvSketches {
         let (tx, rx) = mpsc::channel();
 
         let percent = false;
@@ -165,19 +167,14 @@ impl Inverted {
             });
         });
 
-        let mut sketch_results = Vec::new();
+        let mut sketch_results = vec![Vec::new(); input_files.len()];
         while let Ok((genome_idx, sketch)) = rx.recv() {
-            while sketch_results.len() <= genome_idx {
-                sketch_results.push(Vec::new());
-            }
             sketch_results[genome_idx] = sketch;
         }
 
-        // TODO: this feels unnecessary -- can't we just extract from input files when needed?
-        let sample_names: Vec<String> = input_files
-            .iter()
-            .map(|(name, _, _)| name.clone())
-            .collect();
+        // Sample names in the correct order
+        // (clones names, but reference would be annoying here)
+        let sample_names: Vec<String> = file_order.iter().map(|idx| input_files[*idx].0.clone()).collect();
 
         (sketch_results, sample_names)
     }
@@ -191,6 +188,7 @@ impl Inverted {
             vec![HashMap::new(); sketch_size as usize];
 
         // process each sketch
+        // this could be parallelised over sketch bin, but probably not worth it
         for (genome_idx, genome_signs) in genome_sketches.iter().enumerate() {
             for (i, hash) in genome_signs.iter().enumerate() {
                 // add current genome to the inverted index at the current position
