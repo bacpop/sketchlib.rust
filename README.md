@@ -1,9 +1,19 @@
-# sketchlib.rust
+# sketchlib.rust <img src='sketchlib.rust_logo.png' align="right" height="139" />
 
 <!-- badges: start -->
 [![Cargo Build & Test](https://github.com/bacpop/sketchlib.rust/actions/workflows/ci.yml/badge.svg)](https://github.com/bacpop/sketchlib.rust/actions/workflows/ci.yml)
 [![Clippy check](https://github.com/bacpop/sketchlib.rust/actions/workflows/clippy.yml/badge.svg)](https://github.com/bacpop/sketchlib.rust/actions/workflows/clippy.yml)
+[![docs.rs](https://img.shields.io/docsrs/sketchlib.rust)](https://docs.rs/sketchlib.rust)
 [![codecov](https://codecov.io/gh/bacpop/sketchlib.rust/graph/badge.svg?token=IBYPTT4J3F)](https://codecov.io/gh/bacpop/sketchlib.rust)
+[![Crates.io](https://img.shields.io/crates/v/sketchlib)](https://crates.io/crates/sketchlib)
+[![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/bacpop/sketchlib.rust)](https://github.com/bacpop/sketchlib.rust/releases)
+<!-- badges: end -->
+
+<!-- badges: start -->
+[![Cargo Build & Test](https://github.com/bacpop/ska.rust/actions/workflows/ci.yml/badge.svg)](https://github.com/bacpop/ska.rust/actions/workflows/ci.yml)
+[![docs.rs](https://img.shields.io/docsrs/ska)](https://docs.rs/ska)
+[![Clippy check](https://github.com/bacpop/ska.rust/actions/workflows/clippy.yml/badge.svg)](https://github.com/bacpop/ska.rust/actions/workflows/clippy.yml)
+[![codecov](https://codecov.io/gh/bacpop/ska.rust/branch/master/graph/badge.svg?token=FZXT39NKA3)](https://codecov.io/gh/bacpop/ska.rust)
 <!-- badges: end -->
 
 ## Description

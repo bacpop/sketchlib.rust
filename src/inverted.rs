@@ -189,6 +189,8 @@ impl Inverted {
 
         // process each sketch
         // this could be parallelised over sketch bin, but probably not worth it
+        // (NB doing par_iter on the below doesn't quite work as multiple mut borrows
+        // of inverted_index needed)
         for (genome_idx, genome_signs) in genome_sketches.iter().enumerate() {
             for (i, hash) in genome_signs.iter().enumerate() {
                 // add current genome to the inverted index at the current position
