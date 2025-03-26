@@ -1,6 +1,6 @@
 [package]
 name = "sketchlib"
-version = "0.1.3"
+version = "0.2.0"
 authors = [
     "John Lees <jlees@ebi.ac.uk>",
     "Nicholas Croucher <n.croucher@imperial.ac.uk>",
