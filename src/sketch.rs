@@ -247,7 +247,6 @@ pub fn sketch_files(
     let kmer_stride = (sketch_size * BBITS) as usize;
     let sample_stride = kmer_stride * k.len();
 
-    
     #[cfg(feature = "3di")]
     let struct_strings = if convert_pdb {
         log::info!("Converting PDB files into 3Di representations");
@@ -265,6 +264,7 @@ pub fn sketch_files(
     let mut serial_writer =
         SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride);
 
+    // Set up sender (sketching) and receiver (writing)
     let (tx, rx) = mpsc::channel();
     let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 

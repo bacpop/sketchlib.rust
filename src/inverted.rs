@@ -174,7 +174,10 @@ impl Inverted {
 
         // Sample names in the correct order
         // (clones names, but reference would be annoying here)
-        let sample_names: Vec<String> = file_order.iter().map(|idx| input_files[*idx].0.clone()).collect();
+        let sample_names: Vec<String> = file_order
+            .iter()
+            .map(|idx| input_files[*idx].0.clone())
+            .collect();
 
         (sketch_results, sample_names)
     }
