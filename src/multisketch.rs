@@ -13,13 +13,13 @@ use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
+use crate::sketch::num_bins;
 use crate::sketch::{Sketch, BBITS};
 use crate::sketch_datafile::SketchArrayFile;
 
-use rayon::prelude::*;
-
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
+    /// Number of sketch bins (a multiple of 64)
     pub sketch_size: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
@@ -43,31 +43,24 @@ impl MultiSketch {
         sketch_size: u64,
         kmer_lengths: &[usize],
         hash_type: HashType,
-        transpose_bins: bool, // the bindash approach of packing into 64-bit words, with bbits
     ) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
-        let mut sketch_bins = Vec::new();
-        if transpose_bins {
-            sketch_bins.reserve_exact(sketches.len() * kmer_lengths.len() * (sketch_size * BBITS) as usize);
-        }
-
-        for sketch in sketches.iter_mut() {
+        for sketch in sketches.iter() {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
-            if transpose_bins {
-                sketch_bins.extend(sketch.get_usigs());
-            }
         }
 
-        let kmer_stride = if transpose_bins {(sketch_size * BBITS) as usize} else {sketch_size as usize};
+        assert!(sketch_size % u64::BITS as u64 == 0);
+        let (_signs_size, usigs_size) = num_bins(sketch_size);
+        let kmer_stride = usigs_size as usize;
         Self {
             sketch_size,
             kmer_lengths: kmer_lengths.to_vec(),
             sketch_metadata: mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins,
+            sketch_bins: Vec::new(),
             bin_stride: 1,
-            kmer_stride,
+            kmer_stride: usigs_size as usize,
             sample_stride: kmer_stride * kmer_lengths.len(),
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
             hash_type,

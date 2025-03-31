@@ -18,6 +18,7 @@ extern crate num_cpus;
 use anyhow::Error;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
+use sketch::num_bins;
 
 pub mod cli;
 use crate::cli::*;
@@ -84,7 +85,7 @@ pub fn main() -> Result<(), Error> {
             convert_pdb,
             output,
             kmers,
-            mut sketch_size,
+            sketch_size,
             seq_type,
             level,
             single_strand,
@@ -106,8 +107,6 @@ pub fn main() -> Result<(), Error> {
             let kmers = parse_kmers(kmers);
             // Build, merge
             let rc = !*single_strand;
-            // Set expected sketchsize
-            sketch_size = sketch_size.div_ceil(u64::BITS as u64);
             // Set aa level
             let seq_type = if let HashType::AA(_) = seq_type {
                 HashType::AA(level.clone())
@@ -115,10 +114,11 @@ pub fn main() -> Result<(), Error> {
                 seq_type.clone()
             };
 
+            let (sketch_bins, _usigs_size) = num_bins(*sketch_size);
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
                 kmers,
-                sketch_size * u64::BITS as u64,
+                sketch_bins,
                 seq_type,
                 threads
             );
@@ -129,15 +129,14 @@ pub fn main() -> Result<(), Error> {
                 #[cfg(feature = "3di")]
                 *convert_pdb,
                 &kmers,
-                sketch_size,
+                sketch_bins,
                 &seq_type,
                 rc,
                 *min_count,
                 *min_qual,
                 args.quiet,
             );
-            let transpose_bins = true;
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, transpose_bins);
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_bins, &kmers, seq_type);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
@@ -468,7 +467,7 @@ pub fn main() -> Result<(), Error> {
                 &input_files,
                 &file_order,
                 *kmer_length,
-                *sketch_size,
+                *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
                 seq_type,
                 rc,
                 *min_count,
@@ -598,9 +597,8 @@ pub fn main() -> Result<(), Error> {
                 *min_qual,
                 args.quiet,
             );
-            let transpose_bins = true;
             let mut db2_metadata =
-                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, transpose_bins);
+                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type);
 
             // save skd data from db1 and from freshly sketched input files
             log::info!("Merging and saving sketch data to {}.skd", output);

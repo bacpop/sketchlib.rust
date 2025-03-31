@@ -41,7 +41,7 @@ impl Inverted {
         quiet: bool,
     ) -> Self {
         log::info!("Creating sketches");
-        let sketches = Self::sketch_files_inverted(
+        let (sketches, names) = Self::sketch_files_inverted(
             input_files,
             file_order,
             k,
@@ -54,8 +54,8 @@ impl Inverted {
         );
         log::info!("Inverting sketch order");
         Self {
-            index: Self::build_inverted_index(&sketches.0, sketch_size),
-            sample_names: sketches.1,
+            index: Self::build_inverted_index(&sketches, sketch_size),
+            sample_names: names,
             kmer_size: k,
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
             hash_type: seq_type.clone(),

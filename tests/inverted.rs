@@ -37,8 +37,6 @@ fn test_identical_sequences() {
 
     // multisketches.update_sketches();
 
-    todo!();
-    /* 
     let inverted_index1 = MultiSketch::invert_index(&multisketches);
     let inverted_index2 = MultiSketch::invert_index(&multisketches);
 
@@ -64,7 +62,6 @@ fn test_identical_sequences() {
             sig
         );
     }
-    */
 }
 
 // #[test]

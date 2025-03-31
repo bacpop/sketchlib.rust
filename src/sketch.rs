@@ -21,6 +21,21 @@ pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
+/// Get the number of elements in the sketch vectors for a given sketch size
+///
+/// Returns a tuple, first element is the number of bins (rounded up to the
+/// nearest 64), second element is the number of transposed bins
+///
+/// # Arguments
+///
+/// - `sketch_size` -- number of bins wanted.
+pub fn num_bins(sketch_size: u64) -> (u64, u64) {
+    let sketchsize64 = sketch_size.div_ceil(u64::BITS as u64);
+    let signs_size = sketchsize64 * (u64::BITS as u64);
+    let usigs_size = sketchsize64 * BBITS;
+    (signs_size, usigs_size)
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Sketch {
     #[serde(skip)]
@@ -45,8 +60,9 @@ impl Sketch {
         rc: bool,
         min_count: u16,
     ) -> Self {
-        let size_u64 = (sketch_size * BBITS) as usize * kmer_lengths.len();
-        let mut usigs = Vec::with_capacity(size_u64);
+        let (num_bins, usigs_size) = num_bins(sketch_size);
+        let flattened_size_u64 = usigs_size as usize * kmer_lengths.len();
+        let mut usigs = Vec::with_capacity(flattened_size_u64);
 
         let mut read_filter = if seq_hashes.reads() {
             let mut filter = KmerFilter::new(min_count);
@@ -59,17 +75,15 @@ impl Sketch {
         // Build the sketches across k-mer lengths
         let mut minhash_sum = 0.0;
         let mut densified = false;
-        let num_bins: u64 = sketch_size * (u64::BITS as u64);
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
-            // Setup storage for each k
             let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, num_bins);
             densified |= k_densified;
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
             // Transpose the bins and save to the sketch map
             log::debug!("Transposing bins");
-            let mut kmer_usigs = vec![0; (sketch_size * BBITS) as usize];
+            let mut kmer_usigs = vec![0; usigs_size as usize];
             Self::fill_usigs(&mut kmer_usigs, &signs);
             usigs.append(&mut kmer_usigs);
         }
@@ -101,7 +115,7 @@ impl Sketch {
         filter: &mut Option<KmerFilter>,
         num_bins: u64,
     ) -> (Vec<u64>, bool) {
-        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
+        // Setup storage for each k
         let mut signs = vec![u64::MAX; num_bins as usize];
         if let Some(read_filter) = filter {
             read_filter.clear();
@@ -109,6 +123,7 @@ impl Sketch {
         seq_hashes.set_k(kmer_size);
 
         // Calculate bin minima across all sequence
+        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
         for hash in seq_hashes.iter() {
             Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, filter);
         }
@@ -232,6 +247,7 @@ pub fn sketch_files(
     let kmer_stride = (sketch_size * BBITS) as usize;
     let sample_stride = kmer_stride * k.len();
 
+    
     #[cfg(feature = "3di")]
     let struct_strings = if convert_pdb {
         log::info!("Converting PDB files into 3Di representations");
@@ -304,20 +320,23 @@ pub fn sketch_files(
                             if hash_it.seq_len() == 0 {
                                 panic!("{sample_name} has no valid sequence");
                             }
+                            // Run the sketching
                             Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
                         })
                         .collect::<Vec<Sketch>>()
                 })
                 .for_each_with(tx, |tx, sketch| {
+                    // Emit the sketch results to the writer thread
                     let _ = tx.send(sketch);
                 });
         });
-
+        // Write each sketch to the .skd file as it comes in
         for sketch_file in rx {
+            // Note double loop as single file may contain multiple samples with concat_fasta
             for mut sketch in sketch_file {
-                let usigs = sketch.get_usigs();
-                let index = serial_writer.write_sketch(&usigs);
+                let index = serial_writer.write_sketch(&sketch.get_usigs());
                 sketch.set_index(index);
+                // Also append (without usigs) to the metadata, which is Vec<Sketch>
                 sketches.push(sketch);
             }
         }
