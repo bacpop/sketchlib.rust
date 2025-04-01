@@ -1,0 +1,6 @@
+sketch_version=[..]
+sequence_type=DNA
+sketch_size=1000
+n_samples=2
+kmer=31
+inverted=true

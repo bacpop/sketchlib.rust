@@ -1,0 +1,3 @@
+TIGR4.fa.gz	Spn
+R6.fa.gz	Spn
+14412_3#82.contigs_velvet.fa.gz	N m

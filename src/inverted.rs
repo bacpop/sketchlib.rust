@@ -174,10 +174,11 @@ impl Inverted {
 
         // Sample names in the correct order
         // (clones names, but reference would be annoying here)
-        let sample_names: Vec<String> = file_order
+        let mut sample_names: Vec<String> = vec!["".to_string(); input_files.len()];
+        file_order
             .iter()
-            .map(|idx| input_files[*idx].0.clone())
-            .collect();
+            .zip(input_files)
+            .for_each(|(idx, (name, _, _))| sample_names[*idx] = name.to_string());
 
         (sketch_results, sample_names)
     }

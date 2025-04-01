@@ -48,7 +48,7 @@ pub fn reorder_input_files(
     // Read through labels, assign each name to a cluster in increasing order
     for line in f.lines() {
         let line = line.expect("Unable to read line in species_list");
-        let fields: Vec<&str> = line.split_whitespace().collect();
+        let fields: Vec<&str> = line.split_terminator("\t").collect();
         if input_names.contains(fields[0]) {
             if let Some(idx) = species_labels.get(fields[1]) {
                 label_order.push((fields[0].to_string(), *idx));
@@ -68,18 +68,24 @@ pub fn reorder_input_files(
         reordered_dict.insert(reordered_name, new_idx);
     }
 
-    // Use lookup table to create a list of new index for each input sample
-    // This deals with missing labels
-    let mut new_idx = reordered_dict.len() - 1;
-    let mut sample_order = Vec::with_capacity(input_files.len());
-    for sample_name in input_files {
-        let sample_idx = if let Some(order) = reordered_dict.get(&sample_name.0) {
-            *order
-        } else {
-            new_idx += 1;
-            new_idx
-        };
-        sample_order.push(sample_idx);
+    let mut sample_order = Vec::new();
+    if reordered_dict.is_empty() {
+        log::warn!("Could not find any sample names in {species_name_file}");
+        sample_order = (0..input_files.len()).collect();
+    } else {
+        // Use lookup table to create a list of new index for each input sample
+        // This deals with missing labels
+        sample_order.reserve_exact(input_files.len());
+        let mut new_idx = reordered_dict.len() - 1;
+        for sample_name in input_files {
+            let sample_idx = if let Some(order) = reordered_dict.get(&sample_name.0) {
+                *order
+            } else {
+                new_idx += 1;
+                new_idx
+            };
+            sample_order.push(sample_idx);
+        }
     }
     sample_order
 }
@@ -189,7 +195,7 @@ fn test_reorder_input_files() {
     let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
     writeln!(
         temp_file,
-        "sample1 speciesA\nsample2 speciesB\nsample3 speciesA\nsample4 speciesC\nsample6 speciesD"
+        "sample1\tspecies A\nsample2\tspeciesB\nsample3\tspecies A\nsample4\tspeciesC\nsample6\tspeciesD"
     )
     .expect("Failed to write to temp file");
 

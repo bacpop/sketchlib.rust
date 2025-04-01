@@ -1,93 +1,81 @@
-use sketchlib::hashing::HashType;
-// use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{cargo_bin, Command};
+
 pub mod common;
 use crate::common::*;
-use sketchlib::multisketch::MultiSketch;
-// use sketchlib::sketch::Sketch;
-use sketchlib::sketch::sketch_files;
 
-#[test]
-fn test_identical_sequences() {
-    let sandbox = TestSetup::setup();
+#[cfg(test)]
 
-    let input_files = vec![(
-        "seq1".to_string(),
-        sandbox.file_string("inverted_test_genome1.fa", TestDir::Input),
-        None,
-    )];
+mod tests {
+    use super::*;
 
-    let sketch_size = 3;
-    let seq_type = HashType::DNA;
-    let kmers: &[usize] = &[2];
+    #[test]
+    fn inverted_sketch() {
+        let sandbox = TestSetup::setup();
 
-    let mut sketches = sketch_files(
-        format!("{}/test_identical", sandbox.get_wd()).as_str(),
-        &input_files,
-        false,       // concat_fasta
-        &kmers,      // k-mer sizes
-        sketch_size, // sketch_size
-        &seq_type,
-        false, // rc
-        1,     // min_count
-        0,     // min_qual
-        true,  // inverted
-    );
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "31"])
+            .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
+            .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
+            .assert()
+            .success();
 
-    let multisketches = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type, true);
+        assert_eq!(true, sandbox.file_exists("inverted.ski"));
 
-    // multisketches.update_sketches();
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("info")
+            .arg("inverted.ski")
+            .arg("-v")
+            .assert()
+            .stdout_matches_path(
+                sandbox.file_string("inverted_sketch_info.stdout", TestDir::Correct),
+            );
 
-    let inverted_index1 = MultiSketch::invert_index(&multisketches);
-    let inverted_index2 = MultiSketch::invert_index(&multisketches);
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("info")
+            .arg("--sample-info")
+            .arg("inverted.ski")
+            .arg("-v")
+            .assert()
+            .stdout_matches_path(
+                sandbox.file_string("inverted_sketch_full_info.stdout", TestDir::Correct),
+            );
+    }
 
-    // test: same size
-    assert_eq!(
-        inverted_index1.len(),
-        inverted_index2.len(),
-        "Both inverted indices should have the same number of entries"
-    );
+    #[test]
+    fn inverted_reorder() {
+        let sandbox = TestSetup::setup();
 
-    // test: key and value for both
-    for (sig, sketch_indices1) in &inverted_index1 {
-        assert!(
-            inverted_index2.contains_key(sig),
-            "Signature {} should exist in both indices",
-            sig
-        );
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "61", "-s", "63"])
+            .arg("--species-names")
+            .arg(sandbox.file_string("species_names.txt", TestDir::Input))
+            .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
+            .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
+            .arg(sandbox.file_string("R6.fa.gz", TestDir::Input))
+            .arg(sandbox.file_string("TIGR4.fa.gz", TestDir::Input))
+            .assert()
+            .success();
 
-        let sketch_indices2 = inverted_index2.get(sig).unwrap();
-        assert_eq!(
-            sketch_indices1, sketch_indices2,
-            "Sets of sketch indices for signature {} should be identical",
-            sig
-        );
+        assert_eq!(true, sandbox.file_exists("inverted.ski"));
+
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("info")
+            .arg("inverted.ski")
+            .arg("-v")
+            .assert()
+            .stdout_matches_path(
+                sandbox.file_string("inverted_sketch_info_reorder.stdout", TestDir::Correct),
+            );
     }
 }
-
-// #[test]
-// fn test_different_sequences() {
-//     let sandbox = TestSetup::setup();
-
-//     let input_files = vec![
-//         (
-//             "seq1".to_string(),
-//             sandbox.file_string(
-//                 "inverted_test_genome1.fa",
-//                 TestDir::Input,
-//             ),
-//             None,
-//         ),
-//         (
-//             "seq2".to_string(),
-//             sandbox.file_string("inverted_test_genome2.fa", TestDir::Input),
-//             None,
-//         ),
-//     ];
-
-//     assert_eq!(sketches.len(), 2, "Should have two sketches");
-//     assert_ne!(
-//         sketches[0].get_usigs(),
-//         sketches[1].get_usigs(),
-//         "Different sequences should produce different sketches"
-//     );
-// }
