@@ -2,24 +2,27 @@
 use anyhow::bail;
 use anyhow::Error;
 use anyhow::{anyhow, Result};
-// use thiserror::Error;
+
 use core::panic;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::mem;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
-use crate::sketch::{Sketch, BBITS};
+use crate::sketch::num_bins;
+use crate::sketch::Sketch;
 use crate::sketch_datafile::SketchArrayFile;
 
-use std::collections::HashSet;
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
+    /// Number of sketch bins (a multiple of 64)
     pub sketch_size: u64,
+    /// Sketch size divided by 64
+    pub sketchsize64: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
     name_map: HashMap<String, usize>,
@@ -48,9 +51,12 @@ impl MultiSketch {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
         }
 
-        let kmer_stride = (sketch_size * BBITS) as usize;
+        assert!(sketch_size % u64::BITS as u64 == 0);
+        let (sketchsize64, _signs_size, usigs_size) = num_bins(sketch_size);
+        let kmer_stride = usigs_size as usize;
         Self {
             sketch_size,
+            sketchsize64,
             kmer_lengths: kmer_lengths.to_vec(),
             sketch_metadata: mem::take(sketches),
             name_map,
@@ -146,8 +152,7 @@ impl MultiSketch {
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
         let s1_offset = sketch_idx * self.sample_stride + k_idx * self.kmer_stride;
-        let s1_slice =
-            &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
+        let s1_slice = &self.sketch_bins[s1_offset..(s1_offset + self.kmer_stride)];
         log::trace!("s1_start:{s1_offset} s1_end:{}", s1_offset + s1_slice.len(),);
         s1_slice
     }
@@ -196,6 +201,7 @@ impl MultiSketch {
 
         self
     }
+
     pub fn remove_metadata(
         &mut self,
         output_file_name: &str,
@@ -213,14 +219,16 @@ impl MultiSketch {
             }
         }
 
-        let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
-        let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
-        let missing: Vec<&&str> = set2.difference(&set1).collect();
-        if !missing.is_empty() {
-            bail!(
-                "The following samples have not been found in the database: {:?}",
-                missing
-            );
+        {
+            let set1: HashSet<&str> = removed_samples.iter().map(AsRef::as_ref).collect();
+            let set2: HashSet<&str> = genome_ids_to_remove.iter().map(AsRef::as_ref).collect();
+            let missing: Vec<&&str> = set2.difference(&set1).collect();
+            if !missing.is_empty() {
+                bail!(
+                    "The following samples have not been found in the database: {:?}",
+                    missing
+                );
+            }
         }
 
         self.sketch_metadata = new_sketch_metadata;
@@ -267,19 +275,16 @@ impl MultiSketch {
 
         Ok(())
     }
-
-    // This function is called when sketches are merged, not when they are
-    // first sketched (this is handled by sketch::sketch_files())
 }
 
 impl fmt::Debug for MultiSketch {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmers={:?}",
+            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmers={:?}\ninverted=false",
             self.sketch_version,
             self.hash_type,
-            self.sketch_size * u64::BITS as u64,
+            self.sketch_size,
             self.sketch_metadata.len(),
             self.kmer_lengths,
         )

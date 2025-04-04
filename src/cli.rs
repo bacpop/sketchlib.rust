@@ -1,6 +1,8 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
 use clap::{ArgGroup, Args, Parser, Subcommand};
 
+use crate::DEFAULT_KMER;
+
 use super::hashing::{AaLevel, HashType, DEFAULT_LEVEL};
 
 /// Default single strand (which is equivalent to !rc)
@@ -158,6 +160,48 @@ pub enum Commands {
         /// Calculate ANI rather than Jaccard dists, using Poisson model
         #[arg(long, requires("kmer"), default_value_t = false)]
         ani: bool,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+    },
+    /// Create sketches from input data and store in an inverted index structure
+    Inverted {
+        /// List of input FASTA files
+        #[arg(group = "input")]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+
+        /// Output filename for the merged sketch
+        #[arg(required = true, short)]
+        output: String,
+
+        /// File listing species names, or clusters, for phylogenetic ordering
+        #[arg(long)]
+        species_names: Option<String>,
+
+        /// Sketch size
+        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
+        sketch_size: u64,
+
+        /// K-mer size
+        #[arg(short, long, default_value_t = DEFAULT_KMER)]
+        kmer_length: usize,
+
+        /// Ignore reverse complement (all contigs are oriented along same strand)
+        #[arg(long, default_value_t = DEFAULT_STRAND)]
+        single_strand: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
 
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]

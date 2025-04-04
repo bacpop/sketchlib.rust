@@ -3,8 +3,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::mpsc;
 
-extern crate needletail;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +20,24 @@ use crate::utils::get_progress_bar;
 pub const BBITS: u64 = 14;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
+
+/// Get the number of elements in the sketch vectors for a given sketch size
+///
+/// Returns a tuple:
+/// - First element is sketch size divided by 64 (used in Jaccard fn)
+/// - Second element is the number of bins (rounded up to the
+///   nearest 64)
+/// - Third element is the number of transposed bins
+///
+/// # Arguments
+///
+/// - `sketch_size` -- number of bins wanted.
+pub fn num_bins(sketch_size: u64) -> (u64, u64, u64) {
+    let sketchsize64 = sketch_size.div_ceil(u64::BITS as u64);
+    let signs_size = sketchsize64 * (u64::BITS as u64);
+    let usigs_size = sketchsize64 * BBITS;
+    (sketchsize64, signs_size, usigs_size)
+}
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Sketch {
@@ -46,8 +63,9 @@ impl Sketch {
         rc: bool,
         min_count: u16,
     ) -> Self {
-        let size_u64 = (sketch_size * BBITS) as usize * kmer_lengths.len();
-        let mut usigs = Vec::with_capacity(size_u64);
+        let (_sketchsize64, num_bins, usigs_size) = num_bins(sketch_size);
+        let flattened_size_u64 = usigs_size as usize * kmer_lengths.len();
+        let mut usigs = Vec::with_capacity(flattened_size_u64);
 
         let mut read_filter = if seq_hashes.reads() {
             let mut filter = KmerFilter::new(min_count);
@@ -60,29 +78,15 @@ impl Sketch {
         // Build the sketches across k-mer lengths
         let mut minhash_sum = 0.0;
         let mut densified = false;
-        let num_bins: u64 = sketch_size * (u64::BITS as u64);
-        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
-            // Setup storage for each k
-            let mut signs = vec![u64::MAX; num_bins as usize];
-            seq_hashes.set_k(*k);
-            if let Some(ref mut filter) = read_filter {
-                filter.clear();
-            }
-
-            // Calculate bin minima across all sequence
-            for hash in seq_hashes.iter() {
-                Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, &mut read_filter);
-            }
-
-            // Densify
-            densified |= Self::densify_bin(&mut signs);
+            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, num_bins);
+            densified |= k_densified;
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
             // Transpose the bins and save to the sketch map
             log::debug!("Transposing bins");
-            let mut kmer_usigs = vec![0; (sketch_size * BBITS) as usize];
+            let mut kmer_usigs = vec![0; usigs_size as usize];
             Self::fill_usigs(&mut kmer_usigs, &signs);
             usigs.append(&mut kmer_usigs);
         }
@@ -106,6 +110,29 @@ impl Sketch {
             acgt,
             non_acgt,
         }
+    }
+
+    pub fn get_signs<H: RollHash + ?Sized>(
+        seq_hashes: &mut H,
+        kmer_size: usize,
+        filter: &mut Option<KmerFilter>,
+        num_bins: u64,
+    ) -> (Vec<u64>, bool) {
+        // Setup storage for each k
+        let mut signs = vec![u64::MAX; num_bins as usize];
+        if let Some(read_filter) = filter {
+            read_filter.clear();
+        }
+        seq_hashes.set_k(kmer_size);
+
+        // Calculate bin minima across all sequence
+        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
+        for hash in seq_hashes.iter() {
+            Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, filter);
+        }
+        // Densify
+        let densified = Self::densify_bin(&mut signs);
+        (signs, densified)
     }
 
     pub fn name(&self) -> &str {
@@ -297,7 +324,6 @@ pub fn sketch_files(
                                 panic!("{sample_name} has no valid sequence");
                             }
                             // Run the sketching
-                            // (&mut **? C++ called it wants its syntax back)
                             Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
                         })
                         .collect::<Vec<Sketch>>()
@@ -318,5 +344,6 @@ pub fn sketch_files(
             }
         }
     });
+
     sketches
 }

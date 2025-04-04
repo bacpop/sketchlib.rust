@@ -1,11 +1,7 @@
-use predicates::prelude::*;
 use snapbox::cmd::{cargo_bin, Command};
-use std::path::Path;
 
 pub mod common;
 use crate::common::*;
-
-use sketchlib::multisketch::MultiSketch;
 
 #[cfg(test)]
 
@@ -16,7 +12,6 @@ mod tests {
     fn sketch_fasta() {
         let sandbox = TestSetup::setup();
 
-        // Create a fasta rfile in the tmp dir
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")

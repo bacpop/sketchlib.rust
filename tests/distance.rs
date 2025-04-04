@@ -1,12 +1,8 @@
-// use predicates::prelude::*;
 use snapbox::cmd::{cargo_bin, Command};
 use std::path::Path;
 
 pub mod common;
 use crate::common::*;
-// use sketchlib::io::*;
-
-// use sketchlib::multisketch::MultiSketch;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -16,8 +12,6 @@ use std::io::{BufRead, BufReader};
 
 mod tests {
     use super::*;
-    // use sketchlib::io;
-
     // assert function with tolerance for distances
     fn assert_with_tolerance(actual: f64, expected: f64) {
         let rounded_actual = (actual * 1000.0).round() / 1000.0;
@@ -197,7 +191,7 @@ mod tests {
         // -------------------------------------------------------------------------------------------------------------------------------------------
         // Read in sketchlib C++ true distance results
         let file_path = sandbox.file_string("sketchlib_output_true.txt", TestDir::Correct);
-        let sketchlib_file = match File::open(Path::new(&file_path)) {
+        let _sketchlib_file = match File::open(Path::new(&file_path)) {
             Ok(file) => file,
             Err(error) => {
                 eprintln!("Failed to open file: {}", file_path);

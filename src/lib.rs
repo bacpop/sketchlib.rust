@@ -18,6 +18,7 @@ extern crate num_cpus;
 use anyhow::Error;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
+use sketch::num_bins;
 
 pub mod cli;
 use crate::cli::*;
@@ -29,6 +30,9 @@ use crate::sketch::sketch_files;
 pub mod multisketch;
 use crate::multisketch::MultiSketch;
 
+pub mod inverted;
+use crate::inverted::Inverted;
+
 pub mod jaccard;
 use crate::jaccard::{ani_pois, core_acc_dist, jaccard_dist};
 
@@ -38,7 +42,7 @@ pub mod distances;
 use crate::distances::*;
 
 pub mod io;
-use crate::io::{get_input_list, parse_kmers, read_subset_names, set_ostream};
+use crate::io::{get_input_list, parse_kmers, read_subset_names, reorder_input_files, set_ostream};
 pub mod structures;
 
 pub mod bloom_filter;
@@ -81,7 +85,7 @@ pub fn main() -> Result<(), Error> {
             convert_pdb,
             output,
             kmers,
-            mut sketch_size,
+            sketch_size,
             seq_type,
             level,
             single_strand,
@@ -103,8 +107,6 @@ pub fn main() -> Result<(), Error> {
             let kmers = parse_kmers(kmers);
             // Build, merge
             let rc = !*single_strand;
-            // Set expected sketchsize
-            sketch_size = sketch_size.div_ceil(u64::BITS as u64);
             // Set aa level
             let seq_type = if let HashType::AA(_) = seq_type {
                 HashType::AA(level.clone())
@@ -112,10 +114,11 @@ pub fn main() -> Result<(), Error> {
                 seq_type.clone()
             };
 
+            let (_, sketch_bins, _) = num_bins(*sketch_size);
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
                 kmers,
-                sketch_size * u64::BITS as u64,
+                sketch_bins,
                 seq_type,
                 threads
             );
@@ -126,14 +129,14 @@ pub fn main() -> Result<(), Error> {
                 #[cfg(feature = "3di")]
                 *convert_pdb,
                 &kmers,
-                sketch_size,
+                sketch_bins,
                 &seq_type,
                 rc,
                 *min_count,
                 *min_qual,
                 args.quiet,
             );
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_size, &kmers, seq_type);
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_bins, &kmers, seq_type);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
@@ -231,7 +234,7 @@ pub fn main() -> Result<(), Error> {
                                             let mut dist = jaccard_dist(
                                                 references.get_sketch_slice(i, k),
                                                 references.get_sketch_slice(j, k),
-                                                references.sketch_size,
+                                                references.sketchsize64,
                                             );
                                             dist = if *ani {
                                                 ani_pois(dist, k_f32)
@@ -287,7 +290,7 @@ pub fn main() -> Result<(), Error> {
                                                 let mut dist = jaccard_dist(
                                                     i_sketch,
                                                     references.get_sketch_slice(j, k),
-                                                    references.sketch_size,
+                                                    references.sketchsize64,
                                                 );
                                                 dist = if *ani {
                                                     ani_pois(dist, k_f32)
@@ -367,7 +370,7 @@ pub fn main() -> Result<(), Error> {
                                     let mut dist = jaccard_dist(
                                         references.get_sketch_slice(i, k),
                                         query_db.get_sketch_slice(j, k),
-                                        references.sketch_size,
+                                        references.sketchsize64,
                                     );
                                     dist = if *ani {
                                         ani_pois(dist, k_f32)
@@ -429,6 +432,106 @@ pub fn main() -> Result<(), Error> {
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
 
+        Commands::Inverted {
+            seq_files,
+            file_list,
+            output,
+            species_names,
+            single_strand,
+            min_count,
+            min_qual,
+            threads,
+            sketch_size,
+            kmer_length,
+        } => {
+            // An extra thread is needed for the writer
+            check_threads(*threads + 1);
+
+            // Get input files
+            log::info!("Getting input files");
+            let input_files: Vec<(String, String, Option<String>)> =
+                get_input_list(file_list, seq_files);
+            log::info!("Parsed {} samples in input list", input_files.len());
+
+            // Reordering by species, or default
+            let file_order = if let Some(species_name_file) = species_names {
+                reorder_input_files(&input_files, species_name_file)
+            } else {
+                (0..input_files.len()).collect()
+            };
+
+            // Create an Inverted instance using the new method
+            let rc = !*single_strand;
+            let seq_type = &HashType::DNA;
+            let inverted = Inverted::new(
+                &input_files,
+                &file_order,
+                *kmer_length,
+                *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
+                seq_type,
+                rc,
+                *min_count,
+                *min_qual,
+                args.quiet,
+            );
+            inverted.save(output)?;
+            Ok(())
+        }
+
+        // TODO check and enable this code
+        // Commands::InvertedQuery {
+        //     query_seq_files,
+        //     query_file_list,
+        //     inverted_index,
+        //     output,
+        //     single_strand,
+        //     min_count,
+        //     min_qual,
+        //     threads,
+        //     level,
+        //     mut sketch_size,
+        //     kmer_length,
+        // } => {
+        //     // An extra thread is needed for the writer
+        //     check_threads(*threads + 1);
+
+        //     //get input files
+        //     log::info!("Getting input files");
+        //     let input_query: Vec<(String, String, Option<String>)> =
+        //         get_input_list(query_file_list, query_seq_files);
+        //     log::info!("Parsed {} samples in input query list", input_query.len());
+
+        //     let rc = !*single_strand;
+        //     let seq_type = &HashType::DNA;
+
+        //     // Load the previously created inverted index from file
+        //     log::info!("Loading inverted index from {}", inverted_index);
+        //     let inverted = match Inverted::load(inverted_index) {
+        //         Ok(idx) => idx,
+        //         Err(e) => {
+        //             log::error!("Error loading inverted index: {}", e);
+        //             return Err(e.into());
+        //         }
+        //     };
+
+        //     let n_samples = inverted.sample_names.len();
+        //     log::info!("Loaded inverted index with {} samples", n_samples);
+
+        //     // Create sketches for all query files using sketch_files_inverted
+        //     let (query_sketches, query_names) = Inverted::sketch_files_inverted(
+        //         &input_query,
+        //         kmer_length,
+        //         sketch_size,
+        //         seq_type,
+        //         rc,
+        //         *min_count,
+        //         *min_qual,
+        //     );
+
+        //     let match_counts = inverted.query_against_inverted_index(query_sketches, n_samples);
+
+        //     Ok(())
+        // }
         Commands::Append {
             db,
             seq_files,
@@ -499,7 +602,7 @@ pub fn main() -> Result<(), Error> {
 
             // save skd data from db1 and from freshly sketched input files
             log::info!("Merging and saving sketch data to {}.skd", output);
-            // let mut output_file = File::create(format!("{}.skd", output))?;
+
             let mut output_file = OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -551,21 +654,36 @@ pub fn main() -> Result<(), Error> {
             skm_file,
             sample_info,
         } => {
-            let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
-                &skm_file[0..skm_file.len() - 4]
+            if skm_file.ends_with(".ski") {
+                let ski_file = &skm_file[0..skm_file.len() - 4];
+                let index = Inverted::load(ski_file).unwrap_or_else(|_| {
+                    panic!("Could not read inverted index from {ski_file}.ski")
+                });
+                if *sample_info {
+                    log::info!("Printing sample info");
+                    println!("{index}");
+                } else {
+                    log::info!("Printing inverted index info");
+                    println!("{index:?}");
+                }
             } else {
-                skm_file.as_str()
-            };
-            let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {ref_db_name}.skm")
-            });
-            if *sample_info {
-                log::info!("Printing sample info");
-                println!("{sketches}");
-            } else {
-                log::info!("Printing database info");
-                println!("{sketches:?}");
+                let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
+                    &skm_file[0..skm_file.len() - 4]
+                } else {
+                    skm_file.as_str()
+                };
+                let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {ref_db_name}.skm")
+                });
+                if *sample_info {
+                    log::info!("Printing sample info");
+                    println!("{sketches}");
+                } else {
+                    log::info!("Printing database info");
+                    println!("{sketches:?}");
+                }
             }
+
             print_success = false; // Turn the final message off
             Ok(())
         }

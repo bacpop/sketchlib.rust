@@ -1,9 +1,12 @@
-# sketchlib.rust
+# sketchlib.rust <img src='sketchlib.rust_logo.png' align="right" height="139" />
 
 <!-- badges: start -->
 [![Cargo Build & Test](https://github.com/bacpop/sketchlib.rust/actions/workflows/ci.yml/badge.svg)](https://github.com/bacpop/sketchlib.rust/actions/workflows/ci.yml)
 [![Clippy check](https://github.com/bacpop/sketchlib.rust/actions/workflows/clippy.yml/badge.svg)](https://github.com/bacpop/sketchlib.rust/actions/workflows/clippy.yml)
+[![docs.rs](https://img.shields.io/docsrs/sketchlib)](https://docs.rs/sketchlib)
 [![codecov](https://codecov.io/gh/bacpop/sketchlib.rust/graph/badge.svg?token=IBYPTT4J3F)](https://codecov.io/gh/bacpop/sketchlib.rust)
+[![Crates.io](https://img.shields.io/crates/v/sketchlib)](https://crates.io/crates/sketchlib)
+[![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/bacpop/sketchlib.rust)](https://github.com/bacpop/sketchlib.rust/releases)
 <!-- badges: end -->
 
 ## Description

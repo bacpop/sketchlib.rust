@@ -24,8 +24,9 @@ pub enum AaLevel {
     Level3,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Default)]
 pub enum HashType {
+    #[default]
     DNA,
     AA(AaLevel),
     PDB,

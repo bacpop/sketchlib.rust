@@ -1,5 +1,5 @@
 use std::{
-    fs::{read_dir, File},
+    fs::{copy, File},
     io::{LineWriter, Write},
     path::{Path, PathBuf},
 };
@@ -93,6 +93,13 @@ impl TestSetup {
             .to_str()
             .expect("Could not unpack file path")
             .to_owned()
+    }
+
+    pub fn copy_input_file_to_wd(&self, name: &str) {
+        let input_file = self.file_string(name, TestDir::Input);
+        let output_file = format!("{}/{}", self.get_wd(), name);
+        copy(&input_file, &output_file)
+            .expect(&format!("Couldn't copy {input_file} to {output_file}"));
     }
 
     pub fn file_check(&self, name_out: &str, name_correct: &str) -> bool {
