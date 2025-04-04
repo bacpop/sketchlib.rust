@@ -152,8 +152,7 @@ impl MultiSketch {
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
         let s1_offset = sketch_idx * self.sample_stride + k_idx * self.kmer_stride;
-        let s1_slice =
-            &self.sketch_bins[s1_offset..(s1_offset + self.kmer_stride)];
+        let s1_slice = &self.sketch_bins[s1_offset..(s1_offset + self.kmer_stride)];
         log::trace!("s1_start:{s1_offset} s1_end:{}", s1_offset + s1_slice.len(),);
         s1_slice
     }

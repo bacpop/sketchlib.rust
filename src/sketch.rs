@@ -26,7 +26,7 @@ pub const SIGN_MOD: u64 = (1 << 61) - 1;
 /// Returns a tuple:
 /// - First element is sketch size divided by 64 (used in Jaccard fn)
 /// - Second element is the number of bins (rounded up to the
-/// nearest 64)
+///   nearest 64)
 /// - Third element is the number of transposed bins
 ///
 /// # Arguments
