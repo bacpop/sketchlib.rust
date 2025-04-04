@@ -12,14 +12,16 @@ mod tests {
     fn inverted_sketch() {
         let sandbox = TestSetup::setup();
 
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("-o")
             .arg("inverted")
             .args(["-v", "-k", "31"])
-            .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
+            .arg("14412_3#82.contigs_velvet.fa.gz")
+            .arg("14412_3#84.contigs_velvet.fa.gz")
             .assert()
             .success();
 
@@ -51,6 +53,10 @@ mod tests {
     fn inverted_reorder() {
         let sandbox = TestSetup::setup();
 
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
@@ -59,10 +65,10 @@ mod tests {
             .args(["-v", "-k", "61", "-s", "63"])
             .arg("--species-names")
             .arg(sandbox.file_string("species_names.txt", TestDir::Input))
-            .arg(sandbox.file_string("14412_3#82.contigs_velvet.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("14412_3#84.contigs_velvet.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("R6.fa.gz", TestDir::Input))
-            .arg(sandbox.file_string("TIGR4.fa.gz", TestDir::Input))
+            .arg("14412_3#82.contigs_velvet.fa.gz")
+            .arg("14412_3#84.contigs_velvet.fa.gz")
+            .arg("R6.fa.gz")
+            .arg("TIGR4.fa.gz")
             .assert()
             .success();
 
@@ -72,6 +78,7 @@ mod tests {
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("inverted.ski")
+            .arg("--sample-info")
             .arg("-v")
             .assert()
             .stdout_matches_path(
