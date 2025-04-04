@@ -114,7 +114,7 @@ pub fn main() -> Result<(), Error> {
                 seq_type.clone()
             };
 
-            let (sketch_bins, _usigs_size) = num_bins(*sketch_size);
+            let (_, sketch_bins, _) = num_bins(*sketch_size);
             log::info!(
                 "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
                 kmers,
@@ -234,7 +234,7 @@ pub fn main() -> Result<(), Error> {
                                             let mut dist = jaccard_dist(
                                                 references.get_sketch_slice(i, k),
                                                 references.get_sketch_slice(j, k),
-                                                references.sketch_size,
+                                                references.sketchsize64,
                                             );
                                             dist = if *ani {
                                                 ani_pois(dist, k_f32)
@@ -290,7 +290,7 @@ pub fn main() -> Result<(), Error> {
                                                 let mut dist = jaccard_dist(
                                                     i_sketch,
                                                     references.get_sketch_slice(j, k),
-                                                    references.sketch_size,
+                                                    references.sketchsize64,
                                                 );
                                                 dist = if *ani {
                                                     ani_pois(dist, k_f32)
@@ -370,7 +370,7 @@ pub fn main() -> Result<(), Error> {
                                     let mut dist = jaccard_dist(
                                         references.get_sketch_slice(i, k),
                                         query_db.get_sketch_slice(j, k),
-                                        references.sketch_size,
+                                        references.sketchsize64,
                                     );
                                     dist = if *ani {
                                         ani_pois(dist, k_f32)

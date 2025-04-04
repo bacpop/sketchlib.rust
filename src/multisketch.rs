@@ -14,13 +14,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
 use crate::sketch::num_bins;
-use crate::sketch::{Sketch, BBITS};
+use crate::sketch::Sketch;
 use crate::sketch_datafile::SketchArrayFile;
 
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     /// Number of sketch bins (a multiple of 64)
     pub sketch_size: u64,
+    /// Sketch size divided by 64
+    pub sketchsize64: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
     name_map: HashMap<String, usize>,
@@ -50,17 +52,18 @@ impl MultiSketch {
         }
 
         assert!(sketch_size % u64::BITS as u64 == 0);
-        let (_signs_size, usigs_size) = num_bins(sketch_size);
+        let (sketchsize64, _signs_size, usigs_size) = num_bins(sketch_size);
         let kmer_stride = usigs_size as usize;
         Self {
             sketch_size,
+            sketchsize64,
             kmer_lengths: kmer_lengths.to_vec(),
             sketch_metadata: mem::take(sketches),
             name_map,
             block_reindex: None,
             sketch_bins: Vec::new(),
             bin_stride: 1,
-            kmer_stride: usigs_size as usize,
+            kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
             hash_type,
@@ -150,7 +153,7 @@ impl MultiSketch {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
         let s1_offset = sketch_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s1_slice =
-            &self.sketch_bins[s1_offset..(s1_offset + (self.sketch_size * BBITS) as usize)];
+            &self.sketch_bins[s1_offset..(s1_offset + self.kmer_stride)];
         log::trace!("s1_start:{s1_offset} s1_end:{}", s1_offset + s1_slice.len(),);
         s1_slice
     }
@@ -282,7 +285,7 @@ impl fmt::Debug for MultiSketch {
             "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmers={:?}\ninverted=false",
             self.sketch_version,
             self.hash_type,
-            self.sketch_size * u64::BITS as u64,
+            self.sketch_size,
             self.sketch_metadata.len(),
             self.kmer_lengths,
         )

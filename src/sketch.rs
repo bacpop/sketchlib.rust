@@ -23,17 +23,20 @@ pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
 /// Get the number of elements in the sketch vectors for a given sketch size
 ///
-/// Returns a tuple, first element is the number of bins (rounded up to the
-/// nearest 64), second element is the number of transposed bins
+/// Returns a tuple:
+/// - First element is sketch size divided by 64 (used in Jaccard fn)
+/// - Second element is the number of bins (rounded up to the
+/// nearest 64)
+/// - Third element is the number of transposed bins
 ///
 /// # Arguments
 ///
 /// - `sketch_size` -- number of bins wanted.
-pub fn num_bins(sketch_size: u64) -> (u64, u64) {
+pub fn num_bins(sketch_size: u64) -> (u64, u64, u64) {
     let sketchsize64 = sketch_size.div_ceil(u64::BITS as u64);
     let signs_size = sketchsize64 * (u64::BITS as u64);
     let usigs_size = sketchsize64 * BBITS;
-    (signs_size, usigs_size)
+    (sketchsize64, signs_size, usigs_size)
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -60,7 +63,7 @@ impl Sketch {
         rc: bool,
         min_count: u16,
     ) -> Self {
-        let (num_bins, usigs_size) = num_bins(sketch_size);
+        let (_sketchsize64, num_bins, usigs_size) = num_bins(sketch_size);
         let flattened_size_u64 = usigs_size as usize * kmer_lengths.len();
         let mut usigs = Vec::with_capacity(flattened_size_u64);
 

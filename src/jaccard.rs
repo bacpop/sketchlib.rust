@@ -2,17 +2,17 @@
 use crate::multisketch::MultiSketch;
 use crate::sketch::BBITS;
 
-pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketch_size: u64) -> f32 {
-    let unionsize = (u64::BITS as u64 * sketch_size) as f32;
+pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
+    let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
     let mut samebits: u32 = 0;
-    for i in 0..sketch_size {
+    for i in 0..sketchsize64 {
         let mut bits: u64 = !0;
         for j in 0..BBITS {
             bits &= !(sketch1[(i * BBITS + j) as usize] ^ sketch2[(i * BBITS + j) as usize]);
         }
         samebits += bits.count_ones();
     }
-    let maxnbits = sketch_size as u32 * u64::BITS;
+    let maxnbits = sketchsize64 as u32 * u64::BITS;
     let expected_samebits = maxnbits >> BBITS;
 
     log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
@@ -48,7 +48,7 @@ pub fn core_acc_dist(
         let y = jaccard_dist(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
             query_sketches.get_sketch_slice(query_sketch_idx, k_idx),
-            ref_sketches.sketch_size,
+            ref_sketches.sketchsize64,
         )
         .ln();
         if y < tolerance {
