@@ -1,3 +1,5 @@
+//! The class to support .ski creation, reading and writing, containing an inverted
+//! index of multiple sketches
 use std::fmt;
 use std::sync::mpsc;
 
