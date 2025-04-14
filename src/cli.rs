@@ -76,6 +76,7 @@ pub enum Commands {
             .required(true)
             .args(["seq_files", "file_list"]),
     ))]
+
     /// Create sketches from input data
     Sketch {
         /// List of input FASTA files
@@ -131,6 +132,7 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
+
     /// Calculate pairwise distances using sketches
     Dist {
         /// The .skm file used as the reference
@@ -165,48 +167,13 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
     },
-    /// Create sketches from input data and store in an inverted index structure
+
+    /// Building and querying with inverted indices (.ski)
     Inverted {
-        /// List of input FASTA files
-        #[arg(group = "input")]
-        seq_files: Option<Vec<String>>,
-
-        /// File listing input files (tab separated name, sequences, see README)
-        #[arg(short, group = "input")]
-        file_list: Option<String>,
-
-        /// Output filename for the merged sketch
-        #[arg(required = true, short)]
-        output: String,
-
-        /// File listing species names, or clusters, for phylogenetic ordering
-        #[arg(long)]
-        species_names: Option<String>,
-
-        /// Sketch size
-        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
-        sketch_size: u64,
-
-        /// K-mer size
-        #[arg(short, long, default_value_t = DEFAULT_KMER)]
-        kmer_length: usize,
-
-        /// Ignore reverse complement (all contigs are oriented along same strand)
-        #[arg(long, default_value_t = DEFAULT_STRAND)]
-        single_strand: bool,
-
-        /// Minimum k-mer count (with reads)
-        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
-        min_count: u16,
-
-        /// Minimum k-mer quality (with reads)
-        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
-        min_qual: u8,
-
-        /// Number of CPU threads
-        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
-        threads: usize,
+        #[command(subcommand)]
+        command: InvertedCommands,
     },
+
     /// Merge two sketch files (.skm and .skd pair)
     Merge {
         /// The first .skd (sketch data) file
@@ -221,6 +188,7 @@ pub enum Commands {
         #[arg(required = true, short)]
         output: String,
     },
+
     /// Append new genomes to be sketched to an existing sketch database
     Append {
         /// Sketching database basename (so without .skm or .skd)
@@ -288,6 +256,87 @@ pub enum Commands {
         /// Write out the information for every sample contained
         #[arg(long, default_value_t = false)]
         sample_info: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum InvertedCommands {
+    // Create sketches from input data and store in an inverted index structure
+    Build {
+        /// List of input FASTA files
+        #[arg(group = "input")]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+
+        /// Output filename for the merged sketch
+        #[arg(required = true, short)]
+        output: String,
+
+        /// File listing species names, or clusters, for phylogenetic ordering
+        #[arg(long)]
+        species_names: Option<String>,
+
+        /// Sketch size
+        #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
+        sketch_size: u64,
+
+        /// K-mer size
+        #[arg(short, long, default_value_t = DEFAULT_KMER)]
+        kmer_length: usize,
+
+        /// Ignore reverse complement (all contigs are oriented along same strand)
+        #[arg(long, default_value_t = DEFAULT_STRAND)]
+        single_strand: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+    },
+
+    // Find distances against an inverted index
+    Query {
+        /// The inverted index (.ski) file used as the reference
+        #[arg(required = true)]
+        ski: String,
+
+        /// List of input FASTA files
+        #[arg(group = "input")]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+
+        /// Output filename (omit to output to stdout)
+        #[arg(short)]
+        output: Option<String>,
+
+        /// Only report samples with exactly the same hashes
+        #[arg(long)]
+        identical_only: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
     },
 }
 
