@@ -565,10 +565,15 @@ pub fn main() -> Result<(), Error> {
                 let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
 
                 let prefilter_pairs = inverted_index.any_shared_bin_list();
-                log::info!("Identified {} prefilter pairs from a max of {}", prefilter_pairs.len(), inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1) / 2);
+                log::info!(
+                    "Identified {} prefilter pairs from a max of {}",
+                    prefilter_pairs.len(),
+                    inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1)
+                        / 2
+                );
 
                 Ok(())
-            },
+            }
         },
 
         Commands::Append {

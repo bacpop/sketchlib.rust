@@ -10,7 +10,6 @@ use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use rmp_serde::{Deserializer, Serializer};
 
 use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::bloom_filter::KmerFilter;
@@ -105,27 +104,25 @@ impl Inverted {
         &self.sample_names[idx]
     }
 
+    /// Saves to `file_prefix.ski`, using MessagePack as the serialisation format
     pub fn save(&self, file_prefix: &str) -> Result<(), Error> {
         let filename = format!("{}.ski", file_prefix);
         log::info!("Saving inverted index to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
         rmp_serde::encode::write(&mut compress_writer, self)?;
-        self.serialize(&mut Serializer::new(&mut compress_writer))?;
         Ok(())
     }
 
+    /// Loads from `file_prefix.ski`, using MessagePack as the serialisation format
+    // NB MessagePack rather the CBOR uses here because of
+    // https://github.com/enarx/ciborium/issues/96
     pub fn load(file_prefix: &str) -> Result<Self, Error> {
         let filename = format!("{}.ski", file_prefix);
         log::info!("Loading inverted index from {filename}");
         let ski_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(ski_file);
         let ski_obj: Self = rmp_serde::decode::from_read(decompress_reader)?;
-        /*
-        log::info!("Reading");
-        let mut buffer = Vec::<u8>::with_capacity(64000);
-        let ski_obj: Self = ciborium::de::from_reader_with_buffer(decompress_reader, &mut buffer)?;
-        */
         Ok(ski_obj)
     }
 
@@ -327,13 +324,13 @@ impl<'a> Iterator for SharedBinIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some((_hashval, bitmap)) = self.hash_iter.next() {
-            return Some(bitmap);
+            Some(bitmap)
         } else {
             self.bin_idx += 1;
             if self.bin_idx < self.bins.len() {
                 self.hash_iter = self.bins[self.bin_idx].iter();
                 if let Some((_hashval, bitmap)) = self.hash_iter.next() {
-                    return Some(bitmap);
+                    Some(bitmap)
                 } else {
                     panic!("Empty bitvec");
                 }
