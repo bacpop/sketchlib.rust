@@ -261,7 +261,7 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum InvertedCommands {
-    // Create sketches from input data and store in an inverted index structure
+    /// Create sketches from input data and store in an inverted index structure
     Build {
         /// List of input FASTA files
         #[arg(group = "input")]
@@ -304,7 +304,7 @@ pub enum InvertedCommands {
         threads: usize,
     },
 
-    // Find distances against an inverted index
+    /// Find distances against an inverted index
     Query {
         /// The inverted index (.ski) file used as the reference
         #[arg(required = true)]
@@ -333,6 +333,33 @@ pub enum InvertedCommands {
         /// Minimum k-mer quality (with reads)
         #[arg(long, default_value_t = DEFAULT_MINQUAL)]
         min_qual: u8,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+    },
+
+    /// Use an inverted index to reduce query comparisons
+    Precluster {
+        /// The inverted index (.ski) file used as the reference
+        #[arg(required = true)]
+        ski: String,
+
+        /// The .skm file, which must have the same samples and k-mer length as the .ski file
+        #[arg(required = true)]
+        ref_db: String,
+
+        /// Output filename (omit to output to stdout)
+        #[arg(short)]
+        output: Option<String>,
+
+        /// Reduce to a maximum of k nearest-neighbours
+        #[arg(long, group = "query")]
+        knn: Option<usize>,
+
+        /// Calculate ANI rather than Jaccard dists, using Poisson model
+        #[arg(long, requires("kmer"), default_value_t = false)]
+        ani: bool,
 
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]

@@ -462,7 +462,6 @@ pub fn main() -> Result<(), Error> {
                     (0..input_files.len()).collect()
                 };
 
-                // Create an Inverted instance using the new method
                 let rc = !*single_strand;
                 let seq_type = &HashType::DNA;
                 let inverted = Inverted::new(
@@ -477,6 +476,7 @@ pub fn main() -> Result<(), Error> {
                     args.quiet,
                 );
                 inverted.save(output)?;
+                log::info!("Index info:\n{inverted:?}");
                 Ok(())
             }
             InvertedCommands::Query {
@@ -534,15 +534,41 @@ pub fn main() -> Result<(), Error> {
                 for (q_name, dist) in rx {
                     if *identical_only {
                         writeln!(output_file, "{q_name}")?;
-                        for r_name in dist.iter().map(|idx| inverted_index.sample_at(*idx as usize)) {
+                        for r_name in dist
+                            .iter()
+                            .map(|idx| inverted_index.sample_at(*idx as usize))
+                        {
                             writeln!(output_file, ",{r_name}")?;
-                        };
+                        }
                     } else {
                         writeln!(output_file, "{q_name},{dist:?}")?;
                     }
                 }
                 Ok(())
             }
+            InvertedCommands::Precluster {
+                ski,
+                ref_db,
+                output,
+                knn,
+                ani,
+                threads,
+            } => {
+                // TODO
+                // 1. Check ski and ref_db samples and k-mer length match. Will also need to
+                // check order/make a mapping between the two
+                // 2. Get all the comparison pairs from the inverted index
+                // 3. Run the jaccard/ani and knn comparison from dists as above, will always be sparse
+                // 3a. Ideally should be made into a function
+
+                let mut output_file = set_ostream(output);
+                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
+
+                let prefilter_pairs = inverted_index.any_shared_bin_list();
+                log::info!("Identified {} prefilter pairs from a max of {}", prefilter_pairs.len(), inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1) / 2);
+
+                Ok(())
+            },
         },
 
         Commands::Append {
@@ -669,7 +695,8 @@ pub fn main() -> Result<(), Error> {
         } => {
             if skm_file.ends_with(".ski") {
                 let ski_file = &skm_file[0..skm_file.len() - 4];
-                let index = Inverted::load(ski_file).unwrap_or_else(|_| {
+                let index = Inverted::load(ski_file).unwrap_or_else(|err| {
+                    println!("Read error: {err}");
                     panic!("Could not read inverted index from {ski_file}.ski")
                 });
                 if *sample_info {

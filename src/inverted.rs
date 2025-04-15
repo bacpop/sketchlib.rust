@@ -10,6 +10,7 @@ use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
+use rmp_serde::{Deserializer, Serializer};
 
 use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::bloom_filter::KmerFilter;
@@ -109,7 +110,8 @@ impl Inverted {
         log::info!("Saving inverted index to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
-        ciborium::ser::into_writer(self, &mut compress_writer)?;
+        rmp_serde::encode::write(&mut compress_writer, self)?;
+        self.serialize(&mut Serializer::new(&mut compress_writer))?;
         Ok(())
     }
 
@@ -118,7 +120,12 @@ impl Inverted {
         log::info!("Loading inverted index from {filename}");
         let ski_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(ski_file);
-        let ski_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        let ski_obj: Self = rmp_serde::decode::from_read(decompress_reader)?;
+        /*
+        log::info!("Reading");
+        let mut buffer = Vec::<u8>::with_capacity(64000);
+        let ski_obj: Self = ciborium::de::from_reader_with_buffer(decompress_reader, &mut buffer)?;
+        */
         Ok(ski_obj)
     }
 
@@ -283,12 +290,13 @@ impl fmt::Debug for Inverted {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmer={}\ninverted=true\n",
+            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmer={}\nrc={}\ninverted=true\n",
             self.sketch_version,
             self.hash_type,
             self.index.len(),
             self.sample_names.len(),
             self.kmer_size,
+            self.rc,
         )?;
         let mut sizes = Vec::new();
         for bin in self.index.iter() {
