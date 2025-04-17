@@ -4,7 +4,8 @@ use std::fmt;
 use std::sync::mpsc;
 
 extern crate needletail;
-use hashbrown::HashMap;
+use hashbrown::HashSet;
+use hashbrown::{hash_map::Iter as HashMapIter, HashMap};
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
@@ -19,7 +20,7 @@ use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-type InvSketches = (Vec<Vec<u64>>, Vec<String>);
+type InvSketches = (Vec<Vec<u16>>, Vec<String>);
 
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
@@ -27,10 +28,18 @@ pub struct Inverted {
     sample_names: Vec<String>,
     kmer_size: usize,
     sketch_version: String,
+    rc: bool,
     hash_type: HashType,
 }
 
+pub struct SharedBinIter<'a> {
+    bins: &'a [HashMap<u16, RoaringBitmap>],
+    bin_idx: usize,
+    hash_iter: HashMapIter<'a, u16, RoaringBitmap>,
+}
+
 impl Inverted {
+    // Sketch files without transposing bins, and invert the index
     pub fn new(
         input_files: &[InputFastx],
         file_order: &[usize],
@@ -60,30 +69,65 @@ impl Inverted {
             sample_names: names,
             kmer_size: k,
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
+            rc,
             hash_type: seq_type.clone(),
         }
     }
 
+    // Sketch files only, when querying the index
+    pub fn sketch_queries(
+        &self,
+        input_files: &[InputFastx],
+        min_count: u16,
+        min_qual: u8,
+        quiet: bool,
+    ) -> InvSketches {
+        let file_order: Vec<usize> = (0..input_files.len()).collect();
+        Self::sketch_files_inverted(
+            input_files,
+            &file_order,
+            self.kmer_size,
+            self.index.len() as u64,
+            &self.hash_type,
+            self.rc,
+            min_count,
+            min_qual,
+            quiet,
+        )
+    }
+
+    pub fn sample_names(&self) -> &Vec<String> {
+        &self.sample_names
+    }
+
+    pub fn sample_at(&self, idx: usize) -> &str {
+        &self.sample_names[idx]
+    }
+
+    /// Saves to `file_prefix.ski`, using MessagePack as the serialisation format
     pub fn save(&self, file_prefix: &str) -> Result<(), Error> {
         let filename = format!("{}.ski", file_prefix);
         log::info!("Saving inverted index to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
-        ciborium::ser::into_writer(self, &mut compress_writer)?;
+        rmp_serde::encode::write(&mut compress_writer, self)?;
         Ok(())
     }
 
+    /// Loads from `file_prefix.ski`, using MessagePack as the serialisation format
+    // NB MessagePack rather the CBOR uses here because of
+    // https://github.com/enarx/ciborium/issues/96
     pub fn load(file_prefix: &str) -> Result<Self, Error> {
         let filename = format!("{}.ski", file_prefix);
         log::info!("Loading inverted index from {filename}");
         let ski_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(ski_file);
-        let ski_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        let ski_obj: Self = rmp_serde::decode::from_read(decompress_reader)?;
         Ok(ski_obj)
     }
 
-    pub fn query_against_inverted_index(&self, query_sigs: &[u16], n_samples: usize) -> Vec<u32> {
-        let mut match_counts = vec![0; n_samples];
+    pub fn query_against_inverted_index(&self, query_sigs: &[u16]) -> Vec<u32> {
+        let mut match_counts = vec![0; self.sample_names.len()];
 
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
             if let Some(matching_samples) = self.index[bin_idx].get(query_bin_hash) {
@@ -94,19 +138,41 @@ impl Inverted {
         }
         match_counts
     }
-    // // example for how query against II might work
-    // // iterate over bins
-    // for query_bin, inverted_index_bins in query_sigs.zip(inverted_index) { // iterating over u64, HashMap<u64, Vec<String>>
-    //     // look up bin value in the hash map
-    //     if query in inverted_index_bins {
-    //         let same_bin_samples = inverted_index_bins[query_bin]; // sample_bin_samples: Vec<String>
-    //         for sample in same_bin_samples { // for each sample String
-    //             dist_vec[sample] += 1;
-    //         }
-    //         // add one to all samples distances in the vec
-    //         for
-    //     }
-    // }
+
+    pub fn all_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
+        let mut matching_bits = RoaringBitmap::new();
+        matching_bits.insert_range(0..self.sample_names.len() as u32);
+        for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
+            if let Some(matching_samples) = self.index[bin_idx].get(query_bin_hash) {
+                matching_bits &= matching_samples;
+            } else {
+                matching_bits = RoaringBitmap::new();
+            }
+        }
+
+        matching_bits.iter().collect()
+    }
+
+    pub fn any_shared_bin_iter(&self) -> SharedBinIter {
+        SharedBinIter {
+            bins: &self.index,
+            bin_idx: 0,
+            hash_iter: self.index[0].iter(),
+        }
+    }
+
+    pub fn any_shared_bin_list(&self) -> HashSet<(u32, u32)> {
+        let mut pair_list = HashSet::new();
+        for pres_vec in self.any_shared_bin_iter() {
+            let samples_together: Vec<u32> = pres_vec.iter().collect();
+            for (i, sample1_idx) in samples_together.iter().enumerate() {
+                for sample2_idx in samples_together.iter().skip(i) {
+                    pair_list.insert((*sample1_idx, *sample2_idx));
+                }
+            }
+        }
+        pair_list
+    }
 
     fn sketch_files_inverted(
         input_files: &[InputFastx],
@@ -171,7 +237,8 @@ impl Inverted {
 
         let mut sketch_results = vec![Vec::new(); input_files.len()];
         while let Ok((genome_idx, sketch)) = rx.recv() {
-            sketch_results[genome_idx] = sketch;
+            let sketch_u16 = sketch.iter().map(|h| *h as u16).collect();
+            sketch_results[genome_idx] = sketch_u16;
         }
 
         // Sample names in the correct order
@@ -186,7 +253,7 @@ impl Inverted {
     }
 
     fn build_inverted_index(
-        genome_sketches: &[Vec<u64>],
+        genome_sketches: &[Vec<u16>],
         sketch_size: u64,
     ) -> Vec<HashMap<u16, RoaringBitmap>> {
         // initialize inverted index structure
@@ -201,7 +268,7 @@ impl Inverted {
             for (i, hash) in genome_signs.iter().enumerate() {
                 // add current genome to the inverted index at the current position
                 inverted_index[i]
-                    .entry(*hash as u16)
+                    .entry(*hash)
                     .and_modify(|genome_list| {
                         genome_list.insert(genome_idx as u32);
                     })
@@ -220,12 +287,24 @@ impl fmt::Debug for Inverted {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmer={}\ninverted=true",
+            "sketch_version={}\nsequence_type={:?}\nsketch_size={}\nn_samples={}\nkmer={}\nrc={}\ninverted=true\n",
             self.sketch_version,
             self.hash_type,
             self.index.len(),
             self.sample_names.len(),
             self.kmer_size,
+            self.rc,
+        )?;
+        let mut sizes = Vec::new();
+        for bin in self.index.iter() {
+            sizes.push(bin.len());
+        }
+        write!(
+            f,
+            "max_hashes_per_bin={}\nmin_hashes_per_bin={}\navg_hashes_per_bin={}",
+            sizes.iter().max().unwrap(),
+            sizes.iter().min().unwrap(),
+            sizes.iter().sum::<usize>() as f64 / sizes.len() as f64
         )
     }
 }
@@ -237,5 +316,27 @@ impl fmt::Display for Inverted {
             writeln!(f, "{sketch}")?;
         }
         Ok(())
+    }
+}
+
+impl<'a> Iterator for SharedBinIter<'a> {
+    type Item = &'a RoaringBitmap;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((_hashval, bitmap)) = self.hash_iter.next() {
+            Some(bitmap)
+        } else {
+            self.bin_idx += 1;
+            if self.bin_idx < self.bins.len() {
+                self.hash_iter = self.bins[self.bin_idx].iter();
+                if let Some((_hashval, bitmap)) = self.hash_iter.next() {
+                    Some(bitmap)
+                } else {
+                    panic!("Empty bitvec");
+                }
+            } else {
+                None
+            }
+        }
     }
 }

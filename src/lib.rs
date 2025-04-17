@@ -10,6 +10,7 @@
 
 use std::collections::BinaryHeap;
 use std::io::Write;
+use std::sync::mpsc;
 use std::time::Instant;
 
 #[macro_use]
@@ -19,6 +20,7 @@ use anyhow::Error;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use sketch::num_bins;
+use utils::strip_sketch_extension;
 
 pub mod cli;
 use crate::cli::*;
@@ -431,107 +433,149 @@ pub fn main() -> Result<(), Error> {
             log::info!("Merging and saving sketch data to {}.skd", output);
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
+        Commands::Inverted { command } => match command {
+            InvertedCommands::Build {
+                seq_files,
+                file_list,
+                output,
+                species_names,
+                single_strand,
+                min_count,
+                min_qual,
+                threads,
+                sketch_size,
+                kmer_length,
+            } => {
+                // An extra thread is needed for the writer
+                check_threads(*threads + 1);
 
-        Commands::Inverted {
-            seq_files,
-            file_list,
-            output,
-            species_names,
-            single_strand,
-            min_count,
-            min_qual,
-            threads,
-            sketch_size,
-            kmer_length,
-        } => {
-            // An extra thread is needed for the writer
-            check_threads(*threads + 1);
+                // Get input files
+                log::info!("Getting input files");
+                let input_files: Vec<(String, String, Option<String>)> =
+                    get_input_list(file_list, seq_files);
+                log::info!("Parsed {} samples in input list", input_files.len());
 
-            // Get input files
-            log::info!("Getting input files");
-            let input_files: Vec<(String, String, Option<String>)> =
-                get_input_list(file_list, seq_files);
-            log::info!("Parsed {} samples in input list", input_files.len());
+                // Reordering by species, or default
+                let file_order = if let Some(species_name_file) = species_names {
+                    reorder_input_files(&input_files, species_name_file)
+                } else {
+                    (0..input_files.len()).collect()
+                };
 
-            // Reordering by species, or default
-            let file_order = if let Some(species_name_file) = species_names {
-                reorder_input_files(&input_files, species_name_file)
-            } else {
-                (0..input_files.len()).collect()
-            };
+                let rc = !*single_strand;
+                let seq_type = &HashType::DNA;
+                let inverted = Inverted::new(
+                    &input_files,
+                    &file_order,
+                    *kmer_length,
+                    *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
+                    seq_type,
+                    rc,
+                    *min_count,
+                    *min_qual,
+                    args.quiet,
+                );
+                inverted.save(output)?;
+                log::info!("Index info:\n{inverted:?}");
+                Ok(())
+            }
+            InvertedCommands::Query {
+                ski,
+                seq_files,
+                file_list,
+                output,
+                identical_only,
+                min_count,
+                min_qual,
+                threads,
+            } => {
+                let mut output_file = set_ostream(output);
+                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
 
-            // Create an Inverted instance using the new method
-            let rc = !*single_strand;
-            let seq_type = &HashType::DNA;
-            let inverted = Inverted::new(
-                &input_files,
-                &file_order,
-                *kmer_length,
-                *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
-                seq_type,
-                rc,
-                *min_count,
-                *min_qual,
-                args.quiet,
-            );
-            inverted.save(output)?;
-            Ok(())
-        }
+                // Get input files
+                log::info!("Getting input queries");
+                let input_files: Vec<(String, String, Option<String>)> =
+                    get_input_list(file_list, seq_files);
+                log::info!("Parsed {} samples in input query list", input_files.len());
 
-        // TODO check and enable this code
-        // Commands::InvertedQuery {
-        //     query_seq_files,
-        //     query_file_list,
-        //     inverted_index,
-        //     output,
-        //     single_strand,
-        //     min_count,
-        //     min_qual,
-        //     threads,
-        //     level,
-        //     mut sketch_size,
-        //     kmer_length,
-        // } => {
-        //     // An extra thread is needed for the writer
-        //     check_threads(*threads + 1);
+                log::info!("Sketching input queries");
+                check_threads(*threads + 1);
+                let (queries, query_names) =
+                    inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
 
-        //     //get input files
-        //     log::info!("Getting input files");
-        //     let input_query: Vec<(String, String, Option<String>)> =
-        //         get_input_list(query_file_list, query_seq_files);
-        //     log::info!("Parsed {} samples in input query list", input_query.len());
+                if *identical_only {
+                    log::info!("Running identical queries");
+                } else {
+                    log::info!("Running queries against all");
+                    // Header
+                    writeln!(output_file, ",{:?}", inverted_index.sample_names())?;
+                }
+                let (tx, rx) = mpsc::channel();
+                let percent = false;
+                let progress_bar = get_progress_bar(queries.len(), percent, args.quiet);
+                rayon::scope(|s| {
+                    s.spawn(|_| {
+                        queries
+                            .par_iter()
+                            .progress_with(progress_bar)
+                            .zip(query_names)
+                            .map(|(q, q_name)| {
+                                if *identical_only {
+                                    (q_name, inverted_index.all_shared_bins(q))
+                                } else {
+                                    (q_name, inverted_index.query_against_inverted_index(q))
+                                }
+                            })
+                            .for_each_with(tx, |tx, dists| {
+                                let _ = tx.send(dists);
+                            });
+                    });
+                });
+                for (q_name, dist) in rx {
+                    if *identical_only {
+                        writeln!(output_file, "{q_name}")?;
+                        for r_name in dist
+                            .iter()
+                            .map(|idx| inverted_index.sample_at(*idx as usize))
+                        {
+                            writeln!(output_file, ",{r_name}")?;
+                        }
+                    } else {
+                        writeln!(output_file, "{q_name},{dist:?}")?;
+                    }
+                }
+                Ok(())
+            }
+            InvertedCommands::Precluster {
+                ski,
+                ref_db,
+                output,
+                knn,
+                ani,
+                threads,
+            } => {
+                // TODO
+                // 1. Check ski and ref_db samples and k-mer length match. Will also need to
+                // check order/make a mapping between the two
+                // 2. Get all the comparison pairs from the inverted index
+                // 3. Run the jaccard/ani and knn comparison from dists as above, will always be sparse
+                // 3a. Ideally should be made into a function
 
-        //     let rc = !*single_strand;
-        //     let seq_type = &HashType::DNA;
+                let mut output_file = set_ostream(output);
+                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
 
-        //     // Load the previously created inverted index from file
-        //     log::info!("Loading inverted index from {}", inverted_index);
-        //     let inverted = match Inverted::load(inverted_index) {
-        //         Ok(idx) => idx,
-        //         Err(e) => {
-        //             log::error!("Error loading inverted index: {}", e);
-        //             return Err(e.into());
-        //         }
-        //     };
+                let prefilter_pairs = inverted_index.any_shared_bin_list();
+                log::info!(
+                    "Identified {} prefilter pairs from a max of {}",
+                    prefilter_pairs.len(),
+                    inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1)
+                        / 2
+                );
 
-        //     let n_samples = inverted.sample_names.len();
-        //     log::info!("Loaded inverted index with {} samples", n_samples);
+                Ok(())
+            }
+        },
 
-        //     // Create sketches for all query files using sketch_files_inverted
-        //     let (query_sketches, query_names) = Inverted::sketch_files_inverted(
-        //         &input_query,
-        //         kmer_length,
-        //         sketch_size,
-        //         seq_type,
-        //         rc,
-        //         *min_count,
-        //         *min_qual,
-        //     );
-
-        //     let match_counts = inverted.query_against_inverted_index(query_sketches, n_samples);
-
-        //     Ok(())
-        // }
         Commands::Append {
             db,
             seq_files,
@@ -656,7 +700,8 @@ pub fn main() -> Result<(), Error> {
         } => {
             if skm_file.ends_with(".ski") {
                 let ski_file = &skm_file[0..skm_file.len() - 4];
-                let index = Inverted::load(ski_file).unwrap_or_else(|_| {
+                let index = Inverted::load(ski_file).unwrap_or_else(|err| {
+                    println!("Read error: {err}");
                     panic!("Could not read inverted index from {ski_file}.ski")
                 });
                 if *sample_info {

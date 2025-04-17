@@ -7,7 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 /// Removes .skm or .skd, if they exist, at the end of a filename
 pub fn strip_sketch_extension(file_name: &str) -> &str {
-    if file_name.ends_with(".skm") || file_name.ends_with(".skd") {
+    if file_name.ends_with(".skm") || file_name.ends_with(".skd") || file_name.ends_with(".ski") {
         &file_name[..file_name.len() - 4]
     } else {
         file_name
