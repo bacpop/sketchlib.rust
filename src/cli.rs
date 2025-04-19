@@ -354,11 +354,11 @@ pub enum InvertedCommands {
         output: Option<String>,
 
         /// Reduce to a maximum of k nearest-neighbours
-        #[arg(long, group = "query")]
+        #[arg(long)]
         knn: Option<usize>,
 
         /// Calculate ANI rather than Jaccard dists, using Poisson model
-        #[arg(long, requires("kmer"), default_value_t = false)]
+        #[arg(long, default_value_t = false)]
         ani: bool,
 
         /// Number of CPU threads
