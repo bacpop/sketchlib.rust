@@ -4,15 +4,15 @@ use std::fmt;
 use std::sync::mpsc;
 
 extern crate needletail;
-use hashbrown::HashSet;
 use hashbrown::{hash_map::Iter as HashMapIter, HashMap};
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
-use roaring::RoaringBitmap;
+use roaring::{RoaringBitmap, RoaringTreemap};
 use serde::{Deserialize, Serialize};
 
 use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::bloom_filter::KmerFilter;
+use crate::distances::square_to_condensed;
 use crate::io::InputFastx;
 use crate::sketch::*;
 use crate::utils::get_progress_bar;
@@ -25,6 +25,7 @@ type InvSketches = (Vec<Vec<u16>>, Vec<String>);
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
     index: Vec<HashMap<u16, RoaringBitmap>>,
+    n_samples: usize,
     sample_names: Vec<String>,
     kmer_size: usize,
     sketch_version: String,
@@ -66,6 +67,7 @@ impl Inverted {
         log::info!("Inverting sketch order");
         Self {
             index: Self::build_inverted_index(&sketches, sketch_size),
+            n_samples: names.len(),
             sample_names: names,
             kmer_size: k,
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -161,13 +163,13 @@ impl Inverted {
         }
     }
 
-    pub fn any_shared_bin_list(&self) -> HashSet<(u32, u32)> {
-        let mut pair_list = HashSet::new();
+    pub fn any_shared_bin_list(&self) -> RoaringTreemap {
+        let mut pair_list = RoaringTreemap::new();
         for pres_vec in self.any_shared_bin_iter() {
             let samples_together: Vec<u32> = pres_vec.iter().collect();
             for (i, sample1_idx) in samples_together.iter().enumerate() {
-                for sample2_idx in samples_together.iter().skip(i) {
-                    pair_list.insert((*sample1_idx, *sample2_idx));
+                for sample2_idx in samples_together.iter().skip(i + 1) {
+                    pair_list.insert(square_to_condensed(*sample1_idx as usize, *sample2_idx as usize, self.n_samples) as u64);
                 }
             }
         }
