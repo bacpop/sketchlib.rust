@@ -512,7 +512,7 @@ pub fn main() -> Result<(), Error> {
                     for name in inverted_index.sample_names() {
                         write!(output_file, ",{name}")?;
                     }
-                    write!(output_file, "\n")?;
+                    writeln!(output_file)?;
                 }
                 let (tx, rx) = mpsc::channel();
                 let percent = false;
@@ -549,7 +549,7 @@ pub fn main() -> Result<(), Error> {
                             write!(output_file, ",{distance}")?;
                         }
                     }
-                    write!(output_file, "\n")?;
+                    writeln!(output_file)?;
                 }
                 Ok(())
             }

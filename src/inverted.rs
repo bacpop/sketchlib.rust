@@ -173,7 +173,11 @@ impl Inverted {
             let samples_together: Vec<u32> = pres_vec.iter().collect();
             for (i, sample1_idx) in samples_together.iter().enumerate() {
                 for sample2_idx in samples_together.iter().skip(i + 1) {
-                    pair_list.insert(square_to_condensed(*sample1_idx as usize, *sample2_idx as usize, self.n_samples) as u64);
+                    pair_list.insert(square_to_condensed(
+                        *sample1_idx as usize,
+                        *sample2_idx as usize,
+                        self.n_samples,
+                    ) as u64);
                 }
             }
         }

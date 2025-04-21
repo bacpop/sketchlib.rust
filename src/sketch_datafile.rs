@@ -9,10 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub struct SketchArrayFile {
-    bin_stride: usize,
-    kmer_stride: usize,
-    sample_stride: usize,
     serial_writer: SketchWriter,
+    // Fields here in case needed, but not currently used
+    _bin_stride: usize,
+    _kmer_stride: usize,
+    _sample_stride: usize,
 }
 
 // Both the file and index are locked together
@@ -43,10 +44,10 @@ impl SketchArrayFile {
     ) -> Self {
         let serial_writer = SketchWriter::new(filename);
         Self {
-            bin_stride,
-            kmer_stride,
-            sample_stride,
             serial_writer,
+            _bin_stride: bin_stride,
+            _kmer_stride: kmer_stride,
+            _sample_stride: sample_stride,
         }
     }
 
