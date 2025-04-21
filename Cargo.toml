@@ -33,7 +33,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 # data structures
-hashbrown = { version = "0.14", features = ["serde"] }
+hashbrown = { version = "0.14", features = ["rayon", "serde"] }
 ahash = ">=0.8.7"
 roaring = { version = "0.10", features = ["serde"] }
 # ordered-float = "4.2"
