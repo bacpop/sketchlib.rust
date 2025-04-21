@@ -165,6 +165,10 @@ impl Inverted {
 
     pub fn any_shared_bin_list(&self) -> RoaringTreemap {
         let mut pair_list = RoaringTreemap::new();
+        // TODO: to do anything more complex here e.g. parallelising over hashes
+        // or over bins, will need to restructure the iterator,
+        // probably just to have two levels
+        // note reduce of AND/OR may make this quite neat
         for pres_vec in self.any_shared_bin_iter() {
             let samples_together: Vec<u32> = pres_vec.iter().collect();
             for (i, sample1_idx) in samples_together.iter().enumerate() {

@@ -506,9 +506,13 @@ pub fn main() -> Result<(), Error> {
                 if *identical_only {
                     log::info!("Running identical queries");
                 } else {
-                    log::info!("Running queries against all");
+                    log::info!("Running queries against all in database");
                     // Header
-                    writeln!(output_file, ",{:?}", inverted_index.sample_names())?;
+                    write!(output_file, "Query")?;
+                    for name in inverted_index.sample_names() {
+                        write!(output_file, ",{name}")?;
+                    }
+                    write!(output_file, "\n")?;
                 }
                 let (tx, rx) = mpsc::channel();
                 let percent = false;
@@ -532,17 +536,20 @@ pub fn main() -> Result<(), Error> {
                     });
                 });
                 for (q_name, dist) in rx {
+                    write!(output_file, "{q_name}")?;
                     if *identical_only {
-                        writeln!(output_file, "{q_name}")?;
                         for r_name in dist
                             .iter()
                             .map(|idx| inverted_index.sample_at(*idx as usize))
                         {
-                            writeln!(output_file, ",{r_name}")?;
+                            write!(output_file, ",{r_name}")?;
                         }
                     } else {
-                        writeln!(output_file, "{q_name},{dist:?}")?;
+                        for distance in dist {
+                            write!(output_file, ",{distance}")?;
+                        }
                     }
+                    write!(output_file, "\n")?;
                 }
                 Ok(())
             }
