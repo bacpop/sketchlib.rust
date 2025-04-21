@@ -33,12 +33,6 @@ pub struct Inverted {
     hash_type: HashType,
 }
 
-pub struct SharedBinIter<'a> {
-    bins: &'a [HashMap<u16, RoaringBitmap>],
-    bin_idx: usize,
-    hash_iter: HashMapIter<'a, u16, RoaringBitmap>,
-}
-
 impl Inverted {
     // Sketch files without transposing bins, and invert the index
     pub fn new(
@@ -155,33 +149,26 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
-    pub fn any_shared_bin_iter(&self) -> SharedBinIter {
-        SharedBinIter {
-            bins: &self.index,
-            bin_idx: 0,
-            hash_iter: self.index[0].iter(),
-        }
-    }
-
     pub fn any_shared_bin_list(&self) -> RoaringTreemap {
-        let mut pair_list = RoaringTreemap::new();
-        // TODO: to do anything more complex here e.g. parallelising over hashes
-        // or over bins, will need to restructure the iterator,
-        // probably just to have two levels
-        // note reduce of AND/OR may make this quite neat
-        for pres_vec in self.any_shared_bin_iter() {
-            let samples_together: Vec<u32> = pres_vec.iter().collect();
-            for (i, sample1_idx) in samples_together.iter().enumerate() {
-                for sample2_idx in samples_together.iter().skip(i + 1) {
-                    pair_list.insert(square_to_condensed(
-                        *sample1_idx as usize,
-                        *sample2_idx as usize,
-                        self.n_samples,
-                    ) as u64);
+        self.index.iter().map(|bin| {
+            bin.par_values().map(|hash_pres| {
+                let mut pair_map_hash = RoaringTreemap::new();
+                let samples_together: Vec<u32> = hash_pres.iter().collect();
+                for (i, sample1_idx) in samples_together.iter().enumerate() {
+                    for sample2_idx in samples_together.iter().skip(i + 1) {
+                        pair_map_hash.insert(square_to_condensed(
+                            *sample1_idx as usize,
+                            *sample2_idx as usize,
+                            self.n_samples,
+                        ) as u64);
+                    }
                 }
-            }
-        }
-        pair_list
+                pair_map_hash
+            }).reduce(|| RoaringTreemap::new(),
+                |pair_map_hash_a, pair_map_hash_b| pair_map_hash_a | pair_map_hash_b
+            ) // Reduction from pair_map_hash produces pair_map_bin
+        }).reduce(|pair_map_all, pair_map_bin| pair_map_all | pair_map_bin).unwrap()
+        // Reduction from pair_map_bin produces pair_map_all
     }
 
     fn sketch_files_inverted(
@@ -326,27 +313,5 @@ impl fmt::Display for Inverted {
             writeln!(f, "{sketch}")?;
         }
         Ok(())
-    }
-}
-
-impl<'a> Iterator for SharedBinIter<'a> {
-    type Item = &'a RoaringBitmap;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some((_hashval, bitmap)) = self.hash_iter.next() {
-            Some(bitmap)
-        } else {
-            self.bin_idx += 1;
-            if self.bin_idx < self.bins.len() {
-                self.hash_iter = self.bins[self.bin_idx].iter();
-                if let Some((_hashval, bitmap)) = self.hash_iter.next() {
-                    Some(bitmap)
-                } else {
-                    panic!("Empty bitvec");
-                }
-            } else {
-                None
-            }
-        }
     }
 }
