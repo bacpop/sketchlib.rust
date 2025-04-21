@@ -571,7 +571,7 @@ pub fn main() -> Result<(), Error> {
                 let mut output_file = set_ostream(output);
                 let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
 
-                let prefilter_pairs = inverted_index.any_shared_bin_list();
+                let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
                 log::info!(
                     "Identified {} prefilter pairs from a max of {}",
                     prefilter_pairs.len(),

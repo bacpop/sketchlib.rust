@@ -4,8 +4,8 @@ use std::fmt;
 use std::sync::mpsc;
 
 extern crate needletail;
-use hashbrown::{hash_map::Iter as HashMapIter, HashMap};
-use indicatif::ParallelProgressIterator;
+use hashbrown::HashMap;
+use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use serde::{Deserialize, Serialize};
@@ -149,25 +149,34 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
-    pub fn any_shared_bin_list(&self) -> RoaringTreemap {
-        self.index.iter().map(|bin| {
-            bin.par_values().map(|hash_pres| {
-                let mut pair_map_hash = RoaringTreemap::new();
-                let samples_together: Vec<u32> = hash_pres.iter().collect();
-                for (i, sample1_idx) in samples_together.iter().enumerate() {
-                    for sample2_idx in samples_together.iter().skip(i + 1) {
-                        pair_map_hash.insert(square_to_condensed(
-                            *sample1_idx as usize,
-                            *sample2_idx as usize,
-                            self.n_samples,
-                        ) as u64);
-                    }
-                }
-                pair_map_hash
-            }).reduce(|| RoaringTreemap::new(),
-                |pair_map_hash_a, pair_map_hash_b| pair_map_hash_a | pair_map_hash_b
-            ) // Reduction from pair_map_hash produces pair_map_bin
-        }).reduce(|pair_map_all, pair_map_bin| pair_map_all | pair_map_bin).unwrap()
+    pub fn any_shared_bin_list(&self, quiet: bool) -> RoaringTreemap {
+        let percent = false;
+        let progress_bar = get_progress_bar(self.index.len(), percent, quiet);
+        self.index
+            .iter()
+            .progress_with(progress_bar)
+            .map(|bin| {
+                bin.par_values()
+                    .map(|hash_pres| {
+                        let mut pair_map_hash = RoaringTreemap::new();
+                        let samples_together: Vec<u32> = hash_pres.iter().collect();
+                        for (i, sample1_idx) in samples_together.iter().enumerate() {
+                            for sample2_idx in samples_together.iter().skip(i + 1) {
+                                pair_map_hash.insert(square_to_condensed(
+                                    *sample1_idx as usize,
+                                    *sample2_idx as usize,
+                                    self.n_samples,
+                                ) as u64);
+                            }
+                        }
+                        pair_map_hash
+                    })
+                    .reduce(RoaringTreemap::new, |pair_map_hash_a, pair_map_hash_b| {
+                        pair_map_hash_a | pair_map_hash_b
+                    }) // Reduction from pair_map_hash produces pair_map_bin
+            })
+            .reduce(|pair_map_all, pair_map_bin| pair_map_all | pair_map_bin)
+            .unwrap()
         // Reduction from pair_map_bin produces pair_map_all
     }
 
