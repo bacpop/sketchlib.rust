@@ -484,7 +484,7 @@ pub fn main() -> Result<(), Error> {
                 seq_files,
                 file_list,
                 output,
-                identical_only,
+                query_type,
                 min_count,
                 min_qual,
                 threads,
@@ -503,10 +503,8 @@ pub fn main() -> Result<(), Error> {
                 let (queries, query_names) =
                     inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
 
-                if *identical_only {
-                    log::info!("Running identical queries");
-                } else {
-                    log::info!("Running queries against all in database");
+                log::info!("Running queries in mode: {query_type}");
+                if *query_type == InvertedQueryType::MatchCount {
                     // Header
                     write!(output_file, "Query")?;
                     for name in inverted_index.sample_names() {
@@ -523,11 +521,15 @@ pub fn main() -> Result<(), Error> {
                             .par_iter()
                             .progress_with(progress_bar)
                             .zip(query_names)
-                            .map(|(q, q_name)| {
-                                if *identical_only {
-                                    (q_name, inverted_index.all_shared_bins(q))
-                                } else {
+                            .map(|(q, q_name)| match query_type {
+                                InvertedQueryType::MatchCount => {
                                     (q_name, inverted_index.query_against_inverted_index(q))
+                                }
+                                InvertedQueryType::AllBins => {
+                                    (q_name, inverted_index.all_shared_bins(q))
+                                }
+                                InvertedQueryType::AnyBin => {
+                                    (q_name, inverted_index.any_shared_bins(q))
                                 }
                             })
                             .for_each_with(tx, |tx, dists| {
@@ -537,16 +539,16 @@ pub fn main() -> Result<(), Error> {
                 });
                 for (q_name, dist) in rx {
                     write!(output_file, "{q_name}")?;
-                    if *identical_only {
+                    if *query_type == InvertedQueryType::MatchCount {
+                        for distance in dist {
+                            write!(output_file, ",{distance}")?;
+                        }
+                    } else {
                         for r_name in dist
                             .iter()
                             .map(|idx| inverted_index.sample_at(*idx as usize))
                         {
                             write!(output_file, ",{r_name}")?;
-                        }
-                    } else {
-                        for distance in dist {
-                            write!(output_file, ",{distance}")?;
                         }
                     }
                     writeln!(output_file)?;

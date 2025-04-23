@@ -149,6 +149,17 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
+    pub fn any_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
+        let mut matching_bits = RoaringBitmap::new();
+        for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
+            if let Some(matching_samples) = self.index[bin_idx].get(query_bin_hash) {
+                matching_bits |= matching_samples;
+            }
+        }
+
+        matching_bits.iter().collect()
+    }
+
     pub fn any_shared_bin_list(&self, quiet: bool) -> RoaringTreemap {
         let percent = false;
         let progress_bar = get_progress_bar(self.index.len(), percent, quiet);

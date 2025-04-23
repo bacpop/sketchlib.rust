@@ -1,5 +1,7 @@
 //! Command line interface, built using [`crate::clap` with `Derive`](https://docs.rs/clap/latest/clap/_derive/_tutorial/index.html)
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use core::fmt;
+
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::DEFAULT_KMER;
 
@@ -13,6 +15,29 @@ pub const DEFAULT_MINCOUNT: u16 = 5;
 pub const DEFAULT_MINQUAL: u8 = 20;
 /// Default sketch size
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
+
+// Query type supported by bitvecs
+#[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum, Default)]
+pub enum InvertedQueryType {
+    #[default]
+    /// Count the number of matching bins for each sample in the index
+    MatchCount,
+    /// Return samples which match at every bin
+    AllBins,
+    /// Return samples which match at least one bin
+    AnyBin,
+}
+
+impl fmt::Display for InvertedQueryType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            InvertedQueryType::MatchCount => write!(f, "Count of matching bins")?,
+            InvertedQueryType::AllBins => write!(f, "All bins matching")?,
+            InvertedQueryType::AnyBin => write!(f, "At least one bin matching")?,
+        }
+        Ok(())
+    }
+}
 
 #[doc(hidden)]
 fn valid_cpus(s: &str) -> Result<usize, String> {
@@ -322,9 +347,9 @@ pub enum InvertedCommands {
         #[arg(short)]
         output: Option<String>,
 
-        /// Only report samples with exactly the same hashes
-        #[arg(long)]
-        identical_only: bool,
+        /// Type of query to perform
+        #[arg(long, value_enum, default_value_t = InvertedQueryType::MatchCount)]
+        query_type: InvertedQueryType,
 
         /// Minimum k-mer count (with reads)
         #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
