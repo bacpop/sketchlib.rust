@@ -63,7 +63,7 @@ pub fn self_dists_all(
     ani: bool,
     quiet: bool,
 ) -> DistanceMatrix {
-    let mut distances = DistanceMatrix::new(&sketches, None, dist_type);
+    let mut distances = DistanceMatrix::new(sketches, None, dist_type);
     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
     let progress_bar = get_progress_bar(par_chunk, BAR_PERCENT, quiet);
     distances
@@ -90,7 +90,7 @@ pub fn self_dists_all(
                     };
                     dist_slice[dist_idx] = dist;
                 } else {
-                    let dist = core_acc_dist(&sketches, &sketches, i, j);
+                    let dist = core_acc_dist(sketches, sketches, i, j);
                     dist_slice[dist_idx * 2] = dist.0;
                     dist_slice[dist_idx * 2 + 1] = dist.1;
                 }
@@ -121,7 +121,7 @@ pub fn self_dists_knn(
     ani: bool,
     quiet: bool,
 ) -> SparseDistanceMatrix {
-    let mut sp_distances = SparseDistanceMatrix::new(&sketches, knn, dist_type);
+    let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
     let progress_bar = get_progress_bar(n * knn, BAR_PERCENT, quiet);
     match sp_distances.dists_mut() {
         DistVec::Jaccard(distances) => {
@@ -165,7 +165,7 @@ pub fn self_dists_knn(
                         if i == j {
                             continue;
                         }
-                        let dists = core_acc_dist(&sketches, &sketches, i, j);
+                        let dists = core_acc_dist(sketches, sketches, i, j);
                         let dist_item = SparseCoreAcc(j, dists.0, dists.1);
                         push_heap(&mut heap, dist_item, knn);
                     }
@@ -189,8 +189,7 @@ pub fn self_query_dists_all<'a>(
     ani: bool,
     quiet: bool,
 ) -> DistanceMatrix<'a> {
-    let mut distances =
-        DistanceMatrix::new(&ref_sketches, Some(&query_sketches), dist_type);
+    let mut distances = DistanceMatrix::new(ref_sketches, Some(query_sketches), dist_type);
     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
     let progress_bar = get_progress_bar(par_chunk, BAR_PERCENT, quiet);
     distances
@@ -216,7 +215,7 @@ pub fn self_query_dists_all<'a>(
                     };
                     dist_slice[dist_idx] = dist;
                 } else {
-                    let dist = core_acc_dist(&ref_sketches, &query_sketches, i, j);
+                    let dist = core_acc_dist(ref_sketches, query_sketches, i, j);
                     dist_slice[dist_idx * 2] = dist.0;
                     dist_slice[dist_idx * 2 + 1] = dist.1;
                 }
@@ -233,5 +232,5 @@ pub fn self_query_dists_all<'a>(
                 }
             }
         });
-        distances
-    }
+    distances
+}

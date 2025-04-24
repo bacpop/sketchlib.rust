@@ -210,7 +210,16 @@ pub fn main() -> Result<(), Error> {
                         Some(nn) => {
                             // Self mode (sparse)
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-                            let distances = self_dists_knn(&references, n, nn, k_idx, k_f32, dist_type, *ani, args.quiet);
+                            let distances = self_dists_knn(
+                                &references,
+                                n,
+                                nn,
+                                k_idx,
+                                k_f32,
+                                dist_type,
+                                *ani,
+                                args.quiet,
+                            );
 
                             log::info!("Writing out in sparse matrix form");
                             write!(output_file, "{distances}")
@@ -223,7 +232,17 @@ pub fn main() -> Result<(), Error> {
                     log::info!("Calculating all ref vs query distances");
 
                     let nq = query_db.number_samples_loaded();
-                    let distances = self_query_dists_all(&references, &query_db, n, nq, k_idx, k_f32, dist_type, *ani, args.quiet);
+                    let distances = self_query_dists_all(
+                        &references,
+                        &query_db,
+                        n,
+                        nq,
+                        k_idx,
+                        k_f32,
+                        dist_type,
+                        *ani,
+                        args.quiet,
+                    );
 
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");
