@@ -60,7 +60,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 /// Default k-mer size for (genome) sketching
-pub const DEFAULT_KMER: usize = 17;
+pub const DEFAULT_KMER: usize = 21;
 /// Chunk size in parallel distance calculations
 pub const CHUNK_SIZE: usize = 1000;
 

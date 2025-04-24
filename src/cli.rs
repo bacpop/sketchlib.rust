@@ -16,7 +16,7 @@ pub const DEFAULT_MINQUAL: u8 = 20;
 /// Default sketch size
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 
-// Query type supported by bitvecs
+/// Query types supported by bitvec operations
 #[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum, Default)]
 pub enum InvertedQueryType {
     #[default]
@@ -81,6 +81,7 @@ pub struct MainArgs {
     pub quiet: bool,
 }
 
+/// K-mer sequence, or single k-mer value, definitions from the CLI
 #[derive(Args)]
 #[group(required = true, multiple = false)]
 pub struct Kmers {
@@ -284,6 +285,7 @@ pub enum Commands {
     },
 }
 
+/// Commands to support building and querying with an inverted index
 #[derive(Subcommand)]
 pub enum InvertedCommands {
     /// Create sketches from input data and store in an inverted index structure
