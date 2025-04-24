@@ -52,7 +52,7 @@ fn valid_cpus(s: &str) -> Result<usize, String> {
 }
 
 /// Prints a warning if more threads than available have been requested
-pub fn check_threads(threads: usize) {
+pub fn check_and_set_threads(threads: usize) {
     let max_threads = num_cpus::get();
     if threads > max_threads {
         log::warn!("{threads} threads is greater than available cores {max_threads}");

@@ -33,6 +33,7 @@ pub fn reorder_input_files(
     species_name_file: &str,
 ) -> Vec<usize> {
     // Set of names, so only these are read from the species order
+    log::info!("Reordering samples using labels in {species_name_file}");
     let input_names: HashSet<String> = input_files.iter().map(|fastx| fastx.0.clone()).collect();
 
     let f = File::open(species_name_file).unwrap_or_else(|_| {
@@ -59,6 +60,11 @@ pub fn reorder_input_files(
             }
         }
     }
+    log::info!(
+        "{} samples with {} unique labels",
+        label_order.len(),
+        species_labels.len()
+    );
     // Order the found labels by cluster they are associated with
     label_order.sort_unstable_by_key(|k| k.1);
 
@@ -86,6 +92,13 @@ pub fn reorder_input_files(
             };
             sample_order.push(sample_idx);
         }
+        log::info!(
+            "Found {} of {} input samples with given labels",
+            input_files
+                .len()
+                .saturating_sub(reordered_dict.len() - new_idx - 1),
+            input_files.len()
+        );
     }
     sample_order
 }

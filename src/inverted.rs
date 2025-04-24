@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::bloom_filter::KmerFilter;
-use crate::distances::square_to_condensed;
+use crate::distances::distance_matrix::square_to_condensed;
 use crate::io::InputFastx;
 use crate::sketch::*;
 use crate::utils::get_progress_bar;
