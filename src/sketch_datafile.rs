@@ -27,7 +27,7 @@ impl SketchWriter {
     pub fn new(filename: &str) -> Self {
         let current_index = AtomicUsize::new(0);
         log::info!("Saving sketch data to {filename}");
-        let writer = BufWriter::new(File::create(filename).expect("Couldn't write to {filename}"));
+        let writer = BufWriter::new(File::create(filename).expect(format!("Couldn't write to {filename}").as_str()));
         Self {
             writer,
             current_index,
@@ -127,10 +127,20 @@ impl SketchArrayFile {
     pub fn write_sketch_data<W: Write>(
         writer: &mut W,
         usigs_flat: &[u64],
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for bin_val in usigs_flat {
             writer.write_all(&bin_val.to_le_bytes())?;
         }
         Ok(())
     }
+}
+
+pub fn write_skq_file(filename: &str, sketches: &Vec<Vec<u16>>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut writer = BufWriter::new(File::create(&filename).expect(format!("Couldn't write to {}", &filename).as_str()));
+    for sample in sketches {
+        for bin_val in sample {
+            writer.write_all(&bin_val.to_le_bytes())?;
+        }
+    }
+    Ok(())
 }

@@ -15,6 +15,8 @@ pub const DEFAULT_MINCOUNT: u16 = 5;
 pub const DEFAULT_MINQUAL: u8 = 20;
 /// Default sketch size
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
+/// Default nearest neighbours
+pub const DEFAULT_KNN: usize = 50;
 
 /// Query types supported by bitvec operations
 #[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum, Default)]
@@ -302,6 +304,10 @@ pub enum InvertedCommands {
         #[arg(required = true, short)]
         output: String,
 
+        /// Also write an .skq file, which is needed by 'precluster' mode
+        #[arg(long)]
+        write_skq: bool,
+
         /// File listing species names, or clusters, for phylogenetic ordering
         #[arg(long)]
         species_names: Option<String>,
@@ -366,6 +372,11 @@ pub enum InvertedCommands {
         threads: usize,
     },
 
+    #[command(group(
+        ArgGroup::new("mode")
+            .required(true)
+            .args(["ref_db", "count"]),
+    ))]
     /// Use an inverted index to reduce query comparisons
     Precluster {
         /// The inverted index (.ski) file used as the reference
@@ -373,16 +384,20 @@ pub enum InvertedCommands {
         ski: String,
 
         /// The .skm file, which must have the same samples and k-mer length as the .ski file
-        #[arg(required = true)]
-        ref_db: String,
+        #[arg(group = "mode")]
+        ref_db: Option<String>,
 
         /// Output filename (omit to output to stdout)
         #[arg(short)]
         output: Option<String>,
 
+        /// Do not run analysis, only return the number of comparisons
+        #[arg(long, group = "mode")]
+        count: bool,
+
         /// Reduce to a maximum of k nearest-neighbours
-        #[arg(long)]
-        knn: Option<usize>,
+        #[arg(long, default_value_t = DEFAULT_KNN)]
+        knn: usize,
 
         /// Calculate ANI rather than Jaccard dists, using Poisson model
         #[arg(long, default_value_t = false)]

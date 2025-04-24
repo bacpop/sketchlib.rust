@@ -122,7 +122,7 @@ pub fn self_dists_knn(
     quiet: bool,
 ) -> SparseDistanceMatrix {
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
-    let progress_bar = get_progress_bar(n * knn, BAR_PERCENT, quiet);
+    let progress_bar = get_progress_bar(n, BAR_PERCENT, quiet);
     match sp_distances.dists_mut() {
         DistVec::Jaccard(distances) => {
             let k = k_idx.unwrap();

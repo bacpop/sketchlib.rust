@@ -15,6 +15,7 @@ use crate::bloom_filter::KmerFilter;
 use crate::distances::distance_matrix::square_to_condensed;
 use crate::io::InputFastx;
 use crate::sketch::*;
+use crate::sketch_datafile::write_skq_file;
 use crate::utils::get_progress_bar;
 use anyhow::Error;
 use std::fs::File;
@@ -37,6 +38,7 @@ impl Inverted {
     // Sketch files without transposing bins, and invert the index
     pub fn new(
         input_files: &[InputFastx],
+        write_skq: Option<String>,
         file_order: &[usize],
         k: usize,
         sketch_size: u64,
@@ -58,6 +60,10 @@ impl Inverted {
             min_qual,
             quiet,
         );
+        if let Some(skq_file) = write_skq {
+            log::info!("Writing bins for use with precluster as {skq_file}");
+            write_skq_file(&skq_file, &sketches).expect("Error when writing skq file");
+        }
         log::info!("Inverting sketch order");
         Self {
             index: Self::build_inverted_index(&sketches, sketch_size),
@@ -98,6 +104,14 @@ impl Inverted {
 
     pub fn sample_at(&self, idx: usize) -> &str {
         &self.sample_names[idx]
+    }
+
+    pub fn kmer(&self) -> usize {
+        self.kmer_size
+    }
+
+    pub fn sketch_size(&self) -> usize {
+        self.index.len()
     }
 
     /// Saves to `file_prefix.ski`, using MessagePack as the serialisation format

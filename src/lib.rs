@@ -283,6 +283,7 @@ pub fn main() -> Result<(), Error> {
                 seq_files,
                 file_list,
                 output,
+                write_skq,
                 species_names,
                 single_strand,
                 min_count,
@@ -307,10 +308,17 @@ pub fn main() -> Result<(), Error> {
                     (0..input_files.len()).collect()
                 };
 
+                let skq_file = if *write_skq {
+                    Some(format!("{}.skq", output))
+                } else {
+                    None
+                };
+
                 let rc = !*single_strand;
                 let seq_type = &HashType::DNA;
                 let inverted = Inverted::new(
                     &input_files,
+                    skq_file,
                     &file_order,
                     *kmer_length,
                     *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
@@ -403,8 +411,9 @@ pub fn main() -> Result<(), Error> {
             InvertedCommands::Precluster {
                 ski,
                 ref_db,
+                count,
                 output,
-                knn,
+                mut knn,
                 ani,
                 threads,
             } => {
@@ -418,13 +427,52 @@ pub fn main() -> Result<(), Error> {
                 let mut output_file = set_ostream(output);
                 let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
 
-                let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
-                log::info!(
-                    "Identified {} prefilter pairs from a max of {}",
-                    prefilter_pairs.len(),
-                    inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1)
-                        / 2
-                );
+                if *count {
+                    let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
+                    log::info!(
+                        "Identified {} prefilter pairs from a max of {}",
+                        prefilter_pairs.len(),
+                        inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1)
+                            / 2
+                    );
+                } else if let Some(ref_db_input) = ref_db {
+                    let ref_db_name = utils::strip_sketch_extension(ref_db_input);
+                    let mut references = MultiSketch::load(ref_db_name)
+                        .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db_name}.skm"));
+                    log::info!("Loading sketch data from {}.skd", ref_db_name);
+                    references.read_sketch_data(ref_db_name);
+                    log::info!("Read reference sketches:\n{references:?}");
+                    let n = references.number_samples_loaded();
+                    if knn >= n {
+                        log::warn!("knn={knn} is higher than number of samples={n}");
+                        knn = n - 1;
+                    }
+                    let kmer = inverted_index.kmer();
+                    let (dist_type, k_idx, k_f32) = set_k(&references, Some(kmer), *ani);
+
+                    // TODO: add check that sample sets in ski and skm are the same
+                    // TODO: check that skq file exists
+                    // TODO: check that k-mer exists in the .skd, and find its index
+
+                    log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours");
+                    log::info!("Preclustering with k={} and s={}", kmer, inverted_index.sketch_size());
+                    let distances = self_dists_knn_precluster(
+                        &references,
+                        &inverted_index,
+                        &skq_file,
+                        n,
+                        knn,
+                        k_idx,
+                        k_f32,
+                        dist_type,
+                        *ani,
+                        args.quiet,
+                    );
+
+                    log::info!("Writing out in sparse matrix form");
+                    write!(output_file, "{distances}")
+                        .expect("Error writing output distances");
+                }
 
                 Ok(())
             }
