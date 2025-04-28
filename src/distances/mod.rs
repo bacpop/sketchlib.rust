@@ -300,6 +300,8 @@ pub fn self_dists_knn_precluster<'a>(
                     let mut dist_vec = heap.into_sorted_vec();
                     // If there are fewer prefiltered dists than knn, add null values at the end
                     if dist_vec.len() < row_dist_slice.len() {
+                        // TODO: more rust-like way of doing this would be to have
+                        // SparseJaccard as an enum with an empty value
                         dist_vec.append(&mut vec![
                             SparseJaccard(i, 1.0);
                             row_dist_slice.len() - dist_vec.len()

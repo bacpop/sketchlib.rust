@@ -218,6 +218,7 @@ impl Eq for SparseJaccard {}
 // TODO: could either change the field to compare on, or add Euclidean dists
 #[derive(Debug, Clone)]
 pub struct SparseCoreAcc(pub usize, pub f32, pub f32);
+
 impl Ord for SparseCoreAcc {
     fn cmp(&self, other: &Self) -> Ordering {
         self.1.partial_cmp(&other.1).unwrap()
@@ -305,11 +306,7 @@ impl fmt::Display for SparseDistanceMatrix<'_> {
                     // TODO: more rust-like way of doing this would be to have
                     // SparseJaccard as an enum with an empty value
                     if dist_item.1 < 1.0_f32 || query_name != *ref_name {
-                        writeln!(
-                            f,
-                            "{ref_name}\t{}\t{}",
-                            self.ref_names[dist_item.0], dist_item.1,
-                        )?;
+                        writeln!(f, "{ref_name}\t{query_name}\t{}", dist_item.1,)?;
                     }
                 }
             }
