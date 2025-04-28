@@ -106,10 +106,10 @@ fn swapbits3263(v: u64) -> u64 {
     v ^ ((x << 32) | (x << 63))
 }
 
-/// Rolling functions supported by both ntHash and aaHash
 // TODO generic hash for structure alphabet
 // https://github.com/eldruin/wyhash-rs
 
+/// Rolling functions supported by both ntHash and aaHash
 pub trait RollHash: Iterator<Item = u64> {
     /// Set the k-mer size
     fn set_k(&mut self, k: usize);
@@ -121,7 +121,7 @@ pub trait RollHash: Iterator<Item = u64> {
     fn seq_len(&self) -> usize;
     /// The underlying sequence as bytes
     fn seq(&self) -> &Vec<u8>;
-    /// Sequence metadata (reads, [a,c,g,t] counts, non-acgt bases)
+    /// Sequence metadata (reads, \[a,c,g,t\] counts, non-acgt bases)
     fn sketch_data(&self) -> (bool, [usize; 4], usize);
 
     /// An iterator over the hashes

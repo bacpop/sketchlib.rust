@@ -78,6 +78,7 @@ impl SketchArrayWriter {
         self.current_index.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Flush the underlying writer
     pub fn flush(&mut self) -> Result<(), Error> {
         self.writer.flush()?;
         Ok(())
@@ -107,6 +108,10 @@ pub struct SketchArrayReader {
 }
 
 impl SketchArrayReader {
+    /// Open an .skd or .skq file for reading
+    ///
+    /// If `mmap` is true, will memorymap the underlying file, which is more
+    /// efficient when reading subsets of data from the file
     pub fn open(
         filename: &str,
         mmap: bool,
@@ -134,7 +139,7 @@ impl SketchArrayReader {
         }
     }
 
-    pub fn mmap_file(&self) -> Option<&Mmap> {
+    fn mmap_file(&self) -> Option<&Mmap> {
         self.mmap_file.as_ref()
     }
 

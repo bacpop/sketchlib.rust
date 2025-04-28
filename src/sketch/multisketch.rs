@@ -42,6 +42,9 @@ pub struct MultiSketch {
 }
 
 impl MultiSketch {
+    /// Create a new container for a `Vec<Sketch>`, emptying the Vec.
+    ///
+    /// Does not actually save the data
     pub fn new(
         sketches: &mut Vec<Sketch>,
         sketch_size: u64,
@@ -92,6 +95,7 @@ impl MultiSketch {
         Ok(skm_obj)
     }
 
+    /// Number of samples loaded from the .skm/.skd
     pub fn number_samples_loaded(&self) -> usize {
         match &self.block_reindex {
             Some(block_map) => block_map.len(),
@@ -99,6 +103,9 @@ impl MultiSketch {
         }
     }
 
+    /// Find the index of the given k-mer
+    ///
+    /// Returns `None` if not in the sketches
     pub fn get_k_idx(&self, k: usize) -> Option<usize> {
         self.kmer_lengths
             .iter()
@@ -106,14 +113,17 @@ impl MultiSketch {
             .find_map(|(idx, val)| if *val == k { Some(idx) } else { None })
     }
 
+    /// List of k-mer lengths sketched at
     pub fn kmer_lengths(&self) -> &[usize] {
         &self.kmer_lengths
     }
 
+    /// Type of sequence sketched
     pub fn get_hash_type(&self) -> &HashType {
         &self.hash_type
     }
 
+    /// Name of the sequence at the given index
     pub fn sketch_name(&self, index: usize) -> &str {
         match &self.block_reindex {
             Some(block_map) => self.sketch_metadata[block_map[index]].name(),
@@ -121,6 +131,7 @@ impl MultiSketch {
         }
     }
 
+    /// Read all the sketch bins from an .skd file
     pub fn read_sketch_data(&mut self, file_prefix: &str) {
         let filename = format!("{}.skd", file_prefix);
         log::debug!(
@@ -140,6 +151,7 @@ impl MultiSketch {
             sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len());
     }
 
+    /// Read a subset of the bins from an .skd file, in a memory efficient manner
     pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
         // Find the given names in the sketch metadata
         let mut block_reindex = Vec::with_capacity(names.len());
@@ -165,6 +177,7 @@ impl MultiSketch {
         self.sketch_bins = sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride);
     }
 
+    /// Get the bins for a given sketch index at a given k-mer index
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
         let s1_offset = sketch_idx * self.sample_stride + k_idx * self.kmer_stride;
@@ -173,12 +186,14 @@ impl MultiSketch {
         s1_slice
     }
 
+    /// Checks for query compatibility with another [`MultiSketch`] object
     pub fn is_compatible_with(&self, sketch2: &Self) -> bool {
         self.kmer_lengths() == sketch2.kmer_lengths()
             && self.sketch_size == sketch2.sketch_size
             && self.get_hash_type() == sketch2.get_hash_type()
     }
 
+    /// Checks for append compatibility with another [`MultiSketch`] object
     pub fn append_compatibility(&self, name_vec: &[(String, String, Option<String>)]) -> bool {
         let mut compatibility = true;
         let mut duplicate_list = Vec::new();
@@ -196,6 +211,7 @@ impl MultiSketch {
         compatibility
     }
 
+    /// Merge these sketches with a second set
     pub fn merge_sketches(&mut self, sketch2: &Self) -> &mut Self {
         // First metadata
         let offset = self.sketch_metadata.len();
@@ -218,6 +234,7 @@ impl MultiSketch {
         self
     }
 
+    /// Delete samples from the .skm, writing to a new file
     pub fn remove_metadata(
         &mut self,
         output_file_name: &str,
@@ -252,6 +269,7 @@ impl MultiSketch {
         Ok(())
     }
 
+    /// Delete samples from the .skd, writing to a new file
     pub fn remove_genomes(
         &mut self,
         input_prefix: &str,

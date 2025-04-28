@@ -61,6 +61,7 @@ pub struct Sketch {
 
 // TODO: should this take hash_it and filter as input?
 impl Sketch {
+    /// Sketch a sample from a hash generator over its k-mers, transposing
     pub fn new<H: RollHash + ?Sized>(
         seq_hashes: &mut H,
         name: &str,
@@ -118,6 +119,7 @@ impl Sketch {
         }
     }
 
+    /// Get the sketch bins for a sample, but do not transpose
     pub fn get_signs<H: RollHash + ?Sized>(
         seq_hashes: &mut H,
         kmer_size: usize,
@@ -141,19 +143,22 @@ impl Sketch {
         (signs, densified)
     }
 
+    /// The name of the sample
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Set a position to be saved in a [`multisketch::MultiSketch`]
     pub fn set_index(&mut self, index: usize) {
         self.index = Some(index);
     }
 
+    /// Get the position that has been saved in an .skd
     pub fn get_index(&self) -> usize {
         self.index.unwrap()
     }
 
-    // Take the (transposed) sketch, emptying it from the [`Sketch`]
+    /// Take the (transposed) sketch, emptying it from the [`Sketch`]
     pub fn get_usigs(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.usigs)
     }

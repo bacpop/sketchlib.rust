@@ -8,8 +8,11 @@ use std::path::Path;
 use hashbrown::{HashMap, HashSet};
 use regex::Regex;
 
+/// Wrapper type for the three fields in an rfile
 pub type InputFastx = (String, String, Option<String>);
 
+/// Given a list of input files, parses them into triples of name, filename and
+/// [`None`] to be used as sketch input.
 pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     let mut input_files = Vec::new();
     // matches the file name (no extension) in a full path
@@ -103,6 +106,7 @@ pub fn reorder_input_files(
     sample_order
 }
 
+/// Validate and sort k-mer lists provided via the CLI
 pub fn parse_kmers(k: &Kmers) -> Vec<usize> {
     if k.k_vals.is_some() && k.k_seq.is_some() {
         panic!("Only one of --k-vals or --k-seq should be specified");
@@ -186,6 +190,7 @@ pub fn get_input_list(
     }
 }
 
+/// Read the sample names provided in a `--subset`` file
 pub fn read_subset_names(subset_file: &str) -> Vec<String> {
     let f = File::open(subset_file).unwrap_or_else(|_| panic!("Unable to open {subset_file}"));
     let f = BufReader::new(f);

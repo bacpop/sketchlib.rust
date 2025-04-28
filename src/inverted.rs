@@ -23,6 +23,7 @@ use std::io::{BufReader, BufWriter};
 
 type InvSketches = (Vec<Vec<u16>>, Vec<String>);
 
+/// An inverted index and associated metadata
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
     index: Vec<HashMap<u16, RoaringBitmap>>,
@@ -35,7 +36,10 @@ pub struct Inverted {
 }
 
 impl Inverted {
-    // Sketch files without transposing bins, and invert the index
+    /// Sketch files without transposing bins, and invert the index. Files
+    /// may be reordered via [`crate::io::reorder_input_files`]
+    ///
+    /// Optionally write untransposed samples to an skq file with `write_skq`.
     pub fn new(
         input_files: &[InputFastx],
         write_skq: Option<String>,
@@ -81,7 +85,8 @@ impl Inverted {
         }
     }
 
-    // Sketch query files only, used when querying the index
+    /// Sketch query files in a compatible manner with the index,
+    /// used when querying the index on the fly
     pub fn sketch_queries(
         &self,
         input_files: &[InputFastx],
@@ -103,22 +108,27 @@ impl Inverted {
         )
     }
 
+    /// Sample names in the index
     pub fn sample_names(&self) -> &Vec<String> {
         &self.sample_names
     }
 
+    /// Number of samples in the index
     pub fn n_samples(&self) -> usize {
         self.sample_names.len()
     }
 
+    /// Sample name at the given index
     pub fn sample_at(&self, idx: usize) -> &str {
         &self.sample_names[idx]
     }
 
+    /// K-mer length used for the index
     pub fn kmer(&self) -> usize {
         self.kmer_size
     }
 
+    /// Sketch size used for the index
     pub fn sketch_size(&self) -> usize {
         self.index.len()
     }
@@ -145,6 +155,8 @@ impl Inverted {
         Ok(ski_obj)
     }
 
+    /// Query a single sample against the index, returning the number of matches
+    /// of bins against all samples in the index
     pub fn query_against_inverted_index(&self, query_sigs: &[u16]) -> Vec<u32> {
         let mut match_counts = vec![0; self.sample_names.len()];
 
@@ -158,6 +170,7 @@ impl Inverted {
         match_counts
     }
 
+    /// Return indexes of samples where all sketch bins are the same as a query
     pub fn all_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
         let mut matching_bits = RoaringBitmap::new();
         matching_bits.insert_range(0..self.sample_names.len() as u32);
@@ -172,6 +185,7 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
+    /// Return indexes of samples where at least one sketch bins is the same as a query
     pub fn any_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
         let mut matching_bits = RoaringBitmap::new();
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
@@ -183,6 +197,7 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
+    /// Get the pairwise comparison list used by prefiler
     pub fn any_shared_bin_list(&self, quiet: bool) -> RoaringTreemap {
         let percent = false;
         let progress_bar = get_progress_bar(self.index.len(), percent, quiet);
