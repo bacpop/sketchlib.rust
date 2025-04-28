@@ -6,18 +6,21 @@ use std::fmt;
 
 use crate::sketch::multisketch::MultiSketch;
 
+/// Index k in long form, given ref vs ref sample pair (i, j) and total samples n in square form
 #[inline(always)]
 pub fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {
     debug_assert!(j > i);
     n * i - ((i * (i + 1)) >> 1) + j - 1 - i
 }
 
+/// Index k in long form, given ref vs query sample pair (i, j) and total samples n in rectangular form
 #[inline(always)]
 pub fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
     debug_assert!(j > i);
     i * n + j
 }
 
+/// Indexes (i, j) in rectangular form, given k and total samples n in long form
 #[inline(always)]
 pub fn calc_query_indices(k: usize, n: usize) -> (usize, usize) {
     let i = k / n;
@@ -27,6 +30,7 @@ pub fn calc_query_indices(k: usize, n: usize) -> (usize, usize) {
     (i, j)
 }
 
+/// Indexes j in square form, given k, index i (use [`calc_row_idx`]) and total samples n in long form
 #[inline(always)]
 pub fn calc_col_idx(k: usize, i: usize, n: usize) -> usize {
     debug_assert!(i < n);
@@ -37,6 +41,7 @@ pub fn calc_col_idx(k: usize, i: usize, n: usize) -> usize {
         as usize
 }
 
+/// Indexes i in square form, given k and total samples n in long form
 #[inline(always)]
 pub fn calc_row_idx(k: usize, n: usize) -> usize {
     let k_i64 = k as i64;
@@ -45,6 +50,7 @@ pub fn calc_row_idx(k: usize, n: usize) -> usize {
         - (((-8 * k_i64 + 4 * n_i64 * (n_i64 - 1) - 7) as f64).sqrt() / 2.0 - 0.5).floor() as usize
 }
 
+/// Types of distance, single k-mer (Jaccard) or multi-k (core/accessory)
 #[derive(PartialEq, PartialOrd)]
 pub enum DistType {
     /// Jaccard distance (k-mer index, k-mer size, ANI on/off)
@@ -69,9 +75,12 @@ impl fmt::Display for DistType {
     }
 }
 
+/// Metadata shared by all distance matrices
 pub trait Distances<'a> {
+    /// Distance type
     fn jaccard(&self) -> &DistType;
 
+    /// Whether calculating ANI
     fn ani(&self) -> bool {
         match self.jaccard() {
             DistType::Jaccard(_, _, ani_on) => *ani_on,
@@ -79,6 +88,7 @@ pub trait Distances<'a> {
         }
     }
 
+    /// If calcualting Jaccard distances, the index of the k-mer, and the k-mer as a float
     fn k_vals(&self) -> Option<(usize, f32)> {
         match self.jaccard() {
             DistType::Jaccard(k_idx, k_val, _) => Some((*k_idx, *k_val)),
@@ -86,6 +96,7 @@ pub trait Distances<'a> {
         }
     }
 
+    /// Number of distance columns in the output
     fn n_dist_cols(&self) -> usize {
         match self.jaccard() {
             DistType::CoreAcc => 2,
@@ -93,6 +104,7 @@ pub trait Distances<'a> {
         }
     }
 
+    /// Names of the sketch files in the distance matrix
     fn sketch_names(sketches: &'a MultiSketch) -> Vec<&'a str> {
         let n_samples = sketches.number_samples_loaded();
         let mut names = Vec::with_capacity(n_samples);
@@ -103,7 +115,10 @@ pub trait Distances<'a> {
     }
 }
 
+/// A dense distance matrix in long form, which can represent ref vs ref
+/// or ref vs query depending on whether `query_names` is set
 pub struct DistanceMatrix<'a> {
+    /// The total number of distances (upper triangle only)
     pub n_distances: usize,
     jaccard: DistType,
     distances: Vec<f32>,
@@ -112,6 +127,8 @@ pub struct DistanceMatrix<'a> {
 }
 
 impl<'a> DistanceMatrix<'a> {
+    /// Create a new distance matrix for the given [`MultiSketch`] objects
+    /// with the parameters set by the [`DistType`]
     pub fn new(
         ref_sketches: &'a MultiSketch,
         query_sketches: Option<&'a MultiSketch>,
@@ -143,6 +160,7 @@ impl<'a> DistanceMatrix<'a> {
         }
     }
 
+    /// Reference to the underlying distances which can be written to
     pub fn dists_mut(&mut self) -> &mut Vec<f32> {
         &mut self.distances
     }
@@ -190,6 +208,8 @@ impl fmt::Display for DistanceMatrix<'_> {
     }
 }
 
+/// Sparse distance struct which contains the index of the query sample
+/// and the Jaccard/ANI distance
 #[derive(Debug, Clone)]
 pub struct SparseJaccard(pub usize, pub f32);
 impl Ord for SparseJaccard {
@@ -214,6 +234,9 @@ impl PartialEq for SparseJaccard {
     }
 }
 impl Eq for SparseJaccard {}
+
+/// Sparse distance struct for a single distance entry which contains the
+/// index of the query sample and the core and accessory distances.
 
 // TODO: could either change the field to compare on, or add Euclidean dists
 #[derive(Debug, Clone)]
@@ -242,13 +265,20 @@ impl PartialEq for SparseCoreAcc {
 }
 impl Eq for SparseCoreAcc {}
 
+/// Underlying distance objects for sparse distances which wrap distance and
+/// query index for both types of distance
 pub enum DistVec {
+    /// Jaccard distances (and index)
     Jaccard(Vec<SparseJaccard>),
+    /// Core-accessory distances (and index)
     CoreAcc(Vec<SparseCoreAcc>),
 }
 
+/// A sparse distance matrix with a maximum of `knn` distances for each sample
 pub struct SparseDistanceMatrix<'a> {
+    /// Total number of distances
     pub n_distances: usize,
+    /// Maximum number of distances kept per sample: k smallest distances
     pub knn: usize,
     jaccard: DistType,
     distances: DistVec,
@@ -256,6 +286,8 @@ pub struct SparseDistanceMatrix<'a> {
 }
 
 impl<'a> SparseDistanceMatrix<'a> {
+    /// Create a new sparse distance matrix for a [`MultiSketch`] keeping the
+    /// minimum `knn` distances with distance options set by `jaccard`
     pub fn new(ref_sketches: &'a MultiSketch, knn: usize, jaccard: DistType) -> Self {
         let n_distances = ref_sketches.number_samples_loaded() * knn;
 
@@ -276,6 +308,7 @@ impl<'a> SparseDistanceMatrix<'a> {
         }
     }
 
+    /// Mutable reference to the underlying distance storage
     pub fn dists_mut(&mut self) -> &mut DistVec {
         &mut self.distances
     }

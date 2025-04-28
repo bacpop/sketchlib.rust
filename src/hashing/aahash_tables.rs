@@ -5,6 +5,7 @@
 use super::AaLevel;
 
 impl AaLevel {
+    /// Get the first hash for an amino acid
     pub fn aa_seed_table(&self, aa: u8) -> u64 {
         match self {
             AaLevel::Level1 => AA_SEED_TABLE[aa as usize],
@@ -13,6 +14,7 @@ impl AaLevel {
         }
     }
 
+    /// Get the next hash for an amino acid by rolling
     pub fn aa_roll_table(&self, aa: u8, k: usize) -> u64 {
         let rot_31 = if k < 31 { k } else { k % 31 };
         let rot_33 = if k < 33 { k } else { k % 33 };

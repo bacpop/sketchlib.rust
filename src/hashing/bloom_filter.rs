@@ -108,6 +108,7 @@ impl KmerFilter {
         }
     }
 
+    /// Empties the Bloom filter but does not reallocate memory
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.counts.clear();

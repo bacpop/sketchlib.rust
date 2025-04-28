@@ -96,7 +96,7 @@ pub fn reorder_input_files(
             "Found {} of {} input samples with given labels",
             input_files
                 .len()
-                .saturating_sub(reordered_dict.len() - new_idx - 1),
+                .saturating_sub(new_idx - (reordered_dict.len() - 1)),
             input_files.len()
         );
     }

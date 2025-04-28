@@ -131,6 +131,7 @@ pub enum Commands {
         #[arg(short)]
         output: String,
 
+        /// K-mers to sketch
         #[command(flatten)]
         kmers: Kmers,
 
@@ -200,6 +201,7 @@ pub enum Commands {
 
     /// Building and querying with inverted indices (.ski)
     Inverted {
+        /// Interactions with inverted indices
         #[command(subcommand)]
         command: InvertedCommands,
     },

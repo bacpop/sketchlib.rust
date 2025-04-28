@@ -6,7 +6,7 @@
 //! This package is a work in progress, but is mature enough for research use. See README.md
 //! for current CLI usage.
 
-// #![warn(missing_docs)]
+#![warn(missing_docs)]
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -402,7 +402,7 @@ pub fn main() -> Result<(), Error> {
                     // For count, count the total number of pairs prefilter yields
                     // Note this can be high memory and relatively long running (~90m and 50Gb for 661k samples, 32 threads)
                     let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
-                    log::info!(
+                    println!(
                         "Identified {} prefilter pairs from a max of {}",
                         prefilter_pairs.len(),
                         inverted_index.sample_names().len()

@@ -232,6 +232,8 @@ pub fn self_query_dists_all<'a>(
     distances
 }
 
+/// Same as [`self_dists_knn`], but also using an inverted_index to precluster
+/// to reduce the number of comparisons
 pub fn self_dists_knn_precluster<'a>(
     sketches: &'a MultiSketch,
     inverted_index: &Inverted,
