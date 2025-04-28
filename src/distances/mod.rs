@@ -5,7 +5,7 @@ use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 use crate::get_progress_bar;
-use crate::multisketch::MultiSketch;
+use crate::sketch::multisketch::MultiSketch;
 
 pub mod distance_matrix;
 use self::distance_matrix::*;

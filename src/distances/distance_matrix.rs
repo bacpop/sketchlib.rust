@@ -4,7 +4,7 @@ use std::fmt;
 
 // use ordered_float::NotNan;
 
-use crate::multisketch::MultiSketch;
+use crate::sketch::multisketch::MultiSketch;
 
 #[inline(always)]
 pub fn square_to_condensed(i: usize, j: usize, n: usize) -> usize {

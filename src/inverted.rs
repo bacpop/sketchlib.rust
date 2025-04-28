@@ -10,12 +10,11 @@ use rayon::prelude::*;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
-use crate::bloom_filter::KmerFilter;
+use super::hashing::{bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::distances::distance_matrix::square_to_condensed;
 use crate::io::InputFastx;
 use crate::sketch::*;
-use crate::sketch_datafile::write_skq_file;
+use crate::sketch::sketch_datafile::SketchArrayWriter;
 use crate::utils::get_progress_bar;
 use anyhow::Error;
 use std::fs::File;
@@ -62,7 +61,11 @@ impl Inverted {
         );
         if let Some(skq_file) = write_skq {
             log::info!("Writing bins for use with precluster as {skq_file}");
-            write_skq_file(&skq_file, &sketches).expect("Error when writing skq file");
+            let (mmap, bin_stride, kmer_stride, sample_stride) = (false, 1, 1, sketch_size as usize);
+            let mut skq_writer = SketchArrayWriter::new(&skq_file, mmap, bin_stride, kmer_stride, sample_stride);
+            for sketch in &sketches {
+                skq_writer.write_sketch(sketch);
+            }
         }
         log::info!("Inverting sketch order");
         Self {
@@ -76,7 +79,7 @@ impl Inverted {
         }
     }
 
-    // Sketch files only, when querying the index
+    // Sketch query files only, used when querying the index
     pub fn sketch_queries(
         &self,
         input_files: &[InputFastx],

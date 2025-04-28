@@ -1,4 +1,4 @@
-//! Methods to create single sample's sketch
+//! Methods to sketch samples, save/load sketches
 use std::cmp::Ordering;
 use std::fmt;
 use std::sync::mpsc;
@@ -7,14 +7,17 @@ use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{nthash_iterator::NtHashIterator, HashType, RollHash};
-use crate::bloom_filter::KmerFilter;
+use super::hashing::{bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash};
 use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
-use crate::sketch_datafile::SketchArrayFile;
 #[cfg(feature = "3di")]
 use crate::structures::pdb_to_3di;
 use crate::utils::get_progress_bar;
+
+pub mod multisketch;
+
+pub mod sketch_datafile;
+use self::sketch_datafile::SketchArrayWriter;
 
 /// Bin bits (lowest of 64-bits to keep)
 pub const BBITS: u64 = 14;
@@ -39,6 +42,7 @@ pub fn num_bins(sketch_size: u64) -> (u64, u64, u64) {
     (sketchsize64, signs_size, usigs_size)
 }
 
+/// A single sample's sketch
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Sketch {
     #[serde(skip)]
@@ -233,6 +237,8 @@ impl fmt::Display for Sketch {
     }
 }
 
+/// Main function to create sketches from a set of input files, which is parallelised
+/// over the input files
 pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
@@ -265,7 +271,7 @@ pub fn sketch_files(
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
     let mut serial_writer =
-        SketchArrayFile::new(&data_filename, bin_stride, kmer_stride, sample_stride);
+        SketchArrayWriter::new(&data_filename, false, bin_stride, kmer_stride, sample_stride);
 
     // Set up sender (sketching) and receiver (writing)
     let (tx, rx) = mpsc::channel();

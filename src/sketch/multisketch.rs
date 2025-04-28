@@ -14,9 +14,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
 use crate::sketch::num_bins;
+use crate::sketch::sketch_datafile::SketchArrayReader;
 use crate::sketch::Sketch;
-use crate::sketch_datafile::SketchArrayFile;
+use crate::sketch::sketch_datafile::SketchArrayWriter;
 
+use super::sketch_datafile::append_batch;
+
+/// A set of sketch files, with underlying storage as .skd/.skm
 #[derive(Serialize, Deserialize)]
 pub struct MultiSketch {
     /// Number of sketch bins (a multiple of 64)
@@ -126,8 +130,9 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride
         );
+        let mut sketch_reader = SketchArrayReader::open(&filename, false, self.bin_stride, self.kmer_stride, self.sample_stride);
         self.sketch_bins =
-            SketchArrayFile::read_all(&filename, self.sample_stride * self.sketch_metadata.len());
+            sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len());
     }
 
     pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
@@ -145,8 +150,9 @@ impl MultiSketch {
         self.block_reindex = Some(block_reindex);
 
         let filename = format!("{}.skd", file_prefix);
+        let sketch_reader = SketchArrayReader::open(&filename, true, self.bin_stride, self.kmer_stride, self.sample_stride);
         self.sketch_bins =
-            SketchArrayFile::read_batch(&filename, &read_indices, self.sample_stride);
+            sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride);
     }
 
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
@@ -263,17 +269,11 @@ impl MultiSketch {
             .collect();
 
         let input_filename = format!("{}.skd", input_prefix);
+        let sketch_reader = SketchArrayReader::open(&input_filename, true, self.bin_stride, self.kmer_stride, self.sample_stride);
         let output_filename = format!("{}.skd", output_file);
-        if let Err(e) = SketchArrayFile::write_batch(
-            &input_filename,
-            &output_filename,
-            &indices_to_keep,
-            self.sample_stride,
-        ) {
-            return Err(anyhow!("Error during batch write: {}", e));
-        }
+        let mut sketch_writer = SketchArrayWriter::new(&output_filename, false, self.bin_stride, self.kmer_stride, self.sample_stride);
 
-        Ok(())
+        append_batch(&sketch_reader, &mut sketch_writer, &indices_to_keep)
     }
 }
 

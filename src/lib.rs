@@ -25,16 +25,12 @@ pub mod cli;
 use crate::cli::*;
 
 pub mod sketch;
+use crate::sketch::multisketch::MultiSketch;
 use crate::hashing::HashType;
 use crate::sketch::sketch_files;
 
-pub mod multisketch;
-use crate::multisketch::MultiSketch;
-
 pub mod inverted;
 use crate::inverted::Inverted;
-
-pub mod sketch_datafile;
 
 pub mod distances;
 use crate::distances::*;
@@ -43,7 +39,6 @@ pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, reorder_input_files, set_ostream};
 pub mod structures;
 
-pub mod bloom_filter;
 pub mod hashing;
 
 pub mod utils;
@@ -352,7 +347,7 @@ pub fn main() -> Result<(), Error> {
                 log::info!("Parsed {} samples in input query list", input_files.len());
 
                 log::info!("Sketching input queries");
-                check_and_set_threads(*threads + 1);
+                check_and_set_threads(*threads + 1); // Writer thread
                 let (queries, query_names) =
                     inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
 
@@ -417,17 +412,15 @@ pub fn main() -> Result<(), Error> {
                 ani,
                 threads,
             } => {
-                // TODO
-                // 1. Check ski and ref_db samples and k-mer length match. Will also need to
-                // check order/make a mapping between the two
-                // 2. Get all the comparison pairs from the inverted index
-                // 3. Run the jaccard/ani and knn comparison from dists as above, will always be sparse
-                // 3a. Ideally should be made into a function
+                check_and_set_threads(*threads);
 
-                let mut output_file = set_ostream(output);
+                // Load the inverted index
                 let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
 
+                // Two mutually exclusive modes
                 if *count {
+                    // For count, count the total number of pairs prefilter yields
+                    // Note this can be high memory and relatively long running (~90m and 50Gb for 661k samples, 32 threads)
                     let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
                     log::info!(
                         "Identified {} prefilter pairs from a max of {}",
@@ -436,6 +429,12 @@ pub fn main() -> Result<(), Error> {
                             / 2
                     );
                 } else if let Some(ref_db_input) = ref_db {
+                    let mut output_file = set_ostream(output);
+
+                    // TODO check that the skq file exists
+                    // TODO create a class to read/write from it
+
+                    // Load the .skd/.skm
                     let ref_db_name = utils::strip_sketch_extension(ref_db_input);
                     let mut references = MultiSketch::load(ref_db_name)
                         .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db_name}.skm"));
@@ -447,13 +446,18 @@ pub fn main() -> Result<(), Error> {
                         log::warn!("knn={knn} is higher than number of samples={n}");
                         knn = n - 1;
                     }
+
+                    // Check that k-mer exists in the .skd, and find its index
                     let kmer = inverted_index.kmer();
                     let (dist_type, k_idx, k_f32) = set_k(&references, Some(kmer), *ani);
+                    if k_idx.is_none() {
+                        log::error!("k={kmer} not found in {ref_db_input}");
+                        panic!("K-mer size not found in skd/skm files");
+                    }
 
-                    // TODO: add check that sample sets in ski and skm are the same
-                    // TODO: check that skq file exists
-                    // TODO: check that k-mer exists in the .skd, and find its index
+                    // TODO: add check that sample sets in ski and skm are the same and create i,j lookup
 
+                    // Run the distances with both indexes
                     log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours");
                     log::info!("Preclustering with k={} and s={}", kmer, inverted_index.sketch_size());
                     let distances = self_dists_knn_precluster(
@@ -469,6 +473,7 @@ pub fn main() -> Result<(), Error> {
                         args.quiet,
                     );
 
+                    // Write the results
                     log::info!("Writing out in sparse matrix form");
                     write!(output_file, "{distances}")
                         .expect("Error writing output distances");

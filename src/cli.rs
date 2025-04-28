@@ -58,6 +58,8 @@ pub fn check_and_set_threads(threads: usize) {
     let max_threads = num_cpus::get();
     if threads > max_threads {
         log::warn!("{threads} threads is greater than available cores {max_threads}");
+    } else {
+        log::info!("Using {threads} threads");
     }
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)

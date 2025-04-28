@@ -1,5 +1,5 @@
 //! Implementation of Jaccard, core and accessory distance calculations
-use crate::multisketch::MultiSketch;
+use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BBITS;
 
 pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
