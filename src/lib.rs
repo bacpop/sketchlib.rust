@@ -413,15 +413,19 @@ pub fn main() -> Result<(), Error> {
                     let mut output_file = set_ostream(output);
 
                     // Open the .skq
+                    let skq_filename = &format!("{}.skq", input_prefix);
+                    log::info!("Loading queries from {skq_filename}.skq");
                     let (mmap, bin_stride, kmer_stride, sample_stride) =
                         (false, 1, 1, inverted_index.n_samples());
-                    let skq_reader = SketchArrayReader::open(
-                        &format!("{}.skq", input_prefix),
+                    let mut skq_reader = SketchArrayReader::open(
+                        skq_filename,
                         mmap,
                         bin_stride,
                         kmer_stride,
                         sample_stride,
                     );
+                    let skq_bins =
+                        skq_reader.read_all_from_skq(sample_stride * inverted_index.sketch_size());
 
                     // Load the .skd/.skm
                     let ref_db_name = utils::strip_sketch_extension(ref_db_input);
@@ -457,7 +461,8 @@ pub fn main() -> Result<(), Error> {
                     let distances = self_dists_knn_precluster(
                         &references,
                         &inverted_index,
-                        &skq_reader,
+                        &skq_bins,
+                        skq_reader.sample_stride,
                         n,
                         knn,
                         dist_type,

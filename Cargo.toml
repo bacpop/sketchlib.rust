@@ -45,6 +45,7 @@ rmp-serde = "1.3"
 snap = "1.1"
 memmap2 = "0.9"
 arrayref = "0.3"
+num-traits = "0.2"
 # ffi
 pyo3 = { version = "0.21", features = ["auto-initialize"], optional = true }
 # logging

@@ -299,11 +299,18 @@ impl fmt::Display for SparseDistanceMatrix<'_> {
                         ref_name = ref_name_iter.next().unwrap();
                         k = 1;
                     }
-                    writeln!(
-                        f,
-                        "{ref_name}\t{}\t{}",
-                        self.ref_names[dist_item.0], dist_item.1,
-                    )?;
+                    let query_name = self.ref_names[dist_item.0];
+                    // If fewer items than knn, padded with ref=query and dist=1.0 values
+                    // which are skipped here
+                    // TODO: more rust-like way of doing this would be to have
+                    // SparseJaccard as an enum with an empty value
+                    if dist_item.1 < 1.0_f32 || query_name != *ref_name {
+                        writeln!(
+                            f,
+                            "{ref_name}\t{}\t{}",
+                            self.ref_names[dist_item.0], dist_item.1,
+                        )?;
+                    }
                 }
             }
             DistVec::CoreAcc(dists) => {

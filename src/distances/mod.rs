@@ -9,7 +9,6 @@ use rayon::prelude::*;
 use crate::get_progress_bar;
 use crate::inverted::Inverted;
 use crate::sketch::multisketch::MultiSketch;
-use crate::sketch::sketch_datafile::SketchArrayReader;
 
 pub mod distance_matrix;
 use self::distance_matrix::*;
@@ -236,7 +235,8 @@ pub fn self_query_dists_all<'a>(
 pub fn self_dists_knn_precluster<'a>(
     sketches: &'a MultiSketch,
     inverted_index: &Inverted,
-    skq_reader: &SketchArrayReader,
+    skq_bins: &[u16],
+    skq_stride: usize,
     n: usize,
     knn: usize,
     dist_type: DistType,
@@ -245,11 +245,19 @@ pub fn self_dists_knn_precluster<'a>(
     // Check that sample sets in ski and skm are the same and create i,j lookup
     let mut skq_lookup = HashMap::with_capacity(n);
     for (skq_index, skq_sample) in inverted_index.sample_names().iter().enumerate() {
-        skq_lookup.insert(skq_sample, skq_index);
+        skq_lookup.insert(skq_sample.as_str(), skq_index);
     }
+    let mut not_found = Vec::new();
+    let mut skq_index_lookup = Vec::with_capacity(n);
     for skd_sample_idx in 0..sketches.number_samples_loaded() {
         let sample_name = sketches.sketch_name(skd_sample_idx);
-        todo!()
+        match skq_lookup.get(sample_name) {
+            Some(skq_index) => skq_index_lookup.push(skq_index),
+            None => not_found.push(sample_name),
+        };
+    }
+    if !not_found.is_empty() {
+        panic!("The following samples in the .skd could not be found in the .ski:\n{not_found:?}");
     }
 
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
@@ -264,9 +272,15 @@ pub fn self_dists_knn_precluster<'a>(
                 .progress_with(progress_bar)
                 .enumerate()
                 .for_each(|(i, row_dist_slice)| {
+                    // Prefilter step here
+                    let skq_offset = i * skq_stride;
+                    let flat_i_sketch = &skq_bins[skq_offset..(skq_offset + skq_stride)];
+                    let prefiltered_samples = inverted_index.any_shared_bins(flat_i_sketch);
+                    // Standard search
                     let mut heap = BinaryHeap::with_capacity(knn + 1);
                     let i_sketch = sketches.get_sketch_slice(i, k_idx);
-                    for j in 0..n {
+                    for j in prefiltered_samples {
+                        let j = j as usize;
                         if i == j {
                             continue;
                         }
@@ -283,8 +297,15 @@ pub fn self_dists_knn_precluster<'a>(
                         let dist_item = SparseJaccard(j, dist);
                         push_heap(&mut heap, dist_item, knn);
                     }
-                    debug_assert_eq!(row_dist_slice.len(), heap.len());
-                    row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
+                    let mut dist_vec = heap.into_sorted_vec();
+                    // If there are fewer prefiltered dists than knn, add null values at the end
+                    if dist_vec.len() < row_dist_slice.len() {
+                        dist_vec.append(&mut vec![
+                            SparseJaccard(i, 1.0);
+                            row_dist_slice.len() - dist_vec.len()
+                        ]);
+                    }
+                    row_dist_slice.clone_from_slice(&dist_vec);
                 });
         }
         DistVec::CoreAcc(_) => {

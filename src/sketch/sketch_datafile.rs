@@ -2,8 +2,7 @@
 use memmap2::Mmap;
 use num_traits::ToBytes;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
-use std::io::{Read, Seek};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -107,8 +106,6 @@ pub struct SketchArrayReader {
     _kmer_stride: usize,
 }
 
-// TODO: ideally want this to be parallel safe... Send?
-
 impl SketchArrayReader {
     pub fn open(
         filename: &str,
@@ -142,24 +139,23 @@ impl SketchArrayReader {
     }
 
     /// Reads a single sketch from an .skq into memory
-    pub fn read_sketch_from_skq(&mut self, sample_idx: usize) -> Result<Vec<u16>, Error> {
+    pub fn read_all_from_skq(&mut self, total_number_bins: usize) -> Vec<u16> {
         // Fixed-size buffer for u16
         let mut buffer = [0u8; std::mem::size_of::<u16>()];
-        let mut flat_sketch_array: Vec<u16> = Vec::with_capacity(self.sample_stride);
-        self.sketch_reader.seek(std::io::SeekFrom::Start(
-            (sample_idx * self.sample_stride * buffer.len()) as u64,
-        ))?;
-        self.sketch_reader.read_exact(&mut buffer)?;
-        flat_sketch_array.push(u16::from_le_bytes(buffer));
-        Ok(flat_sketch_array)
+        // Stream the whole file and convert to u64 vec
+        let mut flat_sketch_array: Vec<u16> = Vec::with_capacity(total_number_bins);
+        while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
+            flat_sketch_array.push(u16::from_le_bytes(buffer));
+        }
+        flat_sketch_array
     }
 
     /// Read all sketch data from an .skd into memory
-    pub fn read_all_from_skd(&mut self, number_bins: usize) -> Vec<u64> {
+    pub fn read_all_from_skd(&mut self, total_number_bins: usize) -> Vec<u64> {
         // Fixed-size buffer for u64
         let mut buffer = [0u8; std::mem::size_of::<u64>()];
         // Stream the whole file and convert to u64 vec
-        let mut flat_sketch_array: Vec<u64> = Vec::with_capacity(number_bins);
+        let mut flat_sketch_array: Vec<u64> = Vec::with_capacity(total_number_bins);
         while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
             flat_sketch_array.push(u64::from_le_bytes(buffer));
         }
