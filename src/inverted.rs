@@ -10,11 +10,12 @@ use rayon::prelude::*;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash};
+use super::hashing::{
+    bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
+};
 use crate::distances::distance_matrix::square_to_condensed;
 use crate::io::InputFastx;
-use crate::sketch::*;
-use crate::sketch::sketch_datafile::SketchArrayWriter;
+use crate::sketch::{sketch_datafile::SketchArrayWriter, Sketch};
 use crate::utils::get_progress_bar;
 use anyhow::Error;
 use std::fs::File;
@@ -61,8 +62,9 @@ impl Inverted {
         );
         if let Some(skq_file) = write_skq {
             log::info!("Writing bins for use with precluster as {skq_file}");
-            let (mmap, bin_stride, kmer_stride, sample_stride) = (false, 1, 1, sketch_size as usize);
-            let mut skq_writer = SketchArrayWriter::new(&skq_file, mmap, bin_stride, kmer_stride, sample_stride);
+            let (bin_stride, kmer_stride, sample_stride) = (1, 1, sketch_size as usize);
+            let mut skq_writer =
+                SketchArrayWriter::new(&skq_file, bin_stride, kmer_stride, sample_stride);
             for sketch in &sketches {
                 skq_writer.write_sketch(sketch);
             }
@@ -103,6 +105,10 @@ impl Inverted {
 
     pub fn sample_names(&self) -> &Vec<String> {
         &self.sample_names
+    }
+
+    pub fn n_samples(&self) -> usize {
+        self.sample_names.len()
     }
 
     pub fn sample_at(&self, idx: usize) -> &str {

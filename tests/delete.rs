@@ -5,7 +5,7 @@ use std::path::Path;
 pub mod common;
 use crate::common::*;
 
-use sketchlib::multisketch::MultiSketch;
+use sketchlib::sketch::multisketch::MultiSketch;
 
 #[cfg(test)]
 
@@ -70,10 +70,11 @@ mod tests {
 
         // Check .skm the same
         let merged_sketch: MultiSketch =
-            MultiSketch::load(&sandbox.file_string("deleted_db", TestDir::Output))
+            MultiSketch::load_metadata(&sandbox.file_string("deleted_db", TestDir::Output))
                 .expect("Failed to load output merged sketch");
-        let expected_sketch = MultiSketch::load(&sandbox.file_string("result_db", TestDir::Output))
-            .expect("Failed to load expected merged sketch");
+        let expected_sketch =
+            MultiSketch::load_metadata(&sandbox.file_string("result_db", TestDir::Output))
+                .expect("Failed to load expected merged sketch");
         assert_eq!(
             merged_sketch, expected_sketch,
             "Merged sketch metadata does not match"

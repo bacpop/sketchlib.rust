@@ -1,11 +1,15 @@
 //! Functions to calculate distances between sample sets
 use std::collections::BinaryHeap;
 
+use anyhow::{Context, Error};
+use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 use crate::get_progress_bar;
+use crate::inverted::Inverted;
 use crate::sketch::multisketch::MultiSketch;
+use crate::sketch::sketch_datafile::SketchArrayReader;
 
 pub mod distance_matrix;
 use self::distance_matrix::*;
@@ -17,22 +21,19 @@ const CHUNK_SIZE: usize = 1000;
 // Distance progress bars use percent rather than number of comparisons
 const BAR_PERCENT: bool = true;
 
-type DistK = (DistType, Option<usize>, f32);
-
 /// Set type of distances to use and set up k-mer index
-pub fn set_k(sketches: &MultiSketch, kmer: Option<usize>, ani: bool) -> DistK {
+pub fn set_k(sketches: &MultiSketch, kmer: Option<usize>, ani: bool) -> Result<DistType, Error> {
     let k_idx;
-    let mut k_f32 = 0.0;
     let dist_type = if let Some(k) = kmer {
-        k_idx = sketches.get_k_idx(k);
-        k_f32 = k as f32;
-        DistType::Jaccard(k, ani)
+        k_idx = sketches
+            .get_k_idx(k)
+            .with_context(|| format!("K-mer size {k} not found in file"))?;
+        DistType::Jaccard(k_idx, k as f32, ani)
     } else {
-        k_idx = None;
         DistType::CoreAcc
     };
     log::info!("{dist_type}");
-    (dist_type, k_idx, k_f32)
+    Ok(dist_type)
 }
 
 // Add to distances, only keep the best knn or fewer
@@ -57,13 +58,12 @@ fn push_heap<T: PartialOrd + Ord>(heap: &mut BinaryHeap<T>, dist_item: T, knn: u
 pub fn self_dists_all(
     sketches: &MultiSketch,
     n: usize,
-    k_idx: Option<usize>,
-    k_f32: f32,
     dist_type: DistType,
-    ani: bool,
     quiet: bool,
 ) -> DistanceMatrix {
     let mut distances = DistanceMatrix::new(sketches, None, dist_type);
+    let k_vals = distances.k_vals();
+    let ani = distances.ani();
     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
     let progress_bar = get_progress_bar(par_chunk, BAR_PERCENT, quiet);
     distances
@@ -77,10 +77,10 @@ pub fn self_dists_all(
             let mut i = calc_row_idx(start_dist_idx, n);
             let mut j = calc_col_idx(start_dist_idx, i, n);
             for dist_idx in 0..CHUNK_SIZE {
-                if let Some(k) = k_idx {
+                if let Some((k_idx, k_f32)) = k_vals {
                     let mut dist = jaccard_dist(
-                        sketches.get_sketch_slice(i, k),
-                        sketches.get_sketch_slice(j, k),
+                        sketches.get_sketch_slice(i, k_idx),
+                        sketches.get_sketch_slice(j, k_idx),
                         sketches.sketchsize64,
                     );
                     dist = if ani {
@@ -115,31 +115,30 @@ pub fn self_dists_knn(
     sketches: &MultiSketch,
     n: usize,
     knn: usize,
-    k_idx: Option<usize>,
-    k_f32: f32,
     dist_type: DistType,
-    ani: bool,
     quiet: bool,
 ) -> SparseDistanceMatrix {
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
+    let k_vals = sp_distances.k_vals();
+    let ani = sp_distances.ani();
     let progress_bar = get_progress_bar(n, BAR_PERCENT, quiet);
     match sp_distances.dists_mut() {
         DistVec::Jaccard(distances) => {
-            let k = k_idx.unwrap();
+            let (k_idx, k_f32) = k_vals.unwrap();
             distances
                 .par_chunks_mut(knn)
                 .progress_with(progress_bar)
                 .enumerate()
                 .for_each(|(i, row_dist_slice)| {
                     let mut heap = BinaryHeap::with_capacity(knn + 1);
-                    let i_sketch = sketches.get_sketch_slice(i, k);
+                    let i_sketch = sketches.get_sketch_slice(i, k_idx);
                     for j in 0..n {
                         if i == j {
                             continue;
                         }
                         let mut dist = jaccard_dist(
                             i_sketch,
-                            sketches.get_sketch_slice(j, k),
+                            sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
                         );
                         dist = if ani {
@@ -183,13 +182,12 @@ pub fn self_query_dists_all<'a>(
     query_sketches: &'a MultiSketch,
     n: usize,
     nq: usize,
-    k_idx: Option<usize>,
-    k_f32: f32,
     dist_type: DistType,
-    ani: bool,
     quiet: bool,
 ) -> DistanceMatrix<'a> {
     let mut distances = DistanceMatrix::new(ref_sketches, Some(query_sketches), dist_type);
+    let k_vals = distances.k_vals();
+    let ani = distances.ani();
     let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
     let progress_bar = get_progress_bar(par_chunk, BAR_PERCENT, quiet);
     distances
@@ -202,10 +200,10 @@ pub fn self_query_dists_all<'a>(
             let start_dist_idx = chunk_idx * CHUNK_SIZE;
             let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
             for dist_idx in 0..CHUNK_SIZE {
-                if let Some(k) = k_idx {
+                if let Some((k_idx, k_f32)) = k_vals {
                     let mut dist = jaccard_dist(
-                        ref_sketches.get_sketch_slice(i, k),
-                        query_sketches.get_sketch_slice(j, k),
+                        ref_sketches.get_sketch_slice(i, k_idx),
+                        query_sketches.get_sketch_slice(j, k_idx),
                         ref_sketches.sketchsize64,
                     );
                     dist = if ani {
@@ -233,4 +231,65 @@ pub fn self_query_dists_all<'a>(
             }
         });
     distances
+}
+
+pub fn self_dists_knn_precluster<'a>(
+    sketches: &'a MultiSketch,
+    inverted_index: &Inverted,
+    skq_reader: &SketchArrayReader,
+    n: usize,
+    knn: usize,
+    dist_type: DistType,
+    quiet: bool,
+) -> SparseDistanceMatrix<'a> {
+    // Check that sample sets in ski and skm are the same and create i,j lookup
+    let mut skq_lookup = HashMap::with_capacity(n);
+    for (skq_index, skq_sample) in inverted_index.sample_names().iter().enumerate() {
+        skq_lookup.insert(skq_sample, skq_index);
+    }
+    for skd_sample_idx in 0..sketches.number_samples_loaded() {
+        let sample_name = sketches.sketch_name(skd_sample_idx);
+        todo!()
+    }
+
+    let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
+    let k_vals = sp_distances.k_vals();
+    let ani = sp_distances.ani();
+    let progress_bar = get_progress_bar(n, BAR_PERCENT, quiet);
+    match sp_distances.dists_mut() {
+        DistVec::Jaccard(distances) => {
+            let (k_idx, k_f32) = k_vals.unwrap();
+            distances
+                .par_chunks_mut(knn)
+                .progress_with(progress_bar)
+                .enumerate()
+                .for_each(|(i, row_dist_slice)| {
+                    let mut heap = BinaryHeap::with_capacity(knn + 1);
+                    let i_sketch = sketches.get_sketch_slice(i, k_idx);
+                    for j in 0..n {
+                        if i == j {
+                            continue;
+                        }
+                        let mut dist = jaccard_dist(
+                            i_sketch,
+                            sketches.get_sketch_slice(j, k_idx),
+                            sketches.sketchsize64,
+                        );
+                        dist = if ani {
+                            ani_pois(dist, k_f32)
+                        } else {
+                            1.0_f32 - dist
+                        };
+                        let dist_item = SparseJaccard(j, dist);
+                        push_heap(&mut heap, dist_item, knn);
+                    }
+                    debug_assert_eq!(row_dist_slice.len(), heap.len());
+                    row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
+                });
+        }
+        DistVec::CoreAcc(_) => {
+            unimplemented!("Prefilter only available for single k-mer distances");
+        }
+    }
+    sp_distances
 }

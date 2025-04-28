@@ -7,7 +7,9 @@ use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash};
+use super::hashing::{
+    bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
+};
 use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 #[cfg(feature = "3di")]
@@ -271,7 +273,7 @@ pub fn sketch_files(
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
     let mut serial_writer =
-        SketchArrayWriter::new(&data_filename, false, bin_stride, kmer_stride, sample_stride);
+        SketchArrayWriter::new(&data_filename, bin_stride, kmer_stride, sample_stride);
 
     // Set up sender (sketching) and receiver (writing)
     let (tx, rx) = mpsc::channel();

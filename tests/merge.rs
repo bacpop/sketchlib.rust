@@ -5,7 +5,7 @@ use std::path::Path;
 pub mod common;
 use crate::common::*;
 
-use sketchlib::multisketch::MultiSketch;
+use sketchlib::sketch::multisketch::MultiSketch;
 
 #[cfg(test)]
 
@@ -19,17 +19,17 @@ mod tests {
         let ref_db2 = sandbox.file_string("sketches2", TestDir::Input);
         let ref_db3 = sandbox.file_string("sketches3", TestDir::Input);
 
-        let sketches1: MultiSketch = MultiSketch::load(&ref_db1).expect(&format!(
+        let sketches1: MultiSketch = MultiSketch::load_metadata(&ref_db1).expect(&format!(
             "Could not read sketch metadata from {}.skm",
             ref_db1
         ));
 
-        let sketches2: MultiSketch = MultiSketch::load(&ref_db2).expect(&format!(
+        let sketches2: MultiSketch = MultiSketch::load_metadata(&ref_db2).expect(&format!(
             "Could not read sketch metadata from {}.skm",
             ref_db2
         ));
 
-        let sketches3: MultiSketch = MultiSketch::load(&ref_db3).expect(&format!(
+        let sketches3: MultiSketch = MultiSketch::load_metadata(&ref_db3).expect(&format!(
             "Could not read sketch metadata from {}.skm",
             ref_db3
         ));
@@ -127,10 +127,10 @@ mod tests {
 
         // Check .skm the same
         let merged_sketch: MultiSketch =
-            MultiSketch::load(&sandbox.file_string("merged_test", TestDir::Output))
+            MultiSketch::load_metadata(&sandbox.file_string("merged_test", TestDir::Output))
                 .expect("Failed to load output merged sketch");
         let expected_sketch =
-            MultiSketch::load(&sandbox.file_string("merged_ref", TestDir::Output))
+            MultiSketch::load_metadata(&sandbox.file_string("merged_ref", TestDir::Output))
                 .expect("Failed to load expected merged sketch");
         assert_eq!(
             merged_sketch, expected_sketch,

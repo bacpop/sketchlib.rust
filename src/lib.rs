@@ -18,16 +18,16 @@ extern crate num_cpus;
 use anyhow::Error;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
-use sketch::num_bins;
-use utils::strip_sketch_extension;
 
 pub mod cli;
 use crate::cli::*;
 
+use crate::hashing::HashType;
+
 pub mod sketch;
 use crate::sketch::multisketch::MultiSketch;
-use crate::hashing::HashType;
-use crate::sketch::sketch_files;
+use crate::sketch::sketch_datafile::SketchArrayReader;
+use crate::sketch::{num_bins, sketch_files};
 
 pub mod inverted;
 use crate::inverted::Inverted;
@@ -42,7 +42,7 @@ pub mod structures;
 pub mod hashing;
 
 pub mod utils;
-use crate::utils::get_progress_bar;
+use crate::utils::{get_progress_bar, strip_sketch_extension};
 
 use std::fs::{File, OpenOptions};
 use std::io::copy;
@@ -149,7 +149,7 @@ pub fn main() -> Result<(), Error> {
 
             let ref_db_name = utils::strip_sketch_extension(ref_db);
 
-            let mut references = MultiSketch::load(ref_db_name)
+            let mut references = MultiSketch::load_metadata(ref_db_name)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             log::info!("Loading sketch data from {}.skd", ref_db_name);
@@ -167,11 +167,13 @@ pub fn main() -> Result<(), Error> {
                     knn = Some(n - 1);
                 }
             }
-            let (dist_type, k_idx, k_f32) = set_k(&references, *kmer, *ani);
+            let dist_type = set_k(&references, *kmer, *ani).unwrap_or_else(|e| {
+                panic!("Error setting k size: {e}");
+            });
 
             // Read queries if supplied. Note no subsetting here
             let queries = if let Some(query_db_name) = query_db {
-                let mut queries = MultiSketch::load(query_db_name).unwrap_or_else(|_| {
+                let mut queries = MultiSketch::load_metadata(query_db_name).unwrap_or_else(|_| {
                     panic!("Could not read sketch metadata from {query_db_name}.skm")
                 });
                 log::info!("Loading query sketch data from {}.skd", query_db_name);
@@ -189,15 +191,7 @@ pub fn main() -> Result<(), Error> {
                         None => {
                             // Self mode (dense)
                             log::info!("Calculating all ref vs ref distances");
-                            let distances = self_dists_all(
-                                &references,
-                                n,
-                                k_idx,
-                                k_f32,
-                                dist_type,
-                                *ani,
-                                args.quiet,
-                            );
+                            let distances = self_dists_all(&references, n, dist_type, args.quiet);
                             log::info!("Writing out in long matrix form");
                             write!(output_file, "{distances}")
                                 .expect("Error writing output distances");
@@ -205,16 +199,8 @@ pub fn main() -> Result<(), Error> {
                         Some(nn) => {
                             // Self mode (sparse)
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-                            let distances = self_dists_knn(
-                                &references,
-                                n,
-                                nn,
-                                k_idx,
-                                k_f32,
-                                dist_type,
-                                *ani,
-                                args.quiet,
-                            );
+                            let distances =
+                                self_dists_knn(&references, n, nn, dist_type, args.quiet);
 
                             log::info!("Writing out in sparse matrix form");
                             write!(output_file, "{distances}")
@@ -227,17 +213,8 @@ pub fn main() -> Result<(), Error> {
                     log::info!("Calculating all ref vs query distances");
 
                     let nq = query_db.number_samples_loaded();
-                    let distances = self_query_dists_all(
-                        &references,
-                        &query_db,
-                        n,
-                        nq,
-                        k_idx,
-                        k_f32,
-                        dist_type,
-                        *ani,
-                        args.quiet,
-                    );
+                    let distances =
+                        self_query_dists_all(&references, &query_db, n, nq, dist_type, args.quiet);
 
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");
@@ -250,13 +227,15 @@ pub fn main() -> Result<(), Error> {
             let ref_db_name2 = utils::strip_sketch_extension(db2);
 
             log::info!("Reading input metadata");
-            let mut sketches1: MultiSketch = MultiSketch::load(ref_db_name1).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
-            });
+            let mut sketches1: MultiSketch = MultiSketch::load_metadata(ref_db_name1)
+                .unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
+                });
 
-            let sketches2: MultiSketch = MultiSketch::load(ref_db_name2).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
-            });
+            let sketches2: MultiSketch =
+                MultiSketch::load_metadata(ref_db_name2).unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
+                });
             // check compatibility
             if !sketches1.is_compatible_with(&sketches2) {
                 panic!("Databases are not compatible for merging.")
@@ -415,7 +394,8 @@ pub fn main() -> Result<(), Error> {
                 check_and_set_threads(*threads);
 
                 // Load the inverted index
-                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
+                let input_prefix = strip_sketch_extension(ski);
+                let inverted_index = Inverted::load(input_prefix)?;
 
                 // Two mutually exclusive modes
                 if *count {
@@ -425,19 +405,30 @@ pub fn main() -> Result<(), Error> {
                     log::info!(
                         "Identified {} prefilter pairs from a max of {}",
                         prefilter_pairs.len(),
-                        inverted_index.sample_names().len() * (inverted_index.sample_names().len() - 1)
+                        inverted_index.sample_names().len()
+                            * (inverted_index.sample_names().len() - 1)
                             / 2
                     );
                 } else if let Some(ref_db_input) = ref_db {
                     let mut output_file = set_ostream(output);
 
-                    // TODO check that the skq file exists
-                    // TODO create a class to read/write from it
+                    // Open the .skq
+                    let (mmap, bin_stride, kmer_stride, sample_stride) =
+                        (false, 1, 1, inverted_index.n_samples());
+                    let skq_reader = SketchArrayReader::open(
+                        &format!("{}.skq", input_prefix),
+                        mmap,
+                        bin_stride,
+                        kmer_stride,
+                        sample_stride,
+                    );
 
                     // Load the .skd/.skm
                     let ref_db_name = utils::strip_sketch_extension(ref_db_input);
-                    let mut references = MultiSketch::load(ref_db_name)
-                        .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db_name}.skm"));
+                    let mut references =
+                        MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
+                            panic!("Could not read sketch metadata from {ref_db_name}.skm")
+                        });
                     log::info!("Loading sketch data from {}.skd", ref_db_name);
                     references.read_sketch_data(ref_db_name);
                     log::info!("Read reference sketches:\n{references:?}");
@@ -449,34 +440,33 @@ pub fn main() -> Result<(), Error> {
 
                     // Check that k-mer exists in the .skd, and find its index
                     let kmer = inverted_index.kmer();
-                    let (dist_type, k_idx, k_f32) = set_k(&references, Some(kmer), *ani);
-                    if k_idx.is_none() {
-                        log::error!("k={kmer} not found in {ref_db_input}");
-                        panic!("K-mer size not found in skd/skm files");
-                    }
-
-                    // TODO: add check that sample sets in ski and skm are the same and create i,j lookup
+                    // This panics if k not found. Maybe more graceful error if this happens
+                    let dist_type = set_k(&references, Some(kmer), *ani).unwrap_or_else(|e| {
+                        panic!("K-mer size {kmer} used for .ski not found in .skd: {e}");
+                    });
 
                     // Run the distances with both indexes
-                    log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours");
-                    log::info!("Preclustering with k={} and s={}", kmer, inverted_index.sketch_size());
+                    log::info!(
+                        "Calculating sparse ref vs ref distances with {knn} nearest neighbours"
+                    );
+                    log::info!(
+                        "Preclustering with k={} and s={}",
+                        kmer,
+                        inverted_index.sketch_size()
+                    );
                     let distances = self_dists_knn_precluster(
                         &references,
                         &inverted_index,
-                        &skq_file,
+                        &skq_reader,
                         n,
                         knn,
-                        k_idx,
-                        k_f32,
                         dist_type,
-                        *ani,
                         args.quiet,
                     );
 
                     // Write the results
                     log::info!("Writing out in sparse matrix form");
-                    write!(output_file, "{distances}")
-                        .expect("Error writing output distances");
+                    write!(output_file, "{distances}").expect("Error writing output distances");
                 }
 
                 Ok(())
@@ -504,7 +494,7 @@ pub fn main() -> Result<(), Error> {
             log::info!("Parsed {} samples in input list", input_files.len());
 
             //check if any of the new files are already existant in the db
-            let db_metadata: MultiSketch = MultiSketch::load(db)?;
+            let db_metadata: MultiSketch = MultiSketch::load_metadata(db)?;
 
             if !db_metadata.append_compatibility(&input_files) {
                 panic!("Databases are not compatible for merging.")
@@ -586,7 +576,7 @@ pub fn main() -> Result<(), Error> {
             let ids: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
             log::info!("Reading input metadata");
-            let mut sketches: MultiSketch = MultiSketch::load(ref_db)
+            let mut sketches: MultiSketch = MultiSketch::load_metadata(ref_db)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
 
             // write new .skm
@@ -624,7 +614,7 @@ pub fn main() -> Result<(), Error> {
                 } else {
                     skm_file.as_str()
                 };
-                let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
+                let sketches = MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
                     panic!("Could not read sketch metadata from {ref_db_name}.skm")
                 });
                 if *sample_info {

@@ -2,9 +2,9 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-pub mod bloom_filter;
 pub mod aahash_iterator;
 mod aahash_tables;
+pub mod bloom_filter;
 pub mod nthash_iterator;
 mod nthash_tables;
 

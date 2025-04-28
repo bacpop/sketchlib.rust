@@ -1,7 +1,5 @@
 //! The class to support .skm/.skd reading and writing, containing multiple [`Sketch`] objects
-use anyhow::bail;
-use anyhow::Error;
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Error, Result};
 
 use core::panic;
 use std::fmt;
@@ -15,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::hashing::HashType;
 use crate::sketch::num_bins;
 use crate::sketch::sketch_datafile::SketchArrayReader;
-use crate::sketch::Sketch;
 use crate::sketch::sketch_datafile::SketchArrayWriter;
+use crate::sketch::Sketch;
 
 use super::sketch_datafile::append_batch;
 
@@ -74,7 +72,7 @@ impl MultiSketch {
         }
     }
 
-    /// Saves the metadata
+    /// Saves the metadata (.skm)
     pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
         let filename = format!("{}.skm", file_prefix);
         log::info!("Saving sketch metadata to {filename}");
@@ -84,7 +82,8 @@ impl MultiSketch {
         Ok(())
     }
 
-    pub fn load(file_prefix: &str) -> Result<Self, Error> {
+    /// Loads the metadata (.skm)
+    pub fn load_metadata(file_prefix: &str) -> Result<Self, Error> {
         let filename = format!("{}.skm", file_prefix);
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
@@ -130,7 +129,13 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride
         );
-        let mut sketch_reader = SketchArrayReader::open(&filename, false, self.bin_stride, self.kmer_stride, self.sample_stride);
+        let mut sketch_reader = SketchArrayReader::open(
+            &filename,
+            false,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        );
         self.sketch_bins =
             sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len());
     }
@@ -150,9 +155,14 @@ impl MultiSketch {
         self.block_reindex = Some(block_reindex);
 
         let filename = format!("{}.skd", file_prefix);
-        let sketch_reader = SketchArrayReader::open(&filename, true, self.bin_stride, self.kmer_stride, self.sample_stride);
-        self.sketch_bins =
-            sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride);
+        let sketch_reader = SketchArrayReader::open(
+            &filename,
+            true,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        );
+        self.sketch_bins = sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride);
     }
 
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
@@ -269,9 +279,20 @@ impl MultiSketch {
             .collect();
 
         let input_filename = format!("{}.skd", input_prefix);
-        let sketch_reader = SketchArrayReader::open(&input_filename, true, self.bin_stride, self.kmer_stride, self.sample_stride);
+        let sketch_reader = SketchArrayReader::open(
+            &input_filename,
+            true,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        );
         let output_filename = format!("{}.skd", output_file);
-        let mut sketch_writer = SketchArrayWriter::new(&output_filename, false, self.bin_stride, self.kmer_stride, self.sample_stride);
+        let mut sketch_writer = SketchArrayWriter::new(
+            &output_filename,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        );
 
         append_batch(&sketch_reader, &mut sketch_writer, &indices_to_keep)
     }
