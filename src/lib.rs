@@ -331,14 +331,18 @@ pub fn main() -> Result<(), Error> {
                     inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
 
                 log::info!("Running queries in mode: {query_type}");
+                // Header
+                write!(output_file, "Query")?;
                 if *query_type == InvertedQueryType::MatchCount {
-                    // Header
-                    write!(output_file, "Query")?;
                     for name in inverted_index.sample_names() {
-                        write!(output_file, ",{name}")?;
+                        write!(output_file, "\t{name}")?;
                     }
                     writeln!(output_file)?;
+                } else {
+                    writeln!(output_file, "\tMatches")?;
                 }
+
+                // Query loop (parallelised)
                 let (tx, rx) = mpsc::channel();
                 let percent = false;
                 let progress_bar = get_progress_bar(queries.len(), percent, args.quiet);
@@ -368,11 +372,17 @@ pub fn main() -> Result<(), Error> {
                     write!(output_file, "{q_name}")?;
                     if *query_type == InvertedQueryType::MatchCount {
                         for distance in dist {
-                            write!(output_file, ",{distance}")?;
+                            write!(output_file, "\t{distance}")?;
                         }
                     } else {
+                        write!(
+                            output_file,
+                            "\t{}",
+                            inverted_index.sample_at(dist[0] as usize)
+                        )?;
                         for r_name in dist
                             .iter()
+                            .skip(1)
                             .map(|idx| inverted_index.sample_at(*idx as usize))
                         {
                             write!(output_file, ",{r_name}")?;

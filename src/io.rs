@@ -153,6 +153,9 @@ pub fn get_input_list(
     file_list: &Option<String>,
     seq_files: &Option<Vec<String>>,
 ) -> Vec<InputFastx> {
+    if file_list.is_none() && seq_files.is_none() {
+        panic!("No input files provided");
+    }
     // Read input
     match file_list {
         Some(files) => {
