@@ -318,6 +318,7 @@ pub fn main() -> Result<(), Error> {
             } => {
                 let mut output_file = set_ostream(output);
                 let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
+                log::info!("Read inverted index:\n{inverted_index:?}");
 
                 // Get input files
                 log::info!("Getting input queries");
@@ -394,7 +395,7 @@ pub fn main() -> Result<(), Error> {
             }
             InvertedCommands::Precluster {
                 ski,
-                ref_db,
+                skd,
                 count,
                 output,
                 mut knn,
@@ -419,12 +420,12 @@ pub fn main() -> Result<(), Error> {
                             * (inverted_index.sample_names().len() - 1)
                             / 2
                     );
-                } else if let Some(ref_db_input) = ref_db {
+                } else if let Some(ref_db_input) = skd {
                     let mut output_file = set_ostream(output);
 
                     // Open the .skq
                     let skq_filename = &format!("{}.skq", input_prefix);
-                    log::info!("Loading queries from {skq_filename}.skq");
+                    log::info!("Loading queries from {skq_filename}");
                     let (mmap, bin_stride, kmer_stride, sample_stride) =
                         (false, 1, 1, inverted_index.n_samples());
                     let mut skq_reader = SketchArrayReader::open(

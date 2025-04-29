@@ -379,7 +379,7 @@ pub enum InvertedCommands {
     #[command(group(
         ArgGroup::new("mode")
             .required(true)
-            .args(["ref_db", "count"]),
+            .args(["skd", "count"]),
     ))]
     /// Use an inverted index to reduce query comparisons
     Precluster {
@@ -387,9 +387,9 @@ pub enum InvertedCommands {
         #[arg(required = true)]
         ski: String,
 
-        /// The .skm file, which must have the same samples and k-mer length as the .ski file
-        #[arg(group = "mode")]
-        ref_db: Option<String>,
+        /// The .skd/.skm file prefix, which must have the same samples and k-mer length as the .ski file
+        #[arg(long, group = "mode")]
+        skd: Option<String>,
 
         /// Output filename (omit to output to stdout)
         #[arg(short)]
