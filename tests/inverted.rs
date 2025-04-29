@@ -158,4 +158,76 @@ mod tests {
                     .unordered(),
             );
     }
+
+    #[test]
+    fn inverted_precluster() {
+        let sandbox = TestSetup::setup();
+
+        // Move files to test dir
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+
+        // Build an inverted index .ski and .skq
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "21", "-s", "10"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .arg("--write-skq")
+            .assert()
+            .success();
+
+        // See the match-count results in inverted_query_count.stdout
+        // 14412_3#82.contigs_velvet.fa.gz and 14412_3#84.contigs_velvet.fa.gz match
+        // R6.fa.gz and TIGR4.fa.gz match
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .arg("-v")
+            .arg("--count")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                "Identified 2 prefilter pairs from a max of 6\n",
+            );
+
+        // Build a standard .skd
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("sketch")
+            .arg("-o")
+            .arg("standard")
+            .args(["-v", "--k-vals", "21", "-s", "1000"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .assert()
+            .success();
+
+        // Run preclustering mode
+        // TODO: expecting R6/TIGR4 comparison here? Only getting the other one
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .args(["-v", "--knn", "1"])
+            .arg("--skd")
+            .arg("standard")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                "Identified 2 prefilter pairs from a max of 6\n",
+            );
+
+        // TODO -- same with ANI
+
+        // TODO -- default knn, check no junk distances printed
+    }
 }
