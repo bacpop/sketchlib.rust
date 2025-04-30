@@ -77,15 +77,15 @@ pub fn self_dists_all(
             let mut j = calc_col_idx(start_dist_idx, i, n);
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f32)) = k_vals {
-                    let mut dist = jaccard_dist(
+                    let j_index = jaccard_index(
                         sketches.get_sketch_slice(i, k_idx),
                         sketches.get_sketch_slice(j, k_idx),
                         sketches.sketchsize64,
                     );
-                    dist = if ani {
-                        ani_pois(dist, k_f32)
+                    let dist = if ani {
+                        ani_pois(j_index, k_f32)
                     } else {
-                        1.0_f32 - dist
+                        1.0_f32 - j_index
                     };
                     dist_slice[dist_idx] = dist;
                 } else {
@@ -135,13 +135,14 @@ pub fn self_dists_knn(
                         if i == j {
                             continue;
                         }
-                        let mut dist = jaccard_dist(
+                        let mut dist = jaccard_index(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
                         );
                         dist = if ani {
-                            ani_pois(dist, k_f32)
+                            // This is just done so the heap sorts correctly (as want to keep higher ANI)
+                            1.0_f32 - ani_pois(dist, k_f32)
                         } else {
                             1.0_f32 - dist
                         };
@@ -149,7 +150,14 @@ pub fn self_dists_knn(
                         push_heap(&mut heap, dist_item, knn);
                     }
                     debug_assert_eq!(row_dist_slice.len(), heap.len());
-                    row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
+                    if ani {
+                        // Undo the above transform
+                        heap.into_sorted_vec().iter().zip(row_dist_slice).for_each(|(inverse_ani, output_ani)| {
+                            *output_ani = SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
+                        });
+                    } else {
+                        row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
+                    }
                 });
         }
         DistVec::CoreAcc(distances) => {
@@ -200,15 +208,15 @@ pub fn self_query_dists_all<'a>(
             let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f32)) = k_vals {
-                    let mut dist = jaccard_dist(
+                    let j_index = jaccard_index(
                         ref_sketches.get_sketch_slice(i, k_idx),
                         query_sketches.get_sketch_slice(j, k_idx),
                         ref_sketches.sketchsize64,
                     );
-                    dist = if ani {
-                        ani_pois(dist, k_f32)
+                    let dist = if ani {
+                        ani_pois(j_index, k_f32)
                     } else {
-                        1.0_f32 - dist
+                        1.0_f32 - j_index
                     };
                     dist_slice[dist_idx] = dist;
                 } else {
@@ -286,13 +294,13 @@ pub fn self_dists_knn_precluster<'a>(
                         if i == j {
                             continue;
                         }
-                        let mut dist = jaccard_dist(
+                        let mut dist = jaccard_index(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
                         );
                         dist = if ani {
-                            ani_pois(dist, k_f32)
+                            1.0_f32 - ani_pois(dist, k_f32)
                         } else {
                             1.0_f32 - dist
                         };
@@ -300,6 +308,12 @@ pub fn self_dists_knn_precluster<'a>(
                         push_heap(&mut heap, dist_item, knn);
                     }
                     let mut dist_vec = heap.into_sorted_vec();
+                    if ani {
+                        // Undo the above transform
+                        dist_vec.iter_mut().for_each(|inverse_ani| {
+                            *inverse_ani = SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
+                        });
+                    }
                     // If there are fewer prefiltered dists than knn, add null values at the end
                     if dist_vec.len() < row_dist_slice.len() {
                         // TODO: more rust-like way of doing this would be to have

@@ -2,7 +2,8 @@
 use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BBITS;
 
-pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
+/// Returns the Jaccard index between two samples
+pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
     let mut samebits: u32 = 0;
     for i in 0..sketchsize64 {
@@ -26,11 +27,14 @@ pub fn jaccard_dist(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 
     }
 }
 
+/// Converts between Jaccard distance and ANI, using a Poisson model of mutations
 #[inline(always)]
 pub fn ani_pois(jaccard: f32, k: f32) -> f32 {
     0.0_f32.max(1.0 + 1.0 / k * (((2.0 * jaccard) / (1.0 + jaccard)).ln()))
 }
 
+/// Core and accessory distances between two sketches, using the PopPUNK regression
+/// model
 pub fn core_acc_dist(
     ref_sketches: &MultiSketch,
     query_sketches: &MultiSketch,
@@ -45,7 +49,7 @@ pub fn core_acc_dist(
     let tolerance = (2.0_f32 / ((ref_sketches.sketch_size * u64::BITS as u64) as f32)).ln();
     //let tolerance = -100.0_f32;
     for (k_idx, k) in ref_sketches.kmer_lengths().iter().enumerate() {
-        let y = jaccard_dist(
+        let y = jaccard_index(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
             query_sketches.get_sketch_slice(query_sketch_idx, k_idx),
             ref_sketches.sketchsize64,
@@ -65,6 +69,8 @@ pub fn core_acc_dist(
     simple_linear_regression(xsum, ysum, xysum, xsquaresum, ysquaresum, n)
 }
 
+// Linear regression for calculating core/accessory distances from matches, with some
+// sensible bounds for bad fits
 fn simple_linear_regression(
     xsum: f32,
     ysum: f32,

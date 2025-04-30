@@ -214,7 +214,7 @@ impl fmt::Display for DistanceMatrix<'_> {
 pub struct SparseJaccard(pub usize, pub f32);
 impl Ord for SparseJaccard {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.1.partial_cmp(&self.1).unwrap() // NB: backwards
+        self.1.partial_cmp(&other.1).unwrap()
                                               // Could also use
                                               /*
                                               NotNan::new(other.1)
@@ -225,7 +225,7 @@ impl Ord for SparseJaccard {
 }
 impl PartialOrd for SparseJaccard {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        other.1.partial_cmp(&self.1) // NB: backwards
+        Some(self.cmp(other))
     }
 }
 impl PartialEq for SparseJaccard {
@@ -255,7 +255,7 @@ impl Ord for SparseCoreAcc {
 }
 impl PartialOrd for SparseCoreAcc {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.1.partial_cmp(&other.1)
+        Some(self.cmp(other))
     }
 }
 impl PartialEq for SparseCoreAcc {
@@ -339,7 +339,7 @@ impl fmt::Display for SparseDistanceMatrix<'_> {
                     // TODO: more rust-like way of doing this would be to have
                     // SparseJaccard as an enum with an empty value
                     if dist_item.1 < 1.0_f32 || query_name != *ref_name {
-                        writeln!(f, "{ref_name}\t{query_name}\t{}", dist_item.1,)?;
+                        writeln!(f, "{ref_name}\t{query_name}\t{}", dist_item.1)?;
                     }
                 }
             }
