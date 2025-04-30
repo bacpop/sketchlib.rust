@@ -353,15 +353,26 @@ mod tests {
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
-            .arg("standard")
-            .args(["-v", "--k-vals", "21", "-s", "1000"])
+            .arg("sketch_db")
+            .args(["-v", "--k-seq", "17,31,4", "-s", "10000"])
             .arg("-f")
             .arg("rfile.txt")
             .assert()
             .success();
 
-        // TODO Subset three samples and calc dists
-
+        // Subset three samples and calc dists
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("dist")
+            .arg("sketch_db")
+            .arg("-v")
+            .arg("--subset")
+            .arg(sandbox.file_string("subset.txt", TestDir::Input))
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("dists_subset.stdout", TestDir::Correct)
+            );
 
     }
 
