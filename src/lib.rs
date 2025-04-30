@@ -427,7 +427,7 @@ pub fn main() -> Result<(), Error> {
                     let skq_filename = &format!("{}.skq", input_prefix);
                     log::info!("Loading queries from {skq_filename}");
                     let (mmap, bin_stride, kmer_stride, sample_stride) =
-                        (false, 1, 1, inverted_index.n_samples());
+                        (false, 1, 1, inverted_index.sketch_size());
                     let mut skq_reader = SketchArrayReader::open(
                         skq_filename,
                         mmap,

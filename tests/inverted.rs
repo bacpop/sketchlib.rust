@@ -211,8 +211,10 @@ mod tests {
             .assert()
             .success();
 
+        // TODO: add a test that the written .skq is correct (can use functions
+        // to save and load it)
+
         // Run preclustering mode
-        // TODO: expecting R6/TIGR4 comparison here? Only getting the other one
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
@@ -223,11 +225,28 @@ mod tests {
             .arg("inverted.ski")
             .assert()
             .stdout_eq(
-                "Identified 2 prefilter pairs from a max of 6\n",
+                sandbox
+                    .snapbox_file("inverted_precluster.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+
+        // Default knn, check no junk distances printed
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .args(["-v", "--knn", "50"])
+            .arg("--skd")
+            .arg("standard")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_precluster.stdout", TestDir::Correct)
+                    .unordered(),
             );
 
         // TODO -- same with ANI
 
-        // TODO -- default knn, check no junk distances printed
     }
 }
