@@ -215,12 +215,12 @@ pub struct SparseJaccard(pub usize, pub f32);
 impl Ord for SparseJaccard {
     fn cmp(&self, other: &Self) -> Ordering {
         self.1.partial_cmp(&other.1).unwrap()
-                                              // Could also use
-                                              /*
-                                              NotNan::new(other.1)
-                                                  .unwrap()
-                                                  .cmp(&NotNan::new(self.1).unwrap())
-                                              */
+        // Could also use
+        /*
+        NotNan::new(other.1)
+            .unwrap()
+            .cmp(&NotNan::new(self.1).unwrap())
+        */
     }
 }
 impl PartialOrd for SparseJaccard {

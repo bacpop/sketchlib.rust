@@ -298,10 +298,7 @@ mod tests {
             .arg("--knn")
             .arg("1")
             .assert()
-            .stdout_eq(
-                sandbox
-                    .snapbox_file("dists_knn_ca.stdout", TestDir::Correct)
-            );
+            .stdout_eq(sandbox.snapbox_file("dists_knn_ca.stdout", TestDir::Correct));
 
         // Jaccard dists at knn=1
         Command::new(cargo_bin("sketchlib"))
@@ -314,10 +311,7 @@ mod tests {
             .arg("-k")
             .arg("21")
             .assert()
-            .stdout_eq(
-                sandbox
-                    .snapbox_file("dists_knn_jaccard.stdout", TestDir::Correct)
-            );
+            .stdout_eq(sandbox.snapbox_file("dists_knn_jaccard.stdout", TestDir::Correct));
 
         // ANI dists at knn=1
         Command::new(cargo_bin("sketchlib"))
@@ -331,10 +325,7 @@ mod tests {
             .arg("21")
             .arg("--ani")
             .assert()
-            .stdout_eq(
-                sandbox
-                    .snapbox_file("dists_knn_ani.stdout", TestDir::Correct)
-            );
+            .stdout_eq(sandbox.snapbox_file("dists_knn_ani.stdout", TestDir::Correct));
     }
 
     #[test]
@@ -369,11 +360,6 @@ mod tests {
             .arg("--subset")
             .arg(sandbox.file_string("subset.txt", TestDir::Input))
             .assert()
-            .stdout_eq(
-                sandbox
-                    .snapbox_file("dists_subset.stdout", TestDir::Correct)
-            );
-
+            .stdout_eq(sandbox.snapbox_file("dists_subset.stdout", TestDir::Correct));
     }
-
 }

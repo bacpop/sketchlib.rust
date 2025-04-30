@@ -152,9 +152,11 @@ pub fn self_dists_knn(
                     debug_assert_eq!(row_dist_slice.len(), heap.len());
                     if ani {
                         // Undo the above transform
-                        heap.into_sorted_vec().iter().zip(row_dist_slice).for_each(|(inverse_ani, output_ani)| {
-                            *output_ani = SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
-                        });
+                        heap.into_sorted_vec().iter().zip(row_dist_slice).for_each(
+                            |(inverse_ani, output_ani)| {
+                                *output_ani = SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
+                            },
+                        );
                     } else {
                         row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
                     }
