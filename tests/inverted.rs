@@ -6,6 +6,8 @@ use crate::common::*;
 #[cfg(test)]
 
 mod tests {
+    use snapbox::assert_data_eq;
+
     use super::*;
 
     #[test]
@@ -184,6 +186,12 @@ mod tests {
             .assert()
             .success();
 
+        // Test that the written .skq is correct (order should be right)
+        assert_data_eq!(
+            sandbox.snapbox_file("inverted.skq", TestDir::Output),
+            sandbox.snapbox_file("inverted.skq", TestDir::Correct)
+        );
+
         // See the match-count results in inverted_query_count.stdout
         // 14412_3#82.contigs_velvet.fa.gz and 14412_3#84.contigs_velvet.fa.gz match
         // R6.fa.gz and TIGR4.fa.gz match
@@ -195,9 +203,7 @@ mod tests {
             .arg("--count")
             .arg("inverted.ski")
             .assert()
-            .stdout_eq(
-                "Identified 2 prefilter pairs from a max of 6\n",
-            );
+            .stdout_eq("Identified 2 prefilter pairs from a max of 6\n");
 
         // Build a standard .skd
         Command::new(cargo_bin("sketchlib"))
@@ -210,9 +216,6 @@ mod tests {
             .arg("rfile.txt")
             .assert()
             .success();
-
-        // TODO: add a test that the written .skq is correct (can use functions
-        // to save and load it)
 
         // Run preclustering mode
         Command::new(cargo_bin("sketchlib"))
@@ -227,6 +230,23 @@ mod tests {
             .stdout_eq(
                 sandbox
                     .snapbox_file("inverted_precluster.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+
+        // Same with ANI
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .args(["-v", "--knn", "1"])
+            .arg("--ani")
+            .arg("--skd")
+            .arg("standard")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_precluster_ani.stdout", TestDir::Correct)
                     .unordered(),
             );
 
@@ -245,8 +265,5 @@ mod tests {
                     .snapbox_file("inverted_precluster.stdout", TestDir::Correct)
                     .unordered(),
             );
-
-        // TODO -- same with ANI
-
     }
 }
