@@ -1,3 +1,4 @@
+//! Functions to support `ntHash` generation over sequences
 use needletail::{parse_fastx_file, parser::Format};
 use std::cmp::Ordering;
 

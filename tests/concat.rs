@@ -5,7 +5,7 @@ use std::path::Path;
 pub mod common;
 use crate::common::*;
 
-use sketchlib::multisketch::MultiSketch;
+use sketchlib::sketch::multisketch::MultiSketch;
 
 #[cfg(test)]
 
@@ -77,10 +77,10 @@ mod tests {
 
         // Check .skm the same
         let concat_sketch: MultiSketch =
-            MultiSketch::load(&sandbox.file_string("concat_test", TestDir::Output))
+            MultiSketch::load_metadata(&sandbox.file_string("concat_test", TestDir::Output))
                 .expect("Failed to load output merged sketch");
         let expected_sketch =
-            MultiSketch::load(&sandbox.file_string("concat_ref", TestDir::Output))
+            MultiSketch::load_metadata(&sandbox.file_string("concat_ref", TestDir::Output))
                 .expect("Failed to load expected merged sketch");
         println!("{}", concat_sketch);
         println!("{}", expected_sketch);

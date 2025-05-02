@@ -33,7 +33,7 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 # data structures
-hashbrown = { version = "0.14", features = ["serde"] }
+hashbrown = { version = "0.14", features = ["rayon", "serde"] }
 ahash = ">=0.8.7"
 roaring = { version = "0.10", features = ["serde"] }
 # ordered-float = "4.2"
@@ -41,9 +41,11 @@ roaring = { version = "0.10", features = ["serde"] }
 needletail = { version = "0.5", features = ["compression"] }
 serde = { version = "1.0", features = ["derive"] }
 ciborium = "0.2"
+rmp-serde = "1.3"
 snap = "1.1"
 memmap2 = "0.9"
 arrayref = "0.3"
+num-traits = "0.2"
 # ffi
 pyo3 = { version = "0.21", features = ["auto-initialize"], optional = true }
 # logging
@@ -63,7 +65,7 @@ pyo3-build-config = {version = "0.22", optional = true}
 
 [dev-dependencies]
 # testing
-snapbox = "0.4.3"
+snapbox = "0.6.21"
 predicates = "2.1.5"
 assert_fs = "1.0.10"
 pretty_assertions = "1.3.0"
@@ -71,3 +73,8 @@ tempfile = "3.19"
 
 [profile.release]
 lto = true
+
+# https://github.com/victe/rust-latex-doc-minimal-example
+[package.metadata.docs.rs]
+features = ["default"]
+rustdoc-args = ["--cfg", "docsrs", "--html-in-header", "docs-header.html"]

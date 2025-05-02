@@ -6,6 +6,8 @@ use crate::common::*;
 #[cfg(test)]
 
 mod tests {
+    use snapbox::assert_data_eq;
+
     use super::*;
 
     #[test]
@@ -17,6 +19,7 @@ mod tests {
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
+            .arg("build")
             .arg("-o")
             .arg("inverted")
             .args(["-v", "-k", "31"])
@@ -33,9 +36,7 @@ mod tests {
             .arg("inverted.ski")
             .arg("-v")
             .assert()
-            .stdout_matches_path(
-                sandbox.file_string("inverted_sketch_info.stdout", TestDir::Correct),
-            );
+            .stdout_eq(sandbox.snapbox_file("inverted_sketch_info.stdout", TestDir::Correct));
 
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
@@ -44,9 +45,7 @@ mod tests {
             .arg("inverted.ski")
             .arg("-v")
             .assert()
-            .stdout_matches_path(
-                sandbox.file_string("inverted_sketch_full_info.stdout", TestDir::Correct),
-            );
+            .stdout_eq(sandbox.snapbox_file("inverted_sketch_full_info.stdout", TestDir::Correct));
     }
 
     #[test]
@@ -60,6 +59,7 @@ mod tests {
         Command::new(cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
+            .arg("build")
             .arg("-o")
             .arg("inverted")
             .args(["-v", "-k", "61", "-s", "63"])
@@ -81,8 +81,189 @@ mod tests {
             .arg("--sample-info")
             .arg("-v")
             .assert()
-            .stdout_matches_path(
-                sandbox.file_string("inverted_sketch_info_reorder.stdout", TestDir::Correct),
+            .stdout_eq(
+                sandbox.snapbox_file("inverted_sketch_info_reorder.stdout", TestDir::Correct),
+            );
+    }
+
+    #[test]
+    fn inverted_query() {
+        let sandbox = TestSetup::setup();
+
+        // Move files to test dir
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+
+        // Build an inverted index
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "21", "-s", "10"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .assert()
+            .success();
+
+        // Query with the same samples, default is 'match-count'
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("query")
+            .arg("-v")
+            .arg("-f")
+            .arg("rfile.txt")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_query_count.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+
+        // Any bin matching gives two pairs
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("query")
+            .arg("-v")
+            .arg("-f")
+            .arg("rfile.txt")
+            .arg("inverted.ski")
+            .args(&["--query-type", "any-bin"])
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_query_any.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+
+        // All matching gives self only
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("query")
+            .arg("-v")
+            .arg("-f")
+            .arg("rfile.txt")
+            .arg("inverted.ski")
+            .args(&["--query-type", "all-bins"])
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_query_all.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+    }
+
+    #[test]
+    fn inverted_precluster() {
+        let sandbox = TestSetup::setup();
+
+        // Move files to test dir
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+
+        // Build an inverted index .ski and .skq
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "21", "-s", "10"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .arg("--write-skq")
+            .assert()
+            .success();
+
+        // Test that the written .skq is correct (order should be right)
+        assert_data_eq!(
+            sandbox.snapbox_file("inverted.skq", TestDir::Output),
+            sandbox.snapbox_file("inverted.skq", TestDir::Correct)
+        );
+
+        // See the match-count results in inverted_query_count.stdout
+        // 14412_3#82.contigs_velvet.fa.gz and 14412_3#84.contigs_velvet.fa.gz match
+        // R6.fa.gz and TIGR4.fa.gz match
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .arg("-v")
+            .arg("--count")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq("Identified 2 prefilter pairs from a max of 6\n");
+
+        // Build a standard .skd
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("sketch")
+            .arg("-o")
+            .arg("standard")
+            .args(["-v", "--k-vals", "21", "-s", "1000"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .assert()
+            .success();
+
+        // Run preclustering mode
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .args(["-v", "--knn", "1"])
+            .arg("--skd")
+            .arg("standard")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_precluster.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+
+        // Same with ANI
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .args(["-v", "--knn", "1"])
+            .arg("--ani")
+            .arg("--skd")
+            .arg("standard")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_precluster_ani.stdout", TestDir::Correct)
+                    .unordered(),
+            );
+
+        // Default knn, check no junk distances printed
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("precluster")
+            .args(["-v", "--knn", "50"])
+            .arg("--skd")
+            .arg("standard")
+            .arg("inverted.ski")
+            .assert()
+            .stdout_eq(
+                sandbox
+                    .snapbox_file("inverted_precluster.stdout", TestDir::Correct)
+                    .unordered(),
             );
     }
 }

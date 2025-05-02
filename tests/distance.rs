@@ -77,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn test_distances() {
+    fn dense_distances() {
         let sandbox = TestSetup::setup();
 
         //Test 1: One short sequence vs one short seqeunce (1 SNP apart)
@@ -264,5 +264,102 @@ mod tests {
         {
             assert_with_tolerance(*v1, *v2);
         }
+    }
+
+    #[test]
+    fn knn_dists() {
+        let sandbox = TestSetup::setup();
+
+        // Move files to test dir
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+
+        // Sketch the files
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("sketch")
+            .arg("-o")
+            .arg("sketch_db")
+            .args(["-v", "--k-seq", "17,31,4", "-s", "10000"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .assert()
+            .success();
+
+        // C-a dists at knn=1
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("dist")
+            .arg("sketch_db")
+            .arg("-v")
+            .arg("--knn")
+            .arg("1")
+            .assert()
+            .stdout_eq(sandbox.snapbox_file("dists_knn_ca.stdout", TestDir::Correct));
+
+        // Jaccard dists at knn=1
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("dist")
+            .arg("sketch_db")
+            .arg("-v")
+            .arg("--knn")
+            .arg("1")
+            .arg("-k")
+            .arg("21")
+            .assert()
+            .stdout_eq(sandbox.snapbox_file("dists_knn_jaccard.stdout", TestDir::Correct));
+
+        // ANI dists at knn=1
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("dist")
+            .arg("sketch_db")
+            .arg("-v")
+            .arg("--knn")
+            .arg("1")
+            .arg("-k")
+            .arg("21")
+            .arg("--ani")
+            .assert()
+            .stdout_eq(sandbox.snapbox_file("dists_knn_ani.stdout", TestDir::Correct));
+    }
+
+    #[test]
+    fn subset_dists() {
+        let sandbox = TestSetup::setup();
+
+        // Move files to test dir
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+
+        // Sketch the files
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("sketch")
+            .arg("-o")
+            .arg("sketch_db")
+            .args(["-v", "--k-seq", "17,31,4", "-s", "10000"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .assert()
+            .success();
+
+        // Subset three samples and calc dists
+        Command::new(cargo_bin("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("dist")
+            .arg("sketch_db")
+            .arg("-v")
+            .arg("--subset")
+            .arg(sandbox.file_string("subset.txt", TestDir::Input))
+            .assert()
+            .stdout_eq(sandbox.snapbox_file("dists_subset.stdout", TestDir::Correct));
     }
 }

@@ -1,8 +1,10 @@
+//! Functions to support `aaHash` generation over sequences
 use needletail::parse_fastx_file;
 use std::cmp::Ordering;
 
 use super::*;
 
+/// A valid IUPAC amino acid character (upper- and lowercase)
 #[inline(always)]
 pub fn valid_aa(aa: u8) -> bool {
     matches!(aa, b'a' | b'c'..=b'i' | b'k'..=b'n' | b'p'..=b't' | b'v' | b'w' | b'y' | b'A' | b'C'..=b'I' | b'K'..=b'N' | b'P'..=b'T' | b'V' | b'W' | b'Y' )
@@ -11,7 +13,7 @@ pub fn valid_aa(aa: u8) -> bool {
 // Split a 64-bit word into 33 and 31-bit sub-words and left-rotate them separately.
 // Increases period from 64 to 1023.
 #[inline(always)]
-pub fn srol(x: u64) -> u64 {
+fn srol(x: u64) -> u64 {
     let m: u64 = ((x & 0x8000000000000000) >> 30) | ((x & 0x100000000) >> 32);
     ((x << 1) & 0xFFFFFFFDFFFFFFFF) | m
 }
@@ -64,6 +66,7 @@ impl RollHash for AaHashIterator {
 }
 
 impl AaHashIterator {
+    /// Create a new empty aaHash iterator at the set comparison level
     pub fn default(level: AaLevel) -> Self {
         Self {
             k: 0,
@@ -75,6 +78,7 @@ impl AaHashIterator {
         }
     }
 
+    /// Create a new aaHash iterator from a fasta file, at the set comparison level
     pub fn new(file: &str, level: AaLevel, concat_fasta: bool) -> Vec<Self> {
         let mut hash_vec = Vec::new();
 
@@ -115,10 +119,12 @@ impl AaHashIterator {
         hash_vec
     }
 
+    /// Create a new iterator from a 3di embedding file of a structure
     pub fn from_3di_file(file: &str) -> Vec<Self> {
         Self::new(file, AaLevel::Level1, false)
     }
 
+    /// Create a new iterator from a 3di embedding string of a structure
     pub fn from_3di_string(sequence: String) -> Vec<Self> {
         let mut hash_it = Self::default(AaLevel::Level1);
         hash_it.seq = sequence.into_bytes();

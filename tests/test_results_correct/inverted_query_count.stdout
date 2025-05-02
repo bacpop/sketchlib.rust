@@ -1,0 +1,5 @@
+Query	14412_3#82.contigs_velvet.fa.gz	14412_3#84.contigs_velvet.fa.gz	R6.fa.gz	TIGR4.fa.gz
+14412_3#82.contigs_velvet.fa.gz	10	5	0	0
+R6.fa.gz	0	0	10	7
+14412_3#84.contigs_velvet.fa.gz	5	10	0	0
+TIGR4.fa.gz	0	0	7	10

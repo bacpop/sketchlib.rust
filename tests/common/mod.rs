@@ -6,6 +6,7 @@ use std::{
 
 use assert_fs::{prelude::*, TempDir};
 use predicates::prelude::*;
+use snapbox::Data;
 
 #[cfg(test)]
 
@@ -93,6 +94,12 @@ impl TestSetup {
             .to_str()
             .expect("Could not unpack file path")
             .to_owned()
+    }
+
+    pub fn snapbox_file(&self, name: &str, file_type: TestDir) -> Data {
+        let filename = self.file_string(name, file_type);
+        let path = Path::new(&filename);
+        snapbox::Data::read_from(path, None)
     }
 
     pub fn copy_input_file_to_wd(&self, name: &str) {

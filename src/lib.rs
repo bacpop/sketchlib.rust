@@ -1,15 +1,135 @@
 //! Fast distance calculations between biological sequences (DNA, AA or structures
 //! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
-//! distance, with the PopPUNK method to calculate core and accessory distances. nthash/aahash
+//! distance, with the [PopPUNK method](https://poppunk.bacpop.org/index.html) to calculate core and accessory distances. nthash/aahash
 //! are used for hash functions to create the sketches
 //!
-//! This package is a work in progress, but is mature enough for research use. See README.md
-//! for current CLI usage.
+//! ## Files/databases
+//!
+//! Sketch databases have two files: `.skm` which is the metadata (samples names, base counts etc)
+//! and `.skd` which is the actual sketch data. These must have the same prefix.
+//!
+//! Inverted indexes are `.ski` files, and should be specified using their full name (not just the prefix).
+//! These optionally include and `.skq` file which is needed if used for preclustering.
+//!
+//! ## Usage
+//! With all options we typically recommend using `-v` to see all progress during the run.
+//!
+//! ### Sketching
+//!
+//! Using input fasta/fastq files, create a sketch database. Run `sketchlib sketch -h` to see the help.
+//!
+//! - List .fasta files on the command line, or use `-f` to provide a file(s). Inputs can be gzipped or not, this is automatically detected.
+//! From file, these are one line per sample listing:
+//!     - One column (fasta input): file name, which is also used as the sample name
+//!     - Two columns (fasta input): sample name and file name
+//!     - Three columns (fastq input): sample name and two read files
+//! - To set the k-mer size in the sketch database you can either give a list of sizes with `--k-vals`
+//! or a sequence `--k-seq` with start,stop,step. e.g. `--k-seq 17,29,4` would sketch at k=17, 21, 25 and 29.
+//! - Set the sketch size with `-s`. Typically 1000 is enough for species level resolution, 10000 for within-species/strain
+//! resolution and 100000-1000000 for SNP level resolution.
+//! - To sketch amino acid sequences use `--seq-type aa --concat-fasta` if you have the typical case
+//! of each fasta file being a multifasta with many aa sequences. Each one will then be its own sample.
+//! - You can also sketch structures with .pdb input, see 'Enabling PDB->3Di' below. This is experimental.
+//!
+//! ### Distances
+//!
+//! To compute internal all-vs-all core and accessory distances use:
+//! ```bash
+//! sketchlib dist db_name
+//! ```
+//! Note the database names can be the prefix, or the full path to the .skm file. The output
+//! is in pairwise 'long' format, which lists the upper triangle of the distance matrix row-by-row.
+//!
+//! To calculate distances between two different sample sets, each in their own sketch database, use:
+//! ```bash
+//! sketchlib dist db1 db2
+//! ```
+//! For example, if you want to query distances of a new sample against an existing database,
+//! first sketch the new sample with e.g. `sketchlib sketch -o db2 new_sample.fasta`, then
+//! run the above command.
+//!
+//! Modifiers:
+//! - Use `-k` to calculate Jaccard distance at the given k. Otherwise the default is to
+//! calculate across multiple k and output core and accessory distances.
+//! - Use `--ani` with `-k` to transform the Jaccard distance into average nucleotide identity.
+//! - Use `--subset` to provide a list of sample names to include in the distance calculations,
+//! only these sample will be loaded from the `.skd` file.
+//! - Use `-o` to write the distances to a file. The default it to write to stdout, so you can also
+//! use `>` to redirect to a file (progress messages are written to stderr).
+//! - Use `--knn` to only keep this many nearest neighbour distances. For very large databases
+//! it may be useful to keep only ~50 distances. This makes the memory use manageable. This sparse output
+//! can be used with e.g. [mandrake](https://github.com/bacpop/mandrake).
+//!
+//! ### Inverted indexes
+//!
+//! Inverted indexes can be used for:
+//!
+//! - Compressed storage of large numbers of sketches.
+//! - Fast querying of new samples against large numbers of sketches.
+//! - Preclustering to speed up distance operations.
+//!
+//! #### Building
+//!
+//! Similar to a normal sketch:
+//! ```bash
+//! sketchlib inverted build -o inverted -v -k 21 -s 10 -f rfile.txt
+//! ```
+//! Provide sample labels (for example species, or clusters) with `--species-names`,
+//! tab separated sample and label. These do not need to totally overlap with the samples in
+//! the database. Samples will be reordered so that clustered samples are next to each
+//! other in the index, reducing size and increasing efficiency.
+//!
+//! #### Querying
+//!
+//! Query samples can be provided as a list or with `-f`:
+//! ```bash
+//! sketchlib inverted query -v -f qfile.txt --query-type match-count inverted.ski
+//! ```
+//! Queries will be sketched anew each time, we do not yet support saving these sketches.
+//!
+//! Three query types are supported:
+//! - `match-count` (default). Gives the count of bins matching between samples and queries.
+//! - `all-bins`. Give samples which have identical sketches to the query.
+//! - `any-bin`. Gives samples which have at least one bin matching with the query.
+//!
+//! To convert from counts to a Jaccard index, you can use the count $c$ (intersection) from
+//! the first mode using the sketch size $s$ by $J = \frac{c}{2s - c}$.
+//!
+//! All bins will (rapidly) use AND operations to find very close neighbours, any bins
+//! will use OR operations to rule out very distant neighbours.
+//!
+//! #### Preclustering
+//! This is an accelerated nearest neighbour query reducing the total number of comparisons, that requires:
+//! - An inverted index file, and corresponding `.skq`, generated with the `--write-skq`
+//! flag to `inverted build`. The inverted index should use a small sketch size (e.g. ~10).
+//! - A standard sketch database with `.skd` and `.skm`.
+//!
+//! So with `inverted.ski`, `inverted.skq`, `standard.skd` and `standard.skm` one can run:
+//! ```bash
+//! sketchlib inverted precluster -v --knn 10 inverted.ski --skd standard --ani
+//! ```
+//!
+//! ### Other operations
+//!
+//! - `merge` joins two existing sketch databases.
+//! - `append` sketches new input samples, and adds them to an existing database.
+//! - `delete` removes samples from a sketch database.
+//!
+//! ## Enabling PDB->3Di
+//! conda doesn't work, so make sure it is deactivated
+//! ```bash
+//! export PYO3_PYTHON=python3
+//! python3 -m venv 3di_venv
+//! source 3di_venv/bin/activate
+//! python3 -m pip install numpy biopython mini3di
+//! cargo run -F 3di
+//! export PYTHONPATH=${PYTHONPATH}:$(realpath ./)/3di_venv/lib/python3.12/site-packages
+//! ```
 
-// #![warn(missing_docs)]
+#![warn(missing_docs)]
 
-use std::collections::BinaryHeap;
 use std::io::Write;
+use std::sync::mpsc;
 use std::time::Instant;
 
 #[macro_use]
@@ -18,25 +138,19 @@ extern crate num_cpus;
 use anyhow::Error;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
-use sketch::num_bins;
 
 pub mod cli;
 use crate::cli::*;
 
-pub mod sketch;
 use crate::hashing::HashType;
-use crate::sketch::sketch_files;
 
-pub mod multisketch;
-use crate::multisketch::MultiSketch;
+pub mod sketch;
+use crate::sketch::multisketch::MultiSketch;
+use crate::sketch::sketch_datafile::SketchArrayReader;
+use crate::sketch::{num_bins, sketch_files};
 
 pub mod inverted;
 use crate::inverted::Inverted;
-
-pub mod jaccard;
-use crate::jaccard::{ani_pois, core_acc_dist, jaccard_dist};
-
-pub mod sketch_datafile;
 
 pub mod distances;
 use crate::distances::*;
@@ -45,11 +159,10 @@ pub mod io;
 use crate::io::{get_input_list, parse_kmers, read_subset_names, reorder_input_files, set_ostream};
 pub mod structures;
 
-pub mod bloom_filter;
 pub mod hashing;
 
 pub mod utils;
-use crate::utils::get_progress_bar;
+use crate::utils::{get_progress_bar, strip_sketch_extension};
 
 use std::fs::{File, OpenOptions};
 use std::io::copy;
@@ -58,9 +171,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 /// Default k-mer size for (genome) sketching
-pub const DEFAULT_KMER: usize = 17;
-/// Chunk size in parallel distance calculations
-pub const CHUNK_SIZE: usize = 1000;
+pub const DEFAULT_KMER: usize = 21;
 
 #[doc(hidden)]
 pub fn main() -> Result<(), Error> {
@@ -98,7 +209,7 @@ pub fn main() -> Result<(), Error> {
             }
 
             // An extra thread is needed for the writer. This doesn't 'overuse' CPU
-            check_threads(*threads + 1);
+            check_and_set_threads(*threads + 1);
 
             // Read input
             log::info!("Getting input files");
@@ -152,13 +263,13 @@ pub fn main() -> Result<(), Error> {
             ani,
             threads,
         } => {
-            check_threads(*threads);
+            check_and_set_threads(*threads);
 
             let mut output_file = set_ostream(output);
 
             let ref_db_name = utils::strip_sketch_extension(ref_db);
 
-            let mut references = MultiSketch::load(ref_db_name)
+            let mut references = MultiSketch::load_metadata(ref_db_name)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             log::info!("Loading sketch data from {}.skd", ref_db_name);
@@ -176,10 +287,13 @@ pub fn main() -> Result<(), Error> {
                     knn = Some(n - 1);
                 }
             }
+            let dist_type = set_k(&references, *kmer, *ani).unwrap_or_else(|e| {
+                panic!("Error setting k size: {e}");
+            });
 
             // Read queries if supplied. Note no subsetting here
             let queries = if let Some(query_db_name) = query_db {
-                let mut queries = MultiSketch::load(query_db_name).unwrap_or_else(|_| {
+                let mut queries = MultiSketch::load_metadata(query_db_name).unwrap_or_else(|_| {
                     panic!("Could not read sketch metadata from {query_db_name}.skm")
                 });
                 log::info!("Loading query sketch data from {}.skd", query_db_name);
@@ -190,24 +304,6 @@ pub fn main() -> Result<(), Error> {
                 None
             };
 
-            // Set type of distances to use
-            let k_idx;
-            let mut k_f32 = 0.0;
-            let dist_type = if let Some(k) = kmer {
-                k_idx = references.get_k_idx(*k);
-                k_f32 = *k as f32;
-                DistType::Jaccard(*k, *ani)
-            } else {
-                k_idx = None;
-                DistType::CoreAcc
-            };
-            log::info!("{dist_type}");
-
-            let percent = true; // In progress bar, don't show total number as huge
-
-            // TODO: possible improvement would be to load sketch slices when i, j change
-            // This would require a change to core_acc where multiple k-mer lengths are loaded at once
-            // Overall this would be nicer I think (not sure about speed)
             match queries {
                 None => {
                     // Ref v ref functions
@@ -215,53 +311,7 @@ pub fn main() -> Result<(), Error> {
                         None => {
                             // Self mode (dense)
                             log::info!("Calculating all ref vs ref distances");
-                            let mut distances = DistanceMatrix::new(&references, None, dist_type);
-                            let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
-                            let progress_bar = get_progress_bar(par_chunk, percent, args.quiet);
-                            distances
-                                .dists_mut()
-                                .par_chunks_mut(par_chunk)
-                                .progress_with(progress_bar)
-                                .enumerate()
-                                .for_each(|(chunk_idx, dist_slice)| {
-                                    // Get first i, j index for the chunk
-                                    let start_dist_idx = chunk_idx * CHUNK_SIZE;
-                                    let mut i = calc_row_idx(start_dist_idx, n);
-                                    let mut j = calc_col_idx(start_dist_idx, i, n);
-                                    for dist_idx in 0..CHUNK_SIZE {
-                                        // TODO might be good to try and move this if out of the loop... but may not matter
-                                        if let Some(k) = k_idx {
-                                            let mut dist = jaccard_dist(
-                                                references.get_sketch_slice(i, k),
-                                                references.get_sketch_slice(j, k),
-                                                references.sketchsize64,
-                                            );
-                                            dist = if *ani {
-                                                ani_pois(dist, k_f32)
-                                            } else {
-                                                1.0_f32 - dist
-                                            };
-                                            dist_slice[dist_idx] = dist;
-                                        } else {
-                                            let dist =
-                                                core_acc_dist(&references, &references, i, j);
-                                            dist_slice[dist_idx * 2] = dist.0;
-                                            dist_slice[dist_idx * 2 + 1] = dist.1;
-                                        }
-
-                                        // Move to next index in upper triangle
-                                        j += 1;
-                                        if j >= n {
-                                            i += 1;
-                                            j = i + 1;
-                                            // End of all dists reached (final chunk)
-                                            if i >= (n - 1) {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                });
-
+                            let distances = self_dists_all(&references, n, dist_type, args.quiet);
                             log::info!("Writing out in long matrix form");
                             write!(output_file, "{distances}")
                                 .expect("Error writing output distances");
@@ -269,81 +319,11 @@ pub fn main() -> Result<(), Error> {
                         Some(nn) => {
                             // Self mode (sparse)
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-                            let mut sp_distances =
-                                SparseDistanceMatrix::new(&references, nn, dist_type);
-                            let progress_bar = get_progress_bar(nn, percent, args.quiet);
-                            // TODO is it possible to add a template to the trait so this code is only written once? Maybe not
-                            match sp_distances.dists_mut() {
-                                DistVec::Jaccard(distances) => {
-                                    let k = k_idx.unwrap();
-                                    distances
-                                        .par_chunks_mut(nn)
-                                        .progress_with(progress_bar)
-                                        .enumerate()
-                                        .for_each(|(i, row_dist_slice)| {
-                                            let mut heap = BinaryHeap::with_capacity(nn);
-                                            let i_sketch = references.get_sketch_slice(i, k);
-                                            for j in 0..n {
-                                                if i == j {
-                                                    continue;
-                                                }
-                                                let mut dist = jaccard_dist(
-                                                    i_sketch,
-                                                    references.get_sketch_slice(j, k),
-                                                    references.sketchsize64,
-                                                );
-                                                dist = if *ani {
-                                                    ani_pois(dist, k_f32)
-                                                } else {
-                                                    1.0_f32 - dist
-                                                };
-                                                let dist_item = SparseJaccard(j, dist);
-                                                if heap.len() < nn
-                                                    || dist_item < *heap.peek().unwrap()
-                                                {
-                                                    heap.push(dist_item);
-                                                    if heap.len() > nn {
-                                                        heap.pop();
-                                                    }
-                                                }
-                                            }
-                                            debug_assert_eq!(row_dist_slice.len(), heap.len());
-                                            row_dist_slice
-                                                .clone_from_slice(&heap.into_sorted_vec());
-                                        });
-                                }
-                                DistVec::CoreAcc(distances) => {
-                                    distances
-                                        .par_chunks_mut(nn)
-                                        .progress_with(progress_bar)
-                                        .enumerate()
-                                        .for_each(|(i, row_dist_slice)| {
-                                            let mut heap = BinaryHeap::with_capacity(nn);
-                                            for j in 0..n {
-                                                if i == j {
-                                                    continue;
-                                                }
-                                                let dists =
-                                                    core_acc_dist(&references, &references, i, j);
-                                                let dist_item = SparseCoreAcc(j, dists.0, dists.1);
-                                                if heap.len() < nn
-                                                    || dist_item < *heap.peek().unwrap()
-                                                {
-                                                    heap.push(dist_item);
-                                                    if heap.len() > nn {
-                                                        heap.pop();
-                                                    }
-                                                }
-                                            }
-                                            debug_assert_eq!(row_dist_slice.len(), heap.len());
-                                            row_dist_slice
-                                                .clone_from_slice(&heap.into_sorted_vec());
-                                        });
-                                }
-                            }
+                            let distances =
+                                self_dists_knn(&references, n, nn, dist_type, args.quiet);
 
                             log::info!("Writing out in sparse matrix form");
-                            write!(output_file, "{sp_distances}")
+                            write!(output_file, "{distances}")
                                 .expect("Error writing output distances");
                         }
                     }
@@ -351,51 +331,10 @@ pub fn main() -> Result<(), Error> {
                 Some(query_db) => {
                     // Ref v query mode
                     log::info!("Calculating all ref vs query distances");
-                    let mut distances =
-                        DistanceMatrix::new(&references, Some(&query_db), dist_type);
-                    let par_chunk = CHUNK_SIZE * distances.n_dist_cols();
-                    let nq = query_db.number_samples_loaded();
-                    let progress_bar = get_progress_bar(par_chunk, percent, args.quiet);
-                    distances
-                        .dists_mut()
-                        .par_chunks_mut(par_chunk)
-                        .progress_with(progress_bar)
-                        .enumerate()
-                        .for_each(|(chunk_idx, dist_slice)| {
-                            // Get first i, j index for the chunk
-                            let start_dist_idx = chunk_idx * CHUNK_SIZE;
-                            let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
-                            for dist_idx in 0..CHUNK_SIZE {
-                                if let Some(k) = k_idx {
-                                    let mut dist = jaccard_dist(
-                                        references.get_sketch_slice(i, k),
-                                        query_db.get_sketch_slice(j, k),
-                                        references.sketchsize64,
-                                    );
-                                    dist = if *ani {
-                                        ani_pois(dist, k_f32)
-                                    } else {
-                                        1.0_f32 - dist
-                                    };
-                                    dist_slice[dist_idx] = dist;
-                                } else {
-                                    let dist = core_acc_dist(&references, &query_db, i, j);
-                                    dist_slice[dist_idx * 2] = dist.0;
-                                    dist_slice[dist_idx * 2 + 1] = dist.1;
-                                }
 
-                                // Move to next index
-                                j += 1;
-                                if j >= nq {
-                                    i += 1;
-                                    j = 0;
-                                    // End of all dists reached (final chunk)
-                                    if i >= n {
-                                        break;
-                                    }
-                                }
-                            }
-                        });
+                    let nq = query_db.number_samples_loaded();
+                    let distances =
+                        self_query_dists_all(&references, &query_db, n, nq, dist_type, args.quiet);
 
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");
@@ -408,13 +347,15 @@ pub fn main() -> Result<(), Error> {
             let ref_db_name2 = utils::strip_sketch_extension(db2);
 
             log::info!("Reading input metadata");
-            let mut sketches1: MultiSketch = MultiSketch::load(ref_db_name1).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
-            });
+            let mut sketches1: MultiSketch = MultiSketch::load_metadata(ref_db_name1)
+                .unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
+                });
 
-            let sketches2: MultiSketch = MultiSketch::load(ref_db_name2).unwrap_or_else(|_| {
-                panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
-            });
+            let sketches2: MultiSketch =
+                MultiSketch::load_metadata(ref_db_name2).unwrap_or_else(|_| {
+                    panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
+                });
             // check compatibility
             if !sketches1.is_compatible_with(&sketches2) {
                 panic!("Databases are not compatible for merging.")
@@ -431,107 +372,243 @@ pub fn main() -> Result<(), Error> {
             log::info!("Merging and saving sketch data to {}.skd", output);
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
+        Commands::Inverted { command } => match command {
+            InvertedCommands::Build {
+                seq_files,
+                file_list,
+                output,
+                write_skq,
+                species_names,
+                single_strand,
+                min_count,
+                min_qual,
+                threads,
+                sketch_size,
+                kmer_length,
+            } => {
+                // An extra thread is needed for the writer
+                check_and_set_threads(*threads + 1);
 
-        Commands::Inverted {
-            seq_files,
-            file_list,
-            output,
-            species_names,
-            single_strand,
-            min_count,
-            min_qual,
-            threads,
-            sketch_size,
-            kmer_length,
-        } => {
-            // An extra thread is needed for the writer
-            check_threads(*threads + 1);
+                // Get input files
+                log::info!("Getting input files");
+                let input_files: Vec<(String, String, Option<String>)> =
+                    get_input_list(file_list, seq_files);
+                log::info!("Parsed {} samples in input list", input_files.len());
 
-            // Get input files
-            log::info!("Getting input files");
-            let input_files: Vec<(String, String, Option<String>)> =
-                get_input_list(file_list, seq_files);
-            log::info!("Parsed {} samples in input list", input_files.len());
+                // Reordering by species, or default
+                let file_order = if let Some(species_name_file) = species_names {
+                    reorder_input_files(&input_files, species_name_file)
+                } else {
+                    (0..input_files.len()).collect()
+                };
 
-            // Reordering by species, or default
-            let file_order = if let Some(species_name_file) = species_names {
-                reorder_input_files(&input_files, species_name_file)
-            } else {
-                (0..input_files.len()).collect()
-            };
+                let skq_file = if *write_skq {
+                    Some(format!("{}.skq", output))
+                } else {
+                    None
+                };
 
-            // Create an Inverted instance using the new method
-            let rc = !*single_strand;
-            let seq_type = &HashType::DNA;
-            let inverted = Inverted::new(
-                &input_files,
-                &file_order,
-                *kmer_length,
-                *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
-                seq_type,
-                rc,
-                *min_count,
-                *min_qual,
-                args.quiet,
-            );
-            inverted.save(output)?;
-            Ok(())
-        }
+                let rc = !*single_strand;
+                let seq_type = &HashType::DNA;
+                let inverted = Inverted::new(
+                    &input_files,
+                    skq_file,
+                    &file_order,
+                    *kmer_length,
+                    *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
+                    seq_type,
+                    rc,
+                    *min_count,
+                    *min_qual,
+                    args.quiet,
+                );
+                inverted.save(output)?;
+                log::info!("Index info:\n{inverted:?}");
+                Ok(())
+            }
+            InvertedCommands::Query {
+                ski,
+                seq_files,
+                file_list,
+                output,
+                query_type,
+                min_count,
+                min_qual,
+                threads,
+            } => {
+                let mut output_file = set_ostream(output);
+                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
+                log::info!("Read inverted index:\n{inverted_index:?}");
 
-        // TODO check and enable this code
-        // Commands::InvertedQuery {
-        //     query_seq_files,
-        //     query_file_list,
-        //     inverted_index,
-        //     output,
-        //     single_strand,
-        //     min_count,
-        //     min_qual,
-        //     threads,
-        //     level,
-        //     mut sketch_size,
-        //     kmer_length,
-        // } => {
-        //     // An extra thread is needed for the writer
-        //     check_threads(*threads + 1);
+                // Get input files
+                log::info!("Getting input queries");
+                let input_files: Vec<(String, String, Option<String>)> =
+                    get_input_list(file_list, seq_files);
+                log::info!("Parsed {} samples in input query list", input_files.len());
 
-        //     //get input files
-        //     log::info!("Getting input files");
-        //     let input_query: Vec<(String, String, Option<String>)> =
-        //         get_input_list(query_file_list, query_seq_files);
-        //     log::info!("Parsed {} samples in input query list", input_query.len());
+                log::info!("Sketching input queries");
+                check_and_set_threads(*threads + 1); // Writer thread
+                let (queries, query_names) =
+                    inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
 
-        //     let rc = !*single_strand;
-        //     let seq_type = &HashType::DNA;
+                log::info!("Running queries in mode: {query_type}");
+                // Header
+                write!(output_file, "Query")?;
+                if *query_type == InvertedQueryType::MatchCount {
+                    for name in inverted_index.sample_names() {
+                        write!(output_file, "\t{name}")?;
+                    }
+                    writeln!(output_file)?;
+                } else {
+                    writeln!(output_file, "\tMatches")?;
+                }
 
-        //     // Load the previously created inverted index from file
-        //     log::info!("Loading inverted index from {}", inverted_index);
-        //     let inverted = match Inverted::load(inverted_index) {
-        //         Ok(idx) => idx,
-        //         Err(e) => {
-        //             log::error!("Error loading inverted index: {}", e);
-        //             return Err(e.into());
-        //         }
-        //     };
+                // Query loop (parallelised)
+                let (tx, rx) = mpsc::channel();
+                let percent = false;
+                let progress_bar = get_progress_bar(queries.len(), percent, args.quiet);
+                rayon::scope(|s| {
+                    s.spawn(|_| {
+                        queries
+                            .par_iter()
+                            .progress_with(progress_bar)
+                            .zip(query_names)
+                            .map(|(q, q_name)| match query_type {
+                                InvertedQueryType::MatchCount => {
+                                    (q_name, inverted_index.query_against_inverted_index(q))
+                                }
+                                InvertedQueryType::AllBins => {
+                                    (q_name, inverted_index.all_shared_bins(q))
+                                }
+                                InvertedQueryType::AnyBin => {
+                                    (q_name, inverted_index.any_shared_bins(q))
+                                }
+                            })
+                            .for_each_with(tx, |tx, dists| {
+                                let _ = tx.send(dists);
+                            });
+                    });
+                });
+                for (q_name, dist) in rx {
+                    write!(output_file, "{q_name}")?;
+                    if *query_type == InvertedQueryType::MatchCount {
+                        for distance in dist {
+                            write!(output_file, "\t{distance}")?;
+                        }
+                    } else {
+                        write!(
+                            output_file,
+                            "\t{}",
+                            inverted_index.sample_at(dist[0] as usize)
+                        )?;
+                        for r_name in dist
+                            .iter()
+                            .skip(1)
+                            .map(|idx| inverted_index.sample_at(*idx as usize))
+                        {
+                            write!(output_file, ",{r_name}")?;
+                        }
+                    }
+                    writeln!(output_file)?;
+                }
+                Ok(())
+            }
+            InvertedCommands::Precluster {
+                ski,
+                skd,
+                count,
+                output,
+                mut knn,
+                ani,
+                threads,
+            } => {
+                check_and_set_threads(*threads);
 
-        //     let n_samples = inverted.sample_names.len();
-        //     log::info!("Loaded inverted index with {} samples", n_samples);
+                // Load the inverted index
+                let input_prefix = strip_sketch_extension(ski);
+                let inverted_index = Inverted::load(input_prefix)?;
 
-        //     // Create sketches for all query files using sketch_files_inverted
-        //     let (query_sketches, query_names) = Inverted::sketch_files_inverted(
-        //         &input_query,
-        //         kmer_length,
-        //         sketch_size,
-        //         seq_type,
-        //         rc,
-        //         *min_count,
-        //         *min_qual,
-        //     );
+                // Two mutually exclusive modes
+                if *count {
+                    // For count, count the total number of pairs prefilter yields
+                    // Note this can be high memory and relatively long running (~90m and 50Gb for 661k samples, 32 threads)
+                    let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
+                    println!(
+                        "Identified {} prefilter pairs from a max of {}",
+                        prefilter_pairs.len(),
+                        inverted_index.sample_names().len()
+                            * (inverted_index.sample_names().len() - 1)
+                            / 2
+                    );
+                } else if let Some(ref_db_input) = skd {
+                    let mut output_file = set_ostream(output);
 
-        //     let match_counts = inverted.query_against_inverted_index(query_sketches, n_samples);
+                    // Open the .skq
+                    let skq_filename = &format!("{}.skq", input_prefix);
+                    log::info!("Loading queries from {skq_filename}");
+                    let (mmap, bin_stride, kmer_stride, sample_stride) =
+                        (false, 1, 1, inverted_index.sketch_size());
+                    let mut skq_reader = SketchArrayReader::open(
+                        skq_filename,
+                        mmap,
+                        bin_stride,
+                        kmer_stride,
+                        sample_stride,
+                    );
+                    let skq_bins =
+                        skq_reader.read_all_from_skq(sample_stride * inverted_index.sketch_size());
 
-        //     Ok(())
-        // }
+                    // Load the .skd/.skm
+                    let ref_db_name = utils::strip_sketch_extension(ref_db_input);
+                    let mut references =
+                        MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
+                            panic!("Could not read sketch metadata from {ref_db_name}.skm")
+                        });
+                    log::info!("Loading sketch data from {}.skd", ref_db_name);
+                    references.read_sketch_data(ref_db_name);
+                    log::info!("Read reference sketches:\n{references:?}");
+                    let n = references.number_samples_loaded();
+                    if knn >= n {
+                        log::warn!("knn={knn} is higher than number of samples={n}");
+                        knn = n - 1;
+                    }
+
+                    // Check that k-mer exists in the .skd, and find its index
+                    let kmer = inverted_index.kmer();
+                    // This panics if k not found. Maybe more graceful error if this happens
+                    let dist_type = set_k(&references, Some(kmer), *ani).unwrap_or_else(|e| {
+                        panic!("K-mer size {kmer} used for .ski not found in .skd: {e}");
+                    });
+
+                    // Run the distances with both indexes
+                    log::info!(
+                        "Calculating sparse ref vs ref distances with {knn} nearest neighbours"
+                    );
+                    log::info!(
+                        "Preclustering with k={} and s={}",
+                        kmer,
+                        inverted_index.sketch_size()
+                    );
+                    let distances = self_dists_knn_precluster(
+                        &references,
+                        &inverted_index,
+                        &skq_bins,
+                        skq_reader.sample_stride,
+                        n,
+                        knn,
+                        dist_type,
+                        args.quiet,
+                    );
+
+                    // Write the results
+                    log::info!("Writing out in sparse matrix form");
+                    write!(output_file, "{distances}").expect("Error writing output distances");
+                }
+
+                Ok(())
+            }
+        },
+
         Commands::Append {
             db,
             seq_files,
@@ -545,7 +622,7 @@ pub fn main() -> Result<(), Error> {
             level,
         } => {
             // An extra thread is needed for the writer. This doesn't 'overuse' CPU
-            check_threads(*threads + 1);
+            check_and_set_threads(*threads + 1);
             //get input files
             log::info!("Getting input files");
             let input_files: Vec<(String, String, Option<String>)> =
@@ -553,7 +630,7 @@ pub fn main() -> Result<(), Error> {
             log::info!("Parsed {} samples in input list", input_files.len());
 
             //check if any of the new files are already existant in the db
-            let db_metadata: MultiSketch = MultiSketch::load(db)?;
+            let db_metadata: MultiSketch = MultiSketch::load_metadata(db)?;
 
             if !db_metadata.append_compatibility(&input_files) {
                 panic!("Databases are not compatible for merging.")
@@ -635,7 +712,7 @@ pub fn main() -> Result<(), Error> {
             let ids: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
             log::info!("Reading input metadata");
-            let mut sketches: MultiSketch = MultiSketch::load(ref_db)
+            let mut sketches: MultiSketch = MultiSketch::load_metadata(ref_db)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
 
             // write new .skm
@@ -656,7 +733,8 @@ pub fn main() -> Result<(), Error> {
         } => {
             if skm_file.ends_with(".ski") {
                 let ski_file = &skm_file[0..skm_file.len() - 4];
-                let index = Inverted::load(ski_file).unwrap_or_else(|_| {
+                let index = Inverted::load(ski_file).unwrap_or_else(|err| {
+                    println!("Read error: {err}");
                     panic!("Could not read inverted index from {ski_file}.ski")
                 });
                 if *sample_info {
@@ -672,7 +750,7 @@ pub fn main() -> Result<(), Error> {
                 } else {
                     skm_file.as_str()
                 };
-                let sketches = MultiSketch::load(ref_db_name).unwrap_or_else(|_| {
+                let sketches = MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
                     panic!("Could not read sketch metadata from {ref_db_name}.skm")
                 });
                 if *sample_info {
