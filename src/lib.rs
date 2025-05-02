@@ -1,10 +1,130 @@
 //! Fast distance calculations between biological sequences (DNA, AA or structures
 //! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
-//! distance, with the PopPUNK method to calculate core and accessory distances. nthash/aahash
+//! distance, with the [PopPUNK method](https://poppunk.bacpop.org/index.html) to calculate core and accessory distances. nthash/aahash
 //! are used for hash functions to create the sketches
 //!
-//! This package is a work in progress, but is mature enough for research use. See README.md
-//! for current CLI usage.
+//! ## Files/databases
+//!
+//! Sketch databases have two files: `.skm` which is the metadata (samples names, base counts etc)
+//! and `.skd` which is the actual sketch data. These must have the same prefix.
+//!
+//! Inverted indexes are `.ski` files, and should be specified using their full name (not just the prefix).
+//! These optionally include and `.skq` file which is needed if used for preclustering.
+//!
+//! ## Usage
+//! With all options we typically recommend using `-v` to see all progress during the run.
+//!
+//! ### Sketching
+//!
+//! Using input fasta/fastq files, create a sketch database. Run `sketchlib sketch -h` to see the help.
+//!
+//! - List .fasta files on the command line, or use `-f` to provide a file(s). Inputs can be gzipped or not, this is automatically detected.
+//! From file, these are one line per sample listing:
+//!     - One column (fasta input): file name, which is also used as the sample name
+//!     - Two columns (fasta input): sample name and file name
+//!     - Three columns (fastq input): sample name and two read files
+//! - To set the k-mer size in the sketch database you can either give a list of sizes with `--k-vals`
+//! or a sequence `--k-seq` with start,stop,step. e.g. `--k-seq 17,29,4` would sketch at k=17, 21, 25 and 29.
+//! - Set the sketch size with `-s`. Typically 1000 is enough for species level resolution, 10000 for within-species/strain
+//! resolution and 100000-1000000 for SNP level resolution.
+//! - To sketch amino acid sequences use `--seq-type aa --concat-fasta` if you have the typical case
+//! of each fasta file being a multifasta with many aa sequences. Each one will then be its own sample.
+//! - You can also sketch structures with .pdb input, see 'Enabling PDB->3Di' below. This is experimental.
+//!
+//! ### Distances
+//!
+//! To compute internal all-vs-all core and accessory distances use:
+//! ```bash
+//! sketchlib dist db_name
+//! ```
+//! Note the database names can be the prefix, or the full path to the .skm file. The output
+//! is in pairwise 'long' format, which lists the upper triangle of the distance matrix row-by-row.
+//!
+//! To calculate distances between two different sample sets, each in their own sketch database, use:
+//! ```bash
+//! sketchlib dist db1 db2
+//! ```
+//! For example, if you want to query distances of a new sample against an existing database,
+//! first sketch the new sample with e.g. `sketchlib sketch -o db2 new_sample.fasta`, then
+//! run the above command.
+//!
+//! Modifiers:
+//! - Use `-k` to calculate Jaccard distance at the given k. Otherwise the default is to
+//! calculate across multiple k and output core and accessory distances.
+//! - Use `--ani` with `-k` to transform the Jaccard distance into average nucleotide identity.
+//! - Use `--subset` to provide a list of sample names to include in the distance calculations,
+//! only these sample will be loaded from the `.skd` file.
+//! - Use `-o` to write the distances to a file. The default it to write to stdout, so you can also
+//! use `>` to redirect to a file (progress messages are written to stderr).
+//! - Use `--knn` to only keep this many nearest neighbour distances. For very large databases
+//! it may be useful to keep only ~50 distances. This makes the memory use manageable. This sparse output
+//! can be used with e.g. [mandrake](https://github.com/bacpop/mandrake).
+//!
+//! ### Inverted indexes
+//!
+//! Inverted indexes can be used for:
+//!
+//! - Compressed storage of large numbers of sketches.
+//! - Fast querying of new samples against large numbers of sketches.
+//! - Preclustering to speed up distance operations.
+//!
+//! #### Building
+//!
+//! Similar to a normal sketch:
+//! ```bash
+//! sketchlib inverted build -o inverted -v -k 21 -s 10 -f rfile.txt
+//! ```
+//! Provide sample labels (for example species, or clusters) with `--species-names`,
+//! tab separated sample and label. These do not need to totally overlap with the samples in
+//! the database. Samples will be reordered so that clustered samples are next to each
+//! other in the index, reducing size and increasing efficiency.
+//!
+//! #### Querying
+//!
+//! Query samples can be provided as a list or with `-f`:
+//! ```bash
+//! sketchlib inverted query -v -f qfile.txt --query-type match-count inverted.ski
+//! ```
+//! Queries will be sketched anew each time, we do not yet support saving these sketches.
+//!
+//! Three query types are supported:
+//! - `match-count` (default). Gives the count of bins matching between samples and queries.
+//! - `all-bins`. Give samples which have identical sketches to the query.
+//! - `any-bin`. Gives samples which have at least one bin matching with the query.
+//!
+//! To convert from counts to a Jaccard index, you can use the count $c$ (intersection) from
+//! the first mode using the sketch size $s$ by $J = \frac{c}{2s - c}$.
+//!
+//! All bins will (rapidly) use AND operations to find very close neighbours, any bins
+//! will use OR operations to rule out very distant neighbours.
+//!
+//! #### Preclustering
+//! This is an accelerated nearest neighbour query reducing the total number of comparisons, that requires:
+//! - An inverted index file, and corresponding `.skq`, generated with the `--write-skq`
+//! flag to `inverted build`. The inverted index should use a small sketch size (e.g. ~10).
+//! - A standard sketch database with `.skd` and `.skm`.
+//!
+//! So with `inverted.ski`, `inverted.skq`, `standard.skd` and `standard.skm` one can run:
+//! ```bash
+//! sketchlib inverted precluster -v --knn 10 inverted.ski --skd standard --ani
+//! ```
+//!
+//! ### Other operations
+//!
+//! - `merge` joins two existing sketch databases.
+//! - `append` sketches new input samples, and adds them to an existing database.
+//! - `delete` removes samples from a sketch database.
+//!
+//! ## Enabling PDB->3Di
+//! conda doesn't work, so make sure it is deactivated
+//! ```bash
+//! export PYO3_PYTHON=python3
+//! python3 -m venv 3di_venv
+//! source 3di_venv/bin/activate
+//! python3 -m pip install numpy biopython mini3di
+//! cargo run -F 3di
+//! export PYTHONPATH=${PYTHONPATH}:$(realpath ./)/3di_venv/lib/python3.12/site-packages
+//! ```
 
 #![warn(missing_docs)]
 
