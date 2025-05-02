@@ -1,6 +1,6 @@
 [package]
 name = "sketchlib"
-version = "0.2.0"
+version = "0.2.1"
 authors = [
     "John Lees <jlees@ebi.ac.uk>",
     "Nicholas Croucher <n.croucher@imperial.ac.uk>",
@@ -76,5 +76,4 @@ lto = true
 
 # https://github.com/victe/rust-latex-doc-minimal-example
 [package.metadata.docs.rs]
-features = ["default"]
 rustdoc-args = ["--cfg", "docsrs", "--html-in-header", "docs-header.html"]
