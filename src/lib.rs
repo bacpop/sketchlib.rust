@@ -92,8 +92,8 @@
 //! - `all-bins`. Give samples which have identical sketches to the query.
 //! - `any-bin`. Gives samples which have at least one bin matching with the query.
 //!
-//! To convert from counts to a Jaccard index, you can use the count $c$ (intersection) from
-//! the first mode using the sketch size $s$ by $J = \frac{c}{2s - c}$.
+//! To convert from counts to a Jaccard index, you can use the count (intersection, c) from
+//! the first mode using the sketch size (s) by J = c / (2s - c).
 //!
 //! All bins will (rapidly) use AND operations to find very close neighbours, any bins
 //! will use OR operations to rule out very distant neighbours.
