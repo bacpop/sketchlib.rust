@@ -95,7 +95,8 @@ impl MultiSketch {
         let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
         // For backwards compatibility (field added in v0.2.0)
         if skm_obj.sketchsize64 == 0 {
-            skm_obj.sketchsize64 = num_bins(skm_obj.sketch_size).0;
+            skm_obj.sketchsize64 = skm_obj.sketch_size;
+            skm_obj.sketch_size *= 64;
         }
 
         Ok(skm_obj)
