@@ -178,7 +178,8 @@ impl Inverted {
             if let Some(matching_samples) = self.index[bin_idx].get(query_bin_hash) {
                 matching_bits &= matching_samples;
             } else {
-                matching_bits = RoaringBitmap::new();
+                matching_bits.clear();
+                break;
             }
         }
 
