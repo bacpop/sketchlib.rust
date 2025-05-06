@@ -24,6 +24,7 @@ pub struct MultiSketch {
     /// Number of sketch bins (a multiple of 64)
     pub sketch_size: u64,
     /// Sketch size divided by 64
+    #[serde(default)]
     pub sketchsize64: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
@@ -91,7 +92,12 @@ impl MultiSketch {
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
-        let skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        // For backwards compatibility (field added in v0.2.0)
+        if skm_obj.sketchsize64 == 0 {
+            skm_obj.sketchsize64 = num_bins(skm_obj.sketch_size).0;
+        }
+
         Ok(skm_obj)
     }
 
