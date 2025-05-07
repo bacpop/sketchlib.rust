@@ -36,7 +36,7 @@ jobs:
       with:
         # Repository upload token - get it from codecov.io. Required only for private repositories
         token: ${{ secrets.CODECOV_TOKEN }}
-        file: ./lcov.info
+        files: ./lcov.info
         # Specify whether the Codecov output should be verbose
         verbose: true
         fail_ci_if_error: true
