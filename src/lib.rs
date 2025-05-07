@@ -19,16 +19,16 @@
 //! Using input fasta/fastq files, create a sketch database. Run `sketchlib sketch -h` to see the help.
 //!
 //! - List .fasta files on the command line, or use `-f` to provide a file(s). Inputs can be gzipped or not, this is automatically detected.
-//! From file, these are one line per sample listing:
+//!   From file, these are one line per sample listing:
 //!     - One column (fasta input): file name, which is also used as the sample name
 //!     - Two columns (fasta input): sample name and file name
 //!     - Three columns (fastq input): sample name and two read files
 //! - To set the k-mer size in the sketch database you can either give a list of sizes with `--k-vals`
-//! or a sequence `--k-seq` with start,stop,step. e.g. `--k-seq 17,29,4` would sketch at k=17, 21, 25 and 29.
+//!   or a sequence `--k-seq` with start,stop,step. e.g. `--k-seq 17,29,4` would sketch at k=17, 21, 25 and 29.
 //! - Set the sketch size with `-s`. Typically 1000 is enough for species level resolution, 10000 for within-species/strain
-//! resolution and 100000-1000000 for SNP level resolution.
+//!   resolution and 100000-1000000 for SNP level resolution.
 //! - To sketch amino acid sequences use `--seq-type aa --concat-fasta` if you have the typical case
-//! of each fasta file being a multifasta with many aa sequences. Each one will then be its own sample.
+//!   of each fasta file being a multifasta with many aa sequences. Each one will then be its own sample.
 //! - You can also sketch structures with .pdb input, see 'Enabling PDB->3Di' below. This is experimental.
 //!
 //! ### Distances
@@ -50,15 +50,15 @@
 //!
 //! Modifiers:
 //! - Use `-k` to calculate Jaccard distance at the given k. Otherwise the default is to
-//! calculate across multiple k and output core and accessory distances.
+//!   calculate across multiple k and output core and accessory distances.
 //! - Use `--ani` with `-k` to transform the Jaccard distance into average nucleotide identity.
 //! - Use `--subset` to provide a list of sample names to include in the distance calculations,
-//! only these sample will be loaded from the `.skd` file.
+//!   only these sample will be loaded from the `.skd` file.
 //! - Use `-o` to write the distances to a file. The default it to write to stdout, so you can also
-//! use `>` to redirect to a file (progress messages are written to stderr).
+//!   use `>` to redirect to a file (progress messages are written to stderr).
 //! - Use `--knn` to only keep this many nearest neighbour distances. For very large databases
-//! it may be useful to keep only ~50 distances. This makes the memory use manageable. This sparse output
-//! can be used with e.g. [mandrake](https://github.com/bacpop/mandrake).
+//!   it may be useful to keep only ~50 distances. This makes the memory use manageable. This sparse output
+//!   can be used with e.g. [mandrake](https://github.com/bacpop/mandrake).
 //!
 //! ### Inverted indexes
 //!
@@ -101,7 +101,7 @@
 //! #### Preclustering
 //! This is an accelerated nearest neighbour query reducing the total number of comparisons, that requires:
 //! - An inverted index file, and corresponding `.skq`, generated with the `--write-skq`
-//! flag to `inverted build`. The inverted index should use a small sketch size (e.g. ~10).
+//!   flag to `inverted build`. The inverted index should use a small sketch size (e.g. ~10).
 //! - A standard sketch database with `.skd` and `.skm`.
 //!
 //! So with `inverted.ski`, `inverted.skq`, `standard.skd` and `standard.skm` one can run:
@@ -127,6 +127,7 @@
 //! ```
 
 #![warn(missing_docs)]
+#![allow(clippy::too_many_arguments)]
 
 use std::io::Write;
 use std::sync::mpsc;
