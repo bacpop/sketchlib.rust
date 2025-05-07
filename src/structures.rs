@@ -10,6 +10,7 @@ use indicatif::{ProgressIterator, ProgressStyle};
 use pyo3::prelude::*;
 
 #[cfg(feature = "3di")]
+/// Uses python library to convert pdb files into 1D 3di representation
 pub fn pdb_to_3di(input_files: &[InputFastx]) -> Result<Vec<String>, Error> {
     pyo3::prepare_freethreaded_python();
     let py_file = include_str!(concat!(

@@ -24,6 +24,7 @@ pub struct MultiSketch {
     /// Number of sketch bins (a multiple of 64)
     pub sketch_size: u64,
     /// Sketch size divided by 64
+    #[serde(default)]
     pub sketchsize64: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
@@ -77,7 +78,7 @@ impl MultiSketch {
 
     /// Saves the metadata (.skm)
     pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
-        let filename = format!("{}.skm", file_prefix);
+        let filename = format!("{file_prefix}.skm");
         log::info!("Saving sketch metadata to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
@@ -87,11 +88,17 @@ impl MultiSketch {
 
     /// Loads the metadata (.skm)
     pub fn load_metadata(file_prefix: &str) -> Result<Self, Error> {
-        let filename = format!("{}.skm", file_prefix);
+        let filename = format!("{file_prefix}.skm");
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
-        let skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        // For backwards compatibility (field added in v0.2.0)
+        if skm_obj.sketchsize64 == 0 {
+            skm_obj.sketchsize64 = skm_obj.sketch_size;
+            skm_obj.sketch_size *= 64;
+        }
+
         Ok(skm_obj)
     }
 
@@ -133,7 +140,7 @@ impl MultiSketch {
 
     /// Read all the sketch bins from an .skd file
     pub fn read_sketch_data(&mut self, file_prefix: &str) {
-        let filename = format!("{}.skd", file_prefix);
+        let filename = format!("{file_prefix}.skd");
         log::debug!(
             "bin_stride:{} kmer_stride:{} sample_stride:{}",
             self.bin_stride,
@@ -166,7 +173,7 @@ impl MultiSketch {
         }
         self.block_reindex = Some(block_reindex);
 
-        let filename = format!("{}.skd", file_prefix);
+        let filename = format!("{file_prefix}.skd");
         let sketch_reader = SketchArrayReader::open(
             &filename,
             true,
@@ -205,7 +212,7 @@ impl MultiSketch {
         }
 
         if !duplicate_list.is_empty() {
-            println!("Duplicates found: {:?}", duplicate_list);
+            println!("Duplicates found: {duplicate_list:?}");
         }
 
         compatibility
@@ -296,7 +303,7 @@ impl MultiSketch {
             .filter(|&idx| !positions_to_remove.contains(&idx))
             .collect();
 
-        let input_filename = format!("{}.skd", input_prefix);
+        let input_filename = format!("{input_prefix}.skd");
         let sketch_reader = SketchArrayReader::open(
             &input_filename,
             true,
@@ -304,7 +311,7 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride,
         );
-        let output_filename = format!("{}.skd", output_file);
+        let output_filename = format!("{output_file}.skd");
         let mut sketch_writer = SketchArrayWriter::new(
             &output_filename,
             self.bin_stride,
@@ -341,7 +348,7 @@ impl fmt::Display for MultiSketch {
 }
 
 // This is only used in the tests
-// Ignores name_map
+// Ignores name_map and version
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
         let mut metadata_match = true;
@@ -360,10 +367,7 @@ impl PartialEq for MultiSketch {
         {
             if self_sketch != other_sketch {
                 metadata_match = false;
-                eprintln!(
-                    "Sketches mismatching. Self: {}, Other: {}",
-                    self_sketch, other_sketch
-                );
+                eprintln!("Sketches mismatching. Self: {self_sketch}, Other: {other_sketch}");
                 break;
             }
         }
@@ -416,10 +420,12 @@ impl PartialEq for MultiSketch {
         }
 
         if self.sketch_version != other.sketch_version {
-            metadata_match = false;
-            eprintln!(
+            // NB: Doesn't cause failure
+            // metadata_match = false;
+            log::warn!(
                 "Sketch versions are mismatching. Self: {:?}, Other: {:?}",
-                self.sketch_version, other.sketch_version
+                self.sketch_version,
+                other.sketch_version
             );
         }
 
