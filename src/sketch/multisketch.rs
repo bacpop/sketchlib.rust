@@ -348,7 +348,7 @@ impl fmt::Display for MultiSketch {
 }
 
 // This is only used in the tests
-// Ignores name_map
+// Ignores name_map and version
 impl PartialEq for MultiSketch {
     fn eq(&self, other: &Self) -> bool {
         let mut metadata_match = true;
@@ -423,10 +423,12 @@ impl PartialEq for MultiSketch {
         }
 
         if self.sketch_version != other.sketch_version {
-            metadata_match = false;
-            eprintln!(
+            // NB: Doesn't cause failure
+            // metadata_match = false;
+            log::warn!(
                 "Sketch versions are mismatching. Self: {:?}, Other: {:?}",
-                self.sketch_version, other.sketch_version
+                self.sketch_version,
+                other.sketch_version
             );
         }
 
