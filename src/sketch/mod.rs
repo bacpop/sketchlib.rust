@@ -273,7 +273,7 @@ pub fn sketch_files(
     #[cfg(not(feature = "3di"))]
     let struct_strings: Option<Vec<String>> = None;
 
-    log::trace!("{:?}", struct_strings);
+    log::trace!("{struct_strings:?}");
 
     // Open output file
     let data_filename = format!("{output_prefix}.skd");

@@ -135,7 +135,7 @@ impl Inverted {
 
     /// Saves to `file_prefix.ski`, using MessagePack as the serialisation format
     pub fn save(&self, file_prefix: &str) -> Result<(), Error> {
-        let filename = format!("{}.ski", file_prefix);
+        let filename = format!("{file_prefix}.ski");
         log::info!("Saving inverted index to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
@@ -147,7 +147,7 @@ impl Inverted {
     // NB MessagePack rather the CBOR uses here because of
     // https://github.com/enarx/ciborium/issues/96
     pub fn load(file_prefix: &str) -> Result<Self, Error> {
-        let filename = format!("{}.ski", file_prefix);
+        let filename = format!("{file_prefix}.ski");
         log::info!("Loading inverted index from {filename}");
         let ski_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(ski_file);
@@ -264,7 +264,7 @@ impl Inverted {
 
                         if let Some(hash_it) = hash_its.first_mut() {
                             if hash_it.seq_len() == 0 {
-                                panic!("Genome {} has no valid sequence", genome_idx);
+                                panic!("Genome {genome_idx} has no valid sequence");
                             }
 
                             let mut read_filter = if hash_it.reads() {

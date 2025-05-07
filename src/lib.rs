@@ -228,11 +228,7 @@ pub fn main() -> Result<(), Error> {
 
             let (_, sketch_bins, _) = num_bins(*sketch_size);
             log::info!(
-                "Running sketching: k:{:?}; sketch_size:{}; seq:{:?}; threads:{}",
-                kmers,
-                sketch_bins,
-                seq_type,
-                threads
+                "Running sketching: k:{kmers:?}; sketch_size:{sketch_bins}; seq:{seq_type:?}; threads:{threads}"
             );
             let mut sketches = sketch_files(
                 output,
@@ -273,7 +269,7 @@ pub fn main() -> Result<(), Error> {
             let mut references = MultiSketch::load_metadata(ref_db_name)
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
-            log::info!("Loading sketch data from {}.skd", ref_db_name);
+            log::info!("Loading sketch data from {ref_db_name}.skd");
             if let Some(subset_file) = subset {
                 let subset_names = read_subset_names(subset_file);
                 references.read_sketch_data_block(ref_db_name, &subset_names);
@@ -297,7 +293,7 @@ pub fn main() -> Result<(), Error> {
                 let mut queries = MultiSketch::load_metadata(query_db_name).unwrap_or_else(|_| {
                     panic!("Could not read sketch metadata from {query_db_name}.skm")
                 });
-                log::info!("Loading query sketch data from {}.skd", query_db_name);
+                log::info!("Loading query sketch data from {query_db_name}.skd");
                 queries.read_sketch_data(query_db_name);
                 log::info!("Read query sketches:\n{queries:?}");
                 Some(queries)
@@ -350,27 +346,27 @@ pub fn main() -> Result<(), Error> {
             log::info!("Reading input metadata");
             let mut sketches1: MultiSketch = MultiSketch::load_metadata(ref_db_name1)
                 .unwrap_or_else(|_| {
-                    panic!("Could not read sketch metadata from {}.skm", ref_db_name1)
+                    panic!("Could not read sketch metadata from {ref_db_name1}.skm")
                 });
 
             let sketches2: MultiSketch =
                 MultiSketch::load_metadata(ref_db_name2).unwrap_or_else(|_| {
-                    panic!("Could not read sketch metadata from {}.skm", ref_db_name2)
+                    panic!("Could not read sketch metadata from {ref_db_name2}.skm")
                 });
             // check compatibility
             if !sketches1.is_compatible_with(&sketches2) {
                 panic!("Databases are not compatible for merging.")
             }
 
-            log::info!("Merging metadata to {}.skm", output);
+            log::info!("Merging metadata to {output}.skm");
             let merged_sketch = sketches1.merge_sketches(&sketches2);
             // merge metadata
             merged_sketch
                 .save_metadata(output)
-                .unwrap_or_else(|_| panic!("Couldn't save metadata to {}", output));
+                .unwrap_or_else(|_| panic!("Couldn't save metadata to {output}"));
 
             // merge actual sketch data
-            log::info!("Merging and saving sketch data to {}.skd", output);
+            log::info!("Merging and saving sketch data to {output}.skd");
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
         }
         Commands::Inverted { command } => match command {
@@ -404,7 +400,7 @@ pub fn main() -> Result<(), Error> {
                 };
 
                 let skq_file = if *write_skq {
-                    Some(format!("{}.skq", output))
+                    Some(format!("{output}.skq"))
                 } else {
                     None
                 };
@@ -545,7 +541,7 @@ pub fn main() -> Result<(), Error> {
                     let mut output_file = set_ostream(output);
 
                     // Open the .skq
-                    let skq_filename = &format!("{}.skq", input_prefix);
+                    let skq_filename = &format!("{input_prefix}.skq");
                     log::info!("Loading queries from {skq_filename}");
                     let (mmap, bin_stride, kmer_stride, sample_stride) =
                         (false, 1, 1, inverted_index.sketch_size());
@@ -565,7 +561,7 @@ pub fn main() -> Result<(), Error> {
                         MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
                             panic!("Could not read sketch metadata from {ref_db_name}.skm")
                         });
-                    log::info!("Loading sketch data from {}.skd", ref_db_name);
+                    log::info!("Loading sketch data from {ref_db_name}.skd");
                     references.read_sketch_data(ref_db_name);
                     log::info!("Read reference sketches:\n{references:?}");
                     let n = references.number_samples_loaded();
@@ -679,21 +675,21 @@ pub fn main() -> Result<(), Error> {
                 MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type);
 
             // save skd data from db1 and from freshly sketched input files
-            log::info!("Merging and saving sketch data to {}.skd", output);
+            log::info!("Merging and saving sketch data to {output}.skd");
 
             let mut output_file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(format!("{}.skd", output))?;
+                .open(format!("{output}.skd"))?;
             // stream sketch data directly to concat output file
-            let mut db_sketch = File::open(format!("{}.skd", db))?;
+            let mut db_sketch = File::open(format!("{db}.skd"))?;
             copy(&mut db_sketch, &mut output_file)?;
 
             // merge and update skm from db1 and the new just sketched sketch
             let concat_metadata = db2_metadata.merge_sketches(&db_metadata);
             concat_metadata
                 .save_metadata(output)
-                .unwrap_or_else(|_| panic!("Could not save metadata to {}", output));
+                .unwrap_or_else(|_| panic!("Could not save metadata to {output}"));
             Ok(())
         }
 
@@ -714,7 +710,7 @@ pub fn main() -> Result<(), Error> {
 
             log::info!("Reading input metadata");
             let mut sketches: MultiSketch = MultiSketch::load_metadata(ref_db)
-                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {}.skm", ref_db));
+                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             // write new .skm
             sketches.remove_metadata(output_file, &ids)?;
@@ -723,7 +719,7 @@ pub fn main() -> Result<(), Error> {
             log::info!("Remove genomes and writing output");
             sketches.remove_genomes(ref_db, output_file, &ids)?;
 
-            log::info!("Finished writing filtered sketch data to {}", output_file);
+            log::info!("Finished writing filtered sketch data to {output_file}");
 
             Ok(())
         }

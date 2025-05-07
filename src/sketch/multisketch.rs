@@ -78,7 +78,7 @@ impl MultiSketch {
 
     /// Saves the metadata (.skm)
     pub fn save_metadata(&self, file_prefix: &str) -> Result<(), Error> {
-        let filename = format!("{}.skm", file_prefix);
+        let filename = format!("{file_prefix}.skm");
         log::info!("Saving sketch metadata to {filename}");
         let serial_file = BufWriter::new(File::create(filename)?);
         let mut compress_writer = snap::write::FrameEncoder::new(serial_file);
@@ -88,7 +88,7 @@ impl MultiSketch {
 
     /// Loads the metadata (.skm)
     pub fn load_metadata(file_prefix: &str) -> Result<Self, Error> {
-        let filename = format!("{}.skm", file_prefix);
+        let filename = format!("{file_prefix}.skm");
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
@@ -140,7 +140,7 @@ impl MultiSketch {
 
     /// Read all the sketch bins from an .skd file
     pub fn read_sketch_data(&mut self, file_prefix: &str) {
-        let filename = format!("{}.skd", file_prefix);
+        let filename = format!("{file_prefix}.skd");
         log::debug!(
             "bin_stride:{} kmer_stride:{} sample_stride:{}",
             self.bin_stride,
@@ -173,7 +173,7 @@ impl MultiSketch {
         }
         self.block_reindex = Some(block_reindex);
 
-        let filename = format!("{}.skd", file_prefix);
+        let filename = format!("{file_prefix}.skd");
         let sketch_reader = SketchArrayReader::open(
             &filename,
             true,
@@ -212,7 +212,7 @@ impl MultiSketch {
         }
 
         if !duplicate_list.is_empty() {
-            println!("Duplicates found: {:?}", duplicate_list);
+            println!("Duplicates found: {duplicate_list:?}");
         }
 
         compatibility
@@ -303,7 +303,7 @@ impl MultiSketch {
             .filter(|&idx| !positions_to_remove.contains(&idx))
             .collect();
 
-        let input_filename = format!("{}.skd", input_prefix);
+        let input_filename = format!("{input_prefix}.skd");
         let sketch_reader = SketchArrayReader::open(
             &input_filename,
             true,
@@ -311,7 +311,7 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride,
         );
-        let output_filename = format!("{}.skd", output_file);
+        let output_filename = format!("{output_file}.skd");
         let mut sketch_writer = SketchArrayWriter::new(
             &output_filename,
             self.bin_stride,
@@ -367,10 +367,7 @@ impl PartialEq for MultiSketch {
         {
             if self_sketch != other_sketch {
                 metadata_match = false;
-                eprintln!(
-                    "Sketches mismatching. Self: {}, Other: {}",
-                    self_sketch, other_sketch
-                );
+                eprintln!("Sketches mismatching. Self: {self_sketch}, Other: {other_sketch}");
                 break;
             }
         }

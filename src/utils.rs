@@ -20,13 +20,13 @@ pub fn save_sketch_data(
     db2_prefix: &str,
     str_output: &str,
 ) -> Result<(), anyhow::Error> {
-    let mut output_file = File::create(format!("{}.skd", str_output))?;
+    let mut output_file = File::create(format!("{str_output}.skd"))?;
     // Open and copy the contents of the first input file
-    let mut db_sketch1 = File::open(format!("{}.skd", db1_prefix))?;
+    let mut db_sketch1 = File::open(format!("{db1_prefix}.skd"))?;
     copy(&mut db_sketch1, &mut output_file)?;
 
     // Open and copy the contents of the second input file
-    let mut db_sketch2 = File::open(format!("{}.skd", db2_prefix))?;
+    let mut db_sketch2 = File::open(format!("{db2_prefix}.skd"))?;
     copy(&mut db_sketch2, &mut output_file)?;
 
     Ok(())
