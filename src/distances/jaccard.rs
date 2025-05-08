@@ -17,14 +17,12 @@ pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32
     let expected_samebits = maxnbits >> BBITS;
 
     log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
-    if expected_samebits != 0 {
-        samebits as f32
-    } else {
-        let diff = samebits.saturating_sub(expected_samebits);
-        let intersize = (diff * maxnbits) as f32 / (maxnbits - expected_samebits) as f32;
-        log::trace!("intersize:{intersize} unionsize:{unionsize}");
-        intersize / unionsize
-    }
+    let diff = samebits.saturating_sub(expected_samebits);
+    // Do float multiplication here. diff * maxnbits for large s will overflow u32
+    // f32 is sufficient for s=10M (I think f64 would get to one bit diff precision larger than this)
+    let intersize = (diff as f32 * maxnbits as f32) / (maxnbits - expected_samebits) as f32;
+    log::trace!("intersize:{intersize} unionsize:{unionsize}");
+    intersize / unionsize
 }
 
 /// Converts between Jaccard distance and ANI, using a Poisson model of mutations
