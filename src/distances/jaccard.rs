@@ -52,7 +52,7 @@ pub fn jaccard_index2(sketch1: &[u16], sketch2: &[u16], sketchsize: usize) -> f3
     intersize as f32 / unionsize
 }
 
-use wide::CmpEq;
+use wide::{u64x4, CmpEq};
 use simd_aligned::{arch::u16x16, traits::Simd, VecSimd};
 
 /// Returns the Jaccard index between two samples
@@ -83,6 +83,30 @@ pub fn jaccard_index3(sketch1: &VecSimd<u16x16>, sketch2: &VecSimd<u16x16>, sket
     */
     let maxnbits = sketchsize as u32;
     let expected_samebits = maxnbits >> 16;
+
+    log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
+    let diff = samebits.saturating_sub(expected_samebits);
+    // Do float multiplication here. diff * maxnbits for large s will overflow u32
+    // f32 is sufficient for s=10M (I think f64 would get to one bit diff precision larger than this)
+    let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
+    log::trace!("intersize:{intersize} unionsize:{unionsize}");
+    intersize as f32 / unionsize
+}
+
+pub fn jaccard_index4(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
+    let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
+    let mut samebits: u32 = 0;
+    let mut s1 = VecSimd::<u64x4>::with(0_u64, BBITS as usize);
+    let mut s2 = VecSimd::<u64x4>::with(0_u64, BBITS as usize);
+    for i in 0..sketchsize64 {
+        s1.flat_mut().clone_from_slice(&sketch1[(i * BBITS) as usize..(i * BBITS + BBITS) as usize]);
+        s2.flat_mut().clone_from_slice(&sketch2[(i * BBITS) as usize..(i * BBITS + BBITS) as usize]);
+        let mut bits: u64x4 = u64x4::splat(!0);
+        bits &= s1[0] ^ s2[0];
+        samebits += bits.as_array_ref().iter().map(|x| x.count_ones()).sum::<u32>();
+    }
+    let maxnbits = sketchsize64 as u32 * u64::BITS;
+    let expected_samebits = maxnbits >> BBITS;
 
     log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
     let diff = samebits.saturating_sub(expected_samebits);

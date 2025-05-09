@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use sketchlib::distances::jaccard::{jaccard_index, jaccard_index2, jaccard_index3};
+use sketchlib::distances::jaccard::{jaccard_index, jaccard_index2, jaccard_index3, jaccard_index4};
 use sketchlib::sketch::multisketch::MultiSketch;
 use sketchlib::sketch::sketch_datafile::SketchArrayReader;
 use simd_aligned::{VecSimd, arch::u16x16};
@@ -12,6 +12,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let sketch2 = sketches.get_sketch_slice(1, 0);
     let sketchsize64 = sketches.sketchsize64;
     c.bench_function("jaccard1", |b| b.iter(|| black_box(jaccard_index(sketch1, sketch2, sketchsize64))));
+    c.bench_function("jaccard4", |b| b.iter(|| black_box(jaccard_index4(sketch1, sketch2, sketchsize64))));
 
     let skq_filename = "/Users/jlees/Documents/EBI/sketchlib_rust/tests/test_files_in/inverted.skq";
     let sketchsize = 1000;
@@ -36,6 +37,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     s2.flat_mut().clone_from_slice(&skq_bins[sketchsize..(2 * sketchsize)]);
 
     c.bench_function("jaccard3", |b| b.iter(|| black_box(jaccard_index3(&s1, &s2, sketchsize))));
+
 }
 
 criterion_group!(benches, criterion_benchmark);
