@@ -70,6 +70,11 @@ predicates = "2.1.5"
 assert_fs = "1.0.10"
 pretty_assertions = "1.3.0"
 tempfile = "3.19"
+criterion = "0.3"
 
 [profile.release]
 lto = true
+
+[[bench]]
+name = "jaccard"
+harness = false
