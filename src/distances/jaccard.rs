@@ -30,12 +30,57 @@ pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32
 /// Returns the Jaccard index between two samples
 pub fn jaccard_index2(sketch1: &[u16], sketch2: &[u16], sketchsize: usize) -> f32 {
     let unionsize = sketchsize as f32;
+
+    let samebits: u32 = sketch1.iter().zip(sketch2).map(|(b1, b2)| if *b1 == *b2 {1} else {0}).sum();
+    /*
     let mut samebits: u32 = 0;
     for i in 0..sketchsize {
         if sketch1[i] == sketch2[i] {
             samebits += 1;
         }
     }
+    */
+    let maxnbits = sketchsize as u32;
+    let expected_samebits = maxnbits >> 16;
+
+    log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
+    let diff = samebits.saturating_sub(expected_samebits);
+    // Do float multiplication here. diff * maxnbits for large s will overflow u32
+    // f32 is sufficient for s=10M (I think f64 would get to one bit diff precision larger than this)
+    let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
+    log::trace!("intersize:{intersize} unionsize:{unionsize}");
+    intersize as f32 / unionsize
+}
+
+use wide::CmpEq;
+use simd_aligned::{arch::u16x16, traits::Simd, VecSimd};
+
+/// Returns the Jaccard index between two samples
+pub fn jaccard_index3(sketch1: &VecSimd<u16x16>, sketch2: &VecSimd<u16x16>, sketchsize: usize) -> f32 {
+    let unionsize = sketchsize as f32;
+
+    let mut count = u16x16::splat(0);
+    unsafe {
+        for i in 0..sketch1.len() {
+            let a = *sketch1.get_unchecked(i);
+            let b = *sketch2.get_unchecked(i);
+            let mask = a.cmp_eq(b);
+            count += mask.blend(
+                u16x16::splat(1),
+                u16x16::splat(0)
+            );
+        }
+    }
+    let samebits: u32 = count.as_array_ref().iter().map(|x| *x as u32).sum();
+
+    //let samebits: u32 = sketch1.iter().zip(sketch2).map(|(b1, b2)| if *b1 == *b2 {1} else {0}).sum();
+    /*
+    for i in 0..sketchsize {
+        if sketch1[i] == sketch2[i] {
+            samebits += 1;
+        }
+    }
+    */
     let maxnbits = sketchsize as u32;
     let expected_samebits = maxnbits >> 16;
 

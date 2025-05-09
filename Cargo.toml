@@ -59,6 +59,8 @@ anyhow = "1.0"
 # parallelisation
 rayon = "1.8"
 num_cpus = "1.0"
+simd_aligned = "0.6.1"
+wide = "*"
 
 [build-dependencies]
 pyo3-build-config = {version = "0.22", optional = true}
