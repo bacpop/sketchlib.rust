@@ -5,8 +5,6 @@ use crate::sketch::BBITS;
 /// Returns the Jaccard index between two samples
 pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
-    
-    // Use chunks_exact to process BBITS elements at a time
     let samebits: u32 = sketch1.chunks_exact(BBITS as usize)
         .zip(sketch2.chunks_exact(BBITS as usize))
         .map(|(chunk1, chunk2)| {
@@ -19,14 +17,13 @@ pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32
             bits.count_ones()
         })
         .sum();
-    
     let maxnbits = sketchsize64 as u32 * u64::BITS;
     let expected_samebits = maxnbits >> BBITS;
 
-    log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
+    //log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
     let diff = samebits.saturating_sub(expected_samebits);
     let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
-    log::trace!("intersize:{intersize} unionsize:{unionsize}");
+    //log::trace!("intersize:{intersize} unionsize:{unionsize}");
     intersize as f32 / unionsize
 }
 
