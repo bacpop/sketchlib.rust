@@ -4,25 +4,26 @@ use crate::sketch::BBITS;
 
 /// Returns the Jaccard index between two samples
 pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
-    let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
-    let mut samebits: u32 = 0;
-    for i in 0..sketchsize64 {
-        let mut bits: u64 = !0;
-        for j in 0..BBITS {
-            bits &= !(sketch1[(i * BBITS + j) as usize] ^ sketch2[(i * BBITS + j) as usize]);
-        }
-        samebits += bits.count_ones();
-    }
+    let unionsize = (u64::BITS as u64 * sketchsize64) as f64;
+    let samebits: u32 = sketch1
+        .chunks_exact(BBITS as usize)
+        .zip(sketch2.chunks_exact(BBITS as usize))
+        .map(|(chunk1, chunk2)| {
+            let mut bits: u64 = !0;
+            chunk1.iter().zip(chunk2.iter()).for_each(|(&s1, &s2)| {
+                bits &= !(s1 ^ s2);
+            });
+            bits.count_ones()
+        })
+        .sum();
     let maxnbits = sketchsize64 as u32 * u64::BITS;
     let expected_samebits = maxnbits >> BBITS;
 
     log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
     let diff = samebits.saturating_sub(expected_samebits);
-    // Do float multiplication here. diff * maxnbits for large s will overflow u32
-    // f32 is sufficient for s=10M (I think f64 would get to one bit diff precision larger than this)
-    let intersize = (diff as f32 * maxnbits as f32) / (maxnbits - expected_samebits) as f32;
+    let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
     log::trace!("intersize:{intersize} unionsize:{unionsize}");
-    intersize / unionsize
+    (intersize / unionsize) as f32
 }
 
 /// Converts between Jaccard distance and ANI, using a Poisson model of mutations
