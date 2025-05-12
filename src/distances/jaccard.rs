@@ -6,14 +6,22 @@ use crate::sketch::BBITS;
 pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
     let mut samebits: u32 = 0;
-    unsafe {
-        for i in 0..sketchsize64 {
-            let mut bits: u64 = !0;
-            for j in 0..BBITS {
-                bits &= !(sketch1.get_unchecked((i * BBITS + j) as usize) ^ sketch2.get_unchecked((i * BBITS + j) as usize));
-            }
-            samebits += bits.count_ones();
-        }
+    for i in 0..sketchsize64 as usize {
+        let mut bits: u64 = !0;
+
+        // Get the relevant slice for this chunk
+        let start_idx = i * BBITS as usize;
+        let end_idx = start_idx + BBITS as usize;
+
+        // Use zip to iterate over corresponding elements from both sketches
+        sketch1[start_idx..end_idx]
+            .iter()
+            .zip(&sketch2[start_idx..end_idx])
+            .for_each(|(&s1, &s2)| {
+                bits &= !(s1 ^ s2);
+            });
+
+        samebits += bits.count_ones();
     }
     let maxnbits = sketchsize64 as u32 * u64::BITS;
     let expected_samebits = maxnbits >> BBITS;
@@ -96,6 +104,8 @@ pub fn jaccard_index3(sketch1: &VecSimd<u16x16>, sketch2: &VecSimd<u16x16>, sket
 pub fn jaccard_index4(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f32;
     let mut samebits: u32 = 0;
+    // TODO -- this (and the clone below) should be moved out of the function
+    // also the loop over bbits needs to be restored
     let mut s1 = VecSimd::<u64x4>::with(0_u64, BBITS as usize);
     let mut s2 = VecSimd::<u64x4>::with(0_u64, BBITS as usize);
     for i in 0..sketchsize64 {
