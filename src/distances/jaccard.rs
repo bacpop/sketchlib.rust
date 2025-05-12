@@ -20,10 +20,10 @@ pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f32
     let maxnbits = sketchsize64 as u32 * u64::BITS;
     let expected_samebits = maxnbits >> BBITS;
 
-    //log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
+    log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
     let diff = samebits.saturating_sub(expected_samebits);
     let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
-    //log::trace!("intersize:{intersize} unionsize:{unionsize}");
+    log::trace!("intersize:{intersize} unionsize:{unionsize}");
     intersize as f32 / unionsize
 }
 
