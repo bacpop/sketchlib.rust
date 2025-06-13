@@ -42,8 +42,9 @@ def iter_aa(filename):
     sequences = read_fasta(filename)
 
     # train the orf_finder
-    orf_finder = pyrodigal.GeneFinder()
-    orf_finder.train("TTAATTAATTAA".join([str(record.seq) for record in sequences]))
+    orf_finder = pyrodigal.GeneFinder(meta=True, closed=False)
+    #orf_finder = pyrodigal.GeneFinder()
+    #orf_finder.train("TTAATTAATTAA".join([str(record.seq) for record in sequences]))
 
     # iterate over records and generate gene sequences, writing sequences to file
     for record in sequences:
@@ -67,44 +68,27 @@ if __name__ == "__main__":
     with pyhmmer.plan7.HMMFile(HMM_FILE) as hmm_file:
         hmms = list(hmm_file)
 
-    Result = collections.namedtuple("Result", ["query", "cog", "bitscore"])
-    results = []
-
     queries = []
     for idx, query_gene in enumerate(iter_aa(args.genome)):
         queries.append(pyhmmer.easel.TextSequence(name = str(idx).encode(), sequence = query_gene).digitize(pyhmmer.easel.Alphabet.amino()))
 
     logging.info("Running hmmsearch")
-    for hits in pyhmmer.hmmsearch(hmms, queries):
+    Result = collections.namedtuple("Result", ["query", "cog", "bitscore"])
+    results = []
+    for hits in pyhmmer.hmmsearch(hmms, queries, bit_cutoffs="trusted"):
         cog = hits.query.name.decode()
         for hit in hits:
             if hit.included:
                 results.append(Result(hit.name.decode(), cog, hit.score))
 
-    #for idx, query_gene in enumerate(iter_aa(args.genome)):
-        # query = pyhmmer.easel.TextSequence(name = str(idx).encode(), sequence = query_gene).digitize(pyhmmer.easel.Alphabet.amino())
-        # Result = collections.namedtuple("Result", ["query", "cog", "bitscore"])
-
-        # for hits in pyhmmer.hmmsearch(hmms, [query]):
-        #     cog = hits.query.name.decode()
-        #     for hit in hits:
-        #         if hit.included:
-        #             results.append(Result(hit.name.decode(), cog, hit.score))
-
-
-        # for hits in pyhmmer.hmmsearch(hmms, [query]):
-        #     cog = hits.query.name.decode()
-        #     for hit in hits:
-        #         if hit.included:
-        #             results.append(Result(hit.name.decode(), cog, hit.score))
-
     logging.info("Filtering results")
     best_results = {}
     keep_cog = set()
     for result in results:
-        if result.query in best_results:
+        if result.cog in best_results:
             previous_bitscore = best_results[result.cog].bitscore
             if result.bitscore > previous_bitscore:
+                logging.debug(f"{result}\n{previous_bitscore}")
                 best_results[result.cog] = result
                 keep_cog.add(result.cog)
             elif result.bitscore == previous_bitscore:
