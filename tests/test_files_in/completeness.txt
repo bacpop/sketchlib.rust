@@ -1,0 +1,4 @@
+14412_3#82.contigs_velvet.fa.gz	1.0
+14412_3#84.contigs_velvet.fa.gz	1.0
+R6.fa.gz	1.0
+TIGR4.fa.gz	1.0

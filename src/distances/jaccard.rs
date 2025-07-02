@@ -32,6 +32,12 @@ pub fn ani_pois(jaccard: f32, k: f32) -> f32 {
     0.0_f32.max(1.0 + 1.0 / k * (((2.0 * jaccard) / (1.0 + jaccard)).ln()))
 }
 
+/// Completeness correction for MAGs
+#[inline(always)]
+pub fn completeness_correction(jaccard: f32, c1: &f32, c2: &f32) -> f32 {
+    jaccard * (c1 * c2 / (c1 + c2 - c1 * c2))
+}
+
 /// Core and accessory distances between two sketches, using the PopPUNK regression
 /// model
 pub fn core_acc_dist(

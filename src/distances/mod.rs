@@ -54,12 +54,13 @@ fn push_heap<T: PartialOrd + Ord>(heap: &mut BinaryHeap<T>, dist_item: T, knn: u
 //      Streaming out of distances, when a sample is 'ready'
 
 /// Self query mode (dense, all distances)
-pub fn self_dists_all(
-    sketches: &MultiSketch,
+pub fn self_dists_all<'a>(
+    sketches: &'a MultiSketch,
     n: usize,
     dist_type: DistType,
     quiet: bool,
-) -> DistanceMatrix {
+    completeness_map: Option<&HashMap<String, f32>>,
+) -> DistanceMatrix<'a> {
     let mut distances = DistanceMatrix::new(sketches, None, dist_type);
     let k_vals = distances.k_vals();
     let ani = distances.ani();
@@ -77,11 +78,22 @@ pub fn self_dists_all(
             let mut j = calc_col_idx(start_dist_idx, i, n);
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f32)) = k_vals {
-                    let j_index = jaccard_index(
+                    let mut j_index = jaccard_index(
                         sketches.get_sketch_slice(i, k_idx),
                         sketches.get_sketch_slice(j, k_idx),
                         sketches.sketchsize64,
                     );
+                    // if completeness scores are given apply correction
+                    if let Some(completeness_map) = completeness_map {
+                            let genome_i_name = sketches.get_sample_name(i);
+                            let genome_j_name = sketches.get_sample_name(j);
+                            
+                            // Look up completeness values using the names
+                            let c1 = completeness_map.get(genome_i_name).unwrap();
+                            let c2 = completeness_map.get(genome_j_name).unwrap();
+
+                            j_index = completeness_correction(j_index, c1, c2);
+                        }
                     let dist = if ani {
                         ani_pois(j_index, k_f32)
                     } else {
@@ -110,13 +122,14 @@ pub fn self_dists_all(
 }
 
 /// Self query mode (dense, all distances)
-pub fn self_dists_knn(
-    sketches: &MultiSketch,
+pub fn self_dists_knn<'a>(
+    sketches: &'a MultiSketch,
     n: usize,
     knn: usize,
     dist_type: DistType,
     quiet: bool,
-) -> SparseDistanceMatrix {
+    completeness_map: Option<&HashMap<String, f32>>,
+) -> SparseDistanceMatrix<'a> {
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
     let k_vals = sp_distances.k_vals();
     let ani = sp_distances.ani();
@@ -140,6 +153,17 @@ pub fn self_dists_knn(
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
                         );
+                        // todo: read in comps
+                        if let Some(completeness_map) = completeness_map {
+                            let genome_i_name = sketches.get_sample_name(i);
+                            let genome_j_name = sketches.get_sample_name(j);
+                            
+                            // Look up completeness values using the names
+                            let c1 = completeness_map.get(genome_i_name).unwrap();
+                            let c2 = completeness_map.get(genome_j_name).unwrap();
+
+                            dist = completeness_correction(dist, c1, c2);
+                        }
                         dist = if ani {
                             // This is just done so the heap sorts correctly (as want to keep higher ANI)
                             1.0_f32 - ani_pois(dist, k_f32)
@@ -193,6 +217,7 @@ pub fn self_query_dists_all<'a>(
     nq: usize,
     dist_type: DistType,
     quiet: bool,
+    completeness_map: Option<&HashMap<String, f32>>,
 ) -> DistanceMatrix<'a> {
     let mut distances = DistanceMatrix::new(ref_sketches, Some(query_sketches), dist_type);
     let k_vals = distances.k_vals();
@@ -210,11 +235,23 @@ pub fn self_query_dists_all<'a>(
             let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f32)) = k_vals {
-                    let j_index = jaccard_index(
+                    let mut j_index = jaccard_index(
                         ref_sketches.get_sketch_slice(i, k_idx),
                         query_sketches.get_sketch_slice(j, k_idx),
                         ref_sketches.sketchsize64,
                     );
+                    if let Some(comp_map) = completeness_map {
+                        let genome_i_name = ref_sketches.get_sample_name(i);
+                        let genome_j_name = query_sketches.get_sample_name(j);
+
+                        // error if any genome is not found in the completeness map.     
+                        let c1 = comp_map.get(genome_i_name)
+                            .expect(&format!("Genome '{}' not found in completeness file", genome_i_name));
+                        let c2 = comp_map.get(genome_j_name)
+                            .expect(&format!("Genome '{}' not found in completeness file", genome_j_name));
+
+                        j_index = completeness_correction(j_index, c1, c2);
+                    }
                     let dist = if ani {
                         ani_pois(j_index, k_f32)
                     } else {
@@ -253,6 +290,7 @@ pub fn self_dists_knn_precluster<'a>(
     knn: usize,
     dist_type: DistType,
     quiet: bool,
+    completeness_map: Option<&HashMap<String, f32>>,
 ) -> SparseDistanceMatrix<'a> {
     // Check that sample sets in ski and skm are the same and create i,j lookup
     let mut skq_lookup = HashMap::with_capacity(n);
@@ -301,6 +339,18 @@ pub fn self_dists_knn_precluster<'a>(
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
                         );
+                        if let Some(comp_map) = completeness_map {
+                            let genome_i_name = sketches.get_sample_name(i);
+                            let genome_j_name = sketches.get_sample_name(j);
+
+                            // error if any genome is not found in the completeness map.     
+                            let c1 = comp_map.get(genome_i_name)
+                                .expect(&format!("Genome '{}' not found in completeness file", genome_i_name));
+                            let c2 = comp_map.get(genome_j_name)
+                                .expect(&format!("Genome '{}' not found in completeness file", genome_j_name));
+
+                            dist = completeness_correction(dist, c1, c2);
+                        }
                         dist = if ani {
                             1.0_f32 - ani_pois(dist, k_f32)
                         } else {

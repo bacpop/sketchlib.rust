@@ -130,6 +130,11 @@ impl MultiSketch {
         &self.hash_type
     }
 
+    /// Returns the name of the sample at the given index.
+    pub fn get_sample_name(&self, index: usize) -> &str {
+        self.sketch_metadata[index].name()
+    }
+
     /// Name of the sequence at the given index
     pub fn sketch_name(&self, index: usize) -> &str {
         match &self.block_reindex {
