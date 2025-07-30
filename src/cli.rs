@@ -164,6 +164,49 @@ pub enum Commands {
         threads: usize,
     },
 
+    /// Calculate containment
+    Containment {
+        /// The .skm file used as the reference (usually sketched metagenome reads)
+        #[arg(required = true)]
+        ref_db: String,
+
+        /// List of input FASTA files
+        #[arg(group = "input")]
+        query_seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        query_file_list: Option<String>,
+
+        /// Output filename (omit to output to stdout)
+        #[arg(short)]
+        output: Option<String>,
+
+        /// K-mer length (if provided only calculate Jaccard distance)
+        #[arg(short, required=true)]
+        kmer: usize,
+
+        /// Sample names from .skm to analyse
+        #[arg(long)]
+        subset: Option<String>,
+
+        /// Ignore reverse complement (all contigs are oriented along same strand)
+        #[arg(long, default_value_t = DEFAULT_STRAND)]
+        single_strand: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+    },
+
     /// Calculate pairwise distances using sketches
     Dist {
         /// The .skm file used as the reference

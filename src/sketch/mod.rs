@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::sync::mpsc;
 
+use hashbrown::HashSet;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -141,6 +142,32 @@ impl Sketch {
         // Densify
         let densified = Self::densify_bin(&mut signs);
         (signs, densified)
+    }
+
+    /// Get the sketch bins for a sample, but do not transpose
+    pub fn get_all_signs<H: RollHash + ?Sized>(
+        seq_hashes: &mut H,
+        kmer_size: usize,
+        read_filter: &mut Option<KmerFilter>,
+    ) -> HashSet<u64> {
+        // Setup storage for each k
+        let mut signs = HashSet::new();
+        if let Some(filter) = read_filter {
+            filter.clear();
+        }
+        seq_hashes.set_k(kmer_size);
+
+        // Calculate bin minima across all sequence
+        for hash in seq_hashes.iter() {
+            if let Some(filter) = read_filter {
+                if filter.filter(hash) == Ordering::Equal {
+                    signs.insert(hash);
+                }
+            } else {
+                signs.insert(hash);
+            }
+        }
+        signs
     }
 
     /// The name of the sample

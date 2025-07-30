@@ -146,6 +146,7 @@ use crate::cli::*;
 use crate::hashing::HashType;
 
 pub mod sketch;
+use crate::sketch::Sketch;
 use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::sketch_datafile::SketchArrayReader;
 use crate::sketch::{num_bins, sketch_files};
@@ -161,6 +162,8 @@ use crate::io::{get_input_list, parse_kmers, read_subset_names, reorder_input_fi
 pub mod structures;
 
 pub mod hashing;
+// TODO: for containment. Maybe containment.rs
+use crate::hashing::{nthash_iterator::NtHashIterator, bloom_filter::KmerFilter, RollHash};
 
 pub mod utils;
 use crate::utils::{get_progress_bar, strip_sketch_extension};
@@ -248,6 +251,99 @@ pub fn main() -> Result<(), Error> {
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
+            Ok(())
+        }
+        Commands::Containment {
+            ref_db,
+            query_seq_files,
+            query_file_list,
+            output,
+            kmer,
+            subset,
+            single_strand,
+            min_count,
+            min_qual,
+            threads,
+        } => {
+            check_and_set_threads(*threads);
+
+            let mut output_file = set_ostream(output);
+
+            let ref_db_name = utils::strip_sketch_extension(ref_db);
+
+            let mut references = MultiSketch::load_metadata(ref_db_name)
+                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
+
+            log::info!("Loading sketch data from {ref_db_name}.skd");
+            if let Some(subset_file) = subset {
+                let subset_names = read_subset_names(subset_file);
+                references.read_sketch_data_block(ref_db_name, &subset_names);
+            } else {
+                references.read_sketch_data(ref_db_name);
+            }
+            log::info!("Read reference sketches:\n{references:?}");
+
+            let k_idx = references.get_k_idx(*kmer).expect(&format!("K-mer size {kmer} not found in file"));
+            let rc = !*single_strand;
+
+            log::info!("Getting input files");
+            let input_files = get_input_list(query_file_list, query_seq_files);
+            log::info!("Parsed {} samples in input list", input_files.len());
+
+            let percent = false;
+            let progress_bar = get_progress_bar(input_files.len(), percent, args.quiet);
+            let containment_vec: Vec<Vec<f64>> = input_files
+                .par_iter()
+                .progress_with(progress_bar)
+                .map(|(name, fastx1, fastx2)| {
+                    // TODO: this probably doesn't need to be a vec because not supporting
+                    // concat_fasta. Same for inverted index
+                    let mut hash_its: Vec<Box<dyn RollHash>> =
+                            NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual)
+                                .into_iter()
+                                .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                .collect();
+
+                    if let Some(hash_it) = hash_its.first_mut() {
+                        if hash_it.seq_len() == 0 {
+                            panic!("{name} has no valid sequence");
+                        }
+
+                        let mut read_filter = if hash_it.reads() {
+                            let mut filter = KmerFilter::new(*min_count);
+                            filter.init();
+                            Some(filter)
+                        } else {
+                            None
+                        };
+
+                        let signs =
+                            Sketch::get_all_signs(&mut **hash_it, *kmer, &mut read_filter);
+
+                        // TODO: calculate containment
+                        let mut containments = Vec::with_capacity(references.number_samples_loaded());
+                        for reference_idx in 0..references.number_samples_loaded() {
+                            let mut intersection = 0;
+                            let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
+                            for bin in ref_bins {
+                                if signs.contains(bin) {
+                                    intersection += 1;
+                                }
+                            }
+                            containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
+                        }
+                        containments
+                    } else {
+                        panic!("Empty hash iterator for {name}");
+                    }
+                }).collect();
+
+            containment_vec.iter().zip(input_files).for_each(|(c_vals, (name, _, _))| {
+                c_vals.iter().enumerate().for_each(|(query_idx, containment)| {
+                    println!("{name}\t{}\t{containment}", references.sketch_name(query_idx));
+                });
+            });
+
             Ok(())
         }
         Commands::Dist {
