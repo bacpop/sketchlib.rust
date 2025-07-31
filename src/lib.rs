@@ -296,46 +296,41 @@ pub fn main() -> Result<(), Error> {
                 .par_iter()
                 .progress_with(progress_bar)
                 .map(|(name, fastx1, fastx2)| {
-                    // TODO: this probably doesn't need to be a vec because not supporting
-                    // concat_fasta. Same for inverted index
-                    let mut hash_its: Vec<Box<dyn RollHash>> =
-                            NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual)
-                                .into_iter()
-                                .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                .collect();
+                    // TODO: I think we probably need a containment sketch subcommand
+                    // This will sketch into u16, and not load all seq into memory
+                    let mut hash_it = NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual);
+                    let hash_it = hash_it.first_mut().expect("Empty hash iterator");
 
-                    if let Some(hash_it) = hash_its.first_mut() {
-                        if hash_it.seq_len() == 0 {
-                            panic!("{name} has no valid sequence");
-                        }
-
-                        let mut read_filter = if hash_it.reads() {
-                            let mut filter = KmerFilter::new(*min_count);
-                            filter.init();
-                            Some(filter)
-                        } else {
-                            None
-                        };
-
-                        let signs =
-                            Sketch::get_all_signs(&mut **hash_it, *kmer, &mut read_filter);
-
-                        // TODO: calculate containment
-                        let mut containments = Vec::with_capacity(references.number_samples_loaded());
-                        for reference_idx in 0..references.number_samples_loaded() {
-                            let mut intersection = 0;
-                            let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
-                            for bin in ref_bins {
-                                if signs.contains(bin) {
-                                    intersection += 1;
-                                }
-                            }
-                            containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
-                        }
-                        containments
-                    } else {
-                        panic!("Empty hash iterator for {name}");
+                    if hash_it.seq_len() == 0 {
+                        panic!("{name} has no valid sequence");
                     }
+
+                    let mut read_filter = if hash_it.reads() {
+                        let mut filter = KmerFilter::new(*min_count);
+                        filter.init();
+                        Some(filter)
+                    } else {
+                        None
+                    };
+
+                    let signs =
+                        Sketch::get_all_signs(hash_it, *kmer, &mut read_filter);
+
+                    // TODO: fix this, sketches are transposed and 14 bits, new sketches are full u64
+                    // TODO: use the distance matrix class to store and print results
+                    let mut containments = Vec::with_capacity(references.number_samples_loaded());
+                    for reference_idx in 0..references.number_samples_loaded() {
+                        let mut intersection = 0;
+                        let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
+                        for bin in ref_bins {
+                            if signs.contains(bin) {
+                                intersection += 1;
+                            }
+                        }
+                        containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
+                    }
+                    containments
+
                 }).collect();
 
             containment_vec.iter().zip(input_files).for_each(|(c_vals, (name, _, _))| {
