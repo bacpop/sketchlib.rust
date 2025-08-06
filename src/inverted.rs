@@ -241,8 +241,11 @@ impl Inverted {
         min_qual: u8,
         quiet: bool,
     ) -> InvSketches {
-        let (tx, rx) = mpsc::channel();
+        if *seq_type != HashType::DNA {
+            unimplemented!("Inverted index only supported for DNA");
+        }
 
+        let (tx, rx) = mpsc::channel();
         let percent = false;
         let progress_bar = get_progress_bar(input_files.len(), percent, quiet);
         rayon::scope(|s| {
@@ -252,38 +255,26 @@ impl Inverted {
                     .zip(file_order)
                     .progress_with(progress_bar)
                     .map(|((name, fastx1, fastx2), genome_idx)| {
-                        let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
-                            HashType::DNA => {
-                                NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
-                                    .into_iter()
-                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                    .collect()
-                            }
-                            _ => unimplemented!("Inverted index only supported for DNA"),
+                        let mut hash_it = NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual);
+                        let hash_it = hash_it.first_mut().expect("Empty hash iterator");
+                        if hash_it.seq_len() == 0 {
+                            panic!("{name} has no valid sequence");
+                        }
+
+                        let mut read_filter = if hash_it.reads() {
+                            let mut filter = KmerFilter::new(min_count);
+                            filter.init();
+                            Some(filter)
+                        } else {
+                            None
                         };
 
-                        if let Some(hash_it) = hash_its.first_mut() {
-                            if hash_it.seq_len() == 0 {
-                                panic!("Genome {genome_idx} has no valid sequence");
-                            }
-
-                            let mut read_filter = if hash_it.reads() {
-                                let mut filter = KmerFilter::new(min_count);
-                                filter.init();
-                                Some(filter)
-                            } else {
-                                None
-                            };
-
-                            let (signs, densified) =
-                                Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size);
-                            if densified {
-                                log::trace!("{name} was densified");
-                            }
-                            (*genome_idx, signs)
-                        } else {
-                            panic!("Empty hash iterator for {name}");
+                        let (signs, densified) =
+                            Sketch::get_signs(hash_it, k, &mut read_filter, sketch_size);
+                        if densified {
+                            log::trace!("{name} was densified");
                         }
+                        (*genome_idx, signs)
                     })
                     .for_each_with(tx, |tx, result| {
                         let _ = tx.send(result);

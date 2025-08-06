@@ -390,6 +390,7 @@ pub fn main() -> Result<(), Error> {
                 // TODO: use/edit the inverted interface to get signs. Pack 4xu16 in a u64
                 // in fact, just use inverted interface rather than messing with multisketch -- can turn off inverted part and just write the .skq
                 // TODO: support streaming of reads (probably just on by default). Also consider how to downsample
+                // TODO: could add abundance, for angular similarity support
             }
             ContainmentCommands::Query {
                 ref_db,
