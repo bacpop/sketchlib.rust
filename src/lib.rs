@@ -664,7 +664,7 @@ pub fn main() -> Result<(), Error> {
                         sample_stride,
                     );
                     let skq_bins =
-                        skq_reader.read_all_from_skq(sample_stride * inverted_index.sketch_size());
+                        skq_reader.read_all_from_skq(Some(sample_stride * inverted_index.n_samples()));
 
                     // Load the .skd/.skm
                     let ref_db_name = utils::strip_sketch_extension(ref_db_input);

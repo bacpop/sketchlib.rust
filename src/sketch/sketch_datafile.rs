@@ -144,11 +144,14 @@ impl SketchArrayReader {
     }
 
     /// Reads a single sketch from an .skq into memory
-    pub fn read_all_from_skq(&mut self, total_number_bins: usize) -> Vec<u16> {
+    pub fn read_all_from_skq(&mut self, total_number_bins_hint: Option<usize>) -> Vec<u16> {
         // Fixed-size buffer for u16
         let mut buffer = [0u8; std::mem::size_of::<u16>()];
         // Stream the whole file and convert to u64 vec
-        let mut flat_sketch_array: Vec<u16> = Vec::with_capacity(total_number_bins);
+        let mut flat_sketch_array: Vec<u16> = Vec::new();
+        if let Some(nbins) = total_number_bins_hint {
+            flat_sketch_array.reserve_exact(nbins);
+        }
         while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
             flat_sketch_array.push(u16::from_le_bytes(buffer));
         }
