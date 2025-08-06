@@ -406,14 +406,15 @@ pub fn main() -> Result<(), Error> {
                 check_and_set_threads(*threads);
 
                 let mut output_file = set_ostream(output);
-
+                let rc = !*single_strand;
                 let ref_db_name = utils::strip_sketch_extension(ref_db);
 
                 // Open the .skq
                 let skq_filename = &format!("{ref_db_name}.skq");
                 log::info!("Loading queries from {skq_filename}");
                 let sketch_size = 1000000;
-                log::warn!("Sketch size hard-coded as {sketch_size}");
+                let kmer = 21;
+                log::warn!("Sketch size hard-coded as {sketch_size}; kmer as {kmer}");
                 let (mmap, bin_stride, kmer_stride, sample_stride) =
                     (false, 1, 1, sketch_size);
                 let mut skq_reader = SketchArrayReader::open(
@@ -424,7 +425,7 @@ pub fn main() -> Result<(), Error> {
                     sample_stride,
                 );
                 let skq_bins =
-                    skq_reader.read_all_from_skq(sample_stride * sketch_size);
+                    skq_reader.read_all_from_skq(sample_stride);
 
                 log::info!("Getting input files");
                 let input_files = get_input_list(query_file_list, query_seq_files);
@@ -432,7 +433,7 @@ pub fn main() -> Result<(), Error> {
 
                 let percent = false;
                 let progress_bar = get_progress_bar(input_files.len(), percent, args.quiet);
-                let containment_vec: Vec<Vec<f64>> = input_files
+                let containment_vec: Vec<f64> = input_files
                     .par_iter()
                     .progress_with(progress_bar)
                     .map(|(name, fastx1, fastx2)| {
@@ -453,29 +454,19 @@ pub fn main() -> Result<(), Error> {
                         };
 
                         let signs =
-                            Sketch::get_all_signs(hash_it, *kmer, &mut read_filter);
+                            Sketch::get_all_signs(hash_it, kmer, &mut read_filter);
 
-                        // TODO: fix this, sketches are transposed and 14 bits, new sketches are full u64
-                        // TODO: use the distance matrix class to store and print results
-                        let mut containments = Vec::with_capacity(references.number_samples_loaded());
-                        for reference_idx in 0..references.number_samples_loaded() {
-                            let mut intersection = 0;
-                            let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
-                            for bin in ref_bins {
-                                if signs.contains(bin) {
-                                    intersection += 1;
-                                }
+                        let mut intersection = 0;
+                        for bin in &skq_bins {
+                            if signs.contains(bin) {
+                                intersection += 1;
                             }
-                            containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
                         }
-                        containments
-
+                        intersection as f64 / signs.len() as f64 // |A ∩ B| / |A|
                     }).collect();
 
-                containment_vec.iter().zip(input_files).for_each(|(c_vals, (name, _, _))| {
-                    c_vals.iter().enumerate().for_each(|(query_idx, containment)| {
-                        println!("{name}\t{}\t{containment}", references.sketch_name(query_idx));
-                    });
+                containment_vec.iter().zip(input_files).for_each(|(containment, (name, _, _))| {
+                    writeln!(output_file, "{name}\t{containment}");
                 });
 
                 /*
