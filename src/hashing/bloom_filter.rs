@@ -12,7 +12,7 @@ use hashbrown::HashMap;
 /// Default bloom filter width (expected number of k-mers)
 ///
 /// 2^27 =~ 130M
-const BLOOM_WIDTH: usize = 1 << 27;
+const BLOOM_WIDTH: usize = 1 << 35;
 /// Number of bits to use in each bloom block (~1% FPR)
 const BITS_PER_ENTRY: usize = 12;
 

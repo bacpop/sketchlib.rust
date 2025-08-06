@@ -183,7 +183,7 @@ pub fn main() -> Result<(), Error> {
     if args.quiet {
         simple_logger::init_with_level(log::Level::Error).unwrap();
     } else if args.verbose {
-        simple_logger::init_with_level(log::Level::Info).unwrap();
+        simple_logger::init_with_level(log::Level::Debug).unwrap();
         // simple_logger::init_with_level(log::Level::Trace).unwrap();
     } else {
         simple_logger::init_with_level(log::Level::Warn).unwrap();
