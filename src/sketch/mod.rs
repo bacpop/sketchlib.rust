@@ -149,7 +149,7 @@ impl Sketch {
         seq_hashes: &mut H,
         kmer_size: usize,
         read_filter: &mut Option<KmerFilter>,
-    ) -> HashSet<u64> {
+    ) -> HashSet<u16> {
         // Setup storage for each k
         let mut signs = HashSet::new();
         if let Some(filter) = read_filter {
@@ -161,10 +161,10 @@ impl Sketch {
         for hash in seq_hashes.iter() {
             if let Some(filter) = read_filter {
                 if filter.filter(hash) == Ordering::Equal {
-                    signs.insert(hash);
+                    signs.insert(hash as u16);
                 }
             } else {
-                signs.insert(hash);
+                signs.insert(hash as u16);
             }
         }
         signs

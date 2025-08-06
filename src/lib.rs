@@ -409,6 +409,80 @@ pub fn main() -> Result<(), Error> {
 
                 let ref_db_name = utils::strip_sketch_extension(ref_db);
 
+                // Open the .skq
+                let skq_filename = &format!("{ref_db_name}.skq");
+                log::info!("Loading queries from {skq_filename}");
+                let sketch_size = 1000000;
+                log::warn!("Sketch size hard-coded as {sketch_size}");
+                let (mmap, bin_stride, kmer_stride, sample_stride) =
+                    (false, 1, 1, sketch_size);
+                let mut skq_reader = SketchArrayReader::open(
+                    skq_filename,
+                    mmap,
+                    bin_stride,
+                    kmer_stride,
+                    sample_stride,
+                );
+                let skq_bins =
+                    skq_reader.read_all_from_skq(sample_stride * sketch_size);
+
+                log::info!("Getting input files");
+                let input_files = get_input_list(query_file_list, query_seq_files);
+                log::info!("Parsed {} samples in input list", input_files.len());
+
+                let percent = false;
+                let progress_bar = get_progress_bar(input_files.len(), percent, args.quiet);
+                let containment_vec: Vec<Vec<f64>> = input_files
+                    .par_iter()
+                    .progress_with(progress_bar)
+                    .map(|(name, fastx1, fastx2)| {
+                        // TODO: eventually add a query pre-sketch command (same as inverted write-skq)
+                        let mut hash_it = NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual);
+                        let hash_it = hash_it.first_mut().expect("Empty hash iterator");
+
+                        if hash_it.seq_len() == 0 {
+                            panic!("{name} has no valid sequence");
+                        }
+
+                        let mut read_filter = if hash_it.reads() {
+                            let mut filter = KmerFilter::new(*min_count);
+                            filter.init();
+                            Some(filter)
+                        } else {
+                            None
+                        };
+
+                        let signs =
+                            Sketch::get_all_signs(hash_it, *kmer, &mut read_filter);
+
+                        // TODO: fix this, sketches are transposed and 14 bits, new sketches are full u64
+                        // TODO: use the distance matrix class to store and print results
+                        let mut containments = Vec::with_capacity(references.number_samples_loaded());
+                        for reference_idx in 0..references.number_samples_loaded() {
+                            let mut intersection = 0;
+                            let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
+                            for bin in ref_bins {
+                                if signs.contains(bin) {
+                                    intersection += 1;
+                                }
+                            }
+                            containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
+                        }
+                        containments
+
+                    }).collect();
+
+                containment_vec.iter().zip(input_files).for_each(|(c_vals, (name, _, _))| {
+                    c_vals.iter().enumerate().for_each(|(query_idx, containment)| {
+                        println!("{name}\t{}\t{containment}", references.sketch_name(query_idx));
+                    });
+                });
+
+                /*
+                let mut output_file = set_ostream(output);
+
+                let ref_db_name = utils::strip_sketch_extension(ref_db);
+
                 let mut references = MultiSketch::load_metadata(ref_db_name)
                     .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
@@ -476,7 +550,7 @@ pub fn main() -> Result<(), Error> {
                         println!("{name}\t{}\t{containment}", references.sketch_name(query_idx));
                     });
                 });
-
+                */
                 Ok(())
             }
         }
