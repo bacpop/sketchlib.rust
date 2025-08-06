@@ -17,6 +17,8 @@ pub const DEFAULT_MINQUAL: u8 = 20;
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 /// Default nearest neighbours
 pub const DEFAULT_KNN: usize = 50;
+/// Default downsampling rate for containment
+pub const DEFAULT_DOWNSAMPLE: usize = 1000;
 
 /// Query types supported by bitvec operations
 #[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum, Default)]
@@ -164,49 +166,6 @@ pub enum Commands {
         threads: usize,
     },
 
-    /// Calculate containment
-    Containment {
-        /// The .skm file used as the reference (usually sketched metagenome reads)
-        #[arg(required = true)]
-        ref_db: String,
-
-        /// List of input FASTA files
-        #[arg(group = "input")]
-        query_seq_files: Option<Vec<String>>,
-
-        /// File listing input files (tab separated name, sequences, see README)
-        #[arg(short, group = "input")]
-        query_file_list: Option<String>,
-
-        /// Output filename (omit to output to stdout)
-        #[arg(short)]
-        output: Option<String>,
-
-        /// K-mer length (if provided only calculate Jaccard distance)
-        #[arg(short, required=true)]
-        kmer: usize,
-
-        /// Sample names from .skm to analyse
-        #[arg(long)]
-        subset: Option<String>,
-
-        /// Ignore reverse complement (all contigs are oriented along same strand)
-        #[arg(long, default_value_t = DEFAULT_STRAND)]
-        single_strand: bool,
-
-        /// Minimum k-mer count (with reads)
-        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
-        min_count: u16,
-
-        /// Minimum k-mer quality (with reads)
-        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
-        min_qual: u8,
-
-        /// Number of CPU threads
-        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
-        threads: usize,
-    },
-
     /// Calculate pairwise distances using sketches
     Dist {
         /// The .skm file used as the reference
@@ -240,6 +199,13 @@ pub enum Commands {
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
+    },
+
+    /// Calculate containment for metagenomes (.skc)
+    Containment {
+        /// Interactions with inverted indices
+        #[command(subcommand)]
+        command: ContainmentCommands,
     },
 
     /// Building and querying with inverted indices (.ski)
@@ -449,6 +415,85 @@ pub enum InvertedCommands {
         /// Calculate ANI rather than Jaccard dists, using Poisson model
         #[arg(long, default_value_t = false)]
         ani: bool,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+    },
+}
+
+/// Commands to support building and querying with containments
+#[derive(Subcommand)]
+pub enum ContainmentCommands {
+    /// Create an index against which to calculate containment
+    Index {
+        /// List of input FASTA files
+        #[arg(group = "input")]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+
+        /// Output prefix
+        #[arg(short)]
+        output: String,
+
+        /// K-mers to sketch
+        #[command(flatten)]
+        kmers: Kmers,
+
+        /// Downsampling rate, count one in every n k-mers
+        #[arg(short, long, default_value_t = DEFAULT_DOWNSAMPLE)]
+        n_downsample: usize,
+
+        /// Minimum k-mer count
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
+
+        /// Number of CPU threads
+        #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
+        threads: usize,
+    },
+
+    /// Calculate containment
+    Query {
+        /// The .skc file used as the reference (usually sketched metagenome reads)
+        #[arg(required = true)]
+        ref_db: String,
+
+        /// List of input FASTA files
+        // TODO: support pre-sketched input
+        #[arg(group = "input")]
+        query_seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        query_file_list: Option<String>,
+
+        /// Output filename (omit to output to stdout)
+        #[arg(short)]
+        output: Option<String>,
+
+        /// Sample names from .skc to analyse
+        #[arg(long)]
+        subset: Option<String>,
+
+        /// Ignore reverse complement (all contigs are oriented along same strand)
+        #[arg(long, default_value_t = DEFAULT_STRAND)]
+        single_strand: bool,
+
+        /// Minimum k-mer count (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
+        min_count: u16,
+
+        /// Minimum k-mer quality (with reads)
+        #[arg(long, default_value_t = DEFAULT_MINQUAL)]
+        min_qual: u8,
 
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]

@@ -40,6 +40,9 @@ pub struct MultiSketch {
     sample_stride: usize,
     sketch_version: String,
     hash_type: HashType,
+    #[serde(default)]
+    /// Using the bit transpose? true: storing usigs. false: storing sigs
+    pub transposed: bool,
 }
 
 impl MultiSketch {
@@ -51,15 +54,20 @@ impl MultiSketch {
         sketch_size: u64,
         kmer_lengths: &[usize],
         hash_type: HashType,
+        transposed: bool,
     ) -> Self {
         let mut name_map = HashMap::with_capacity(sketches.len());
         for sketch in sketches.iter() {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
         }
 
-        assert!(sketch_size % u64::BITS as u64 == 0);
-        let (sketchsize64, _signs_size, usigs_size) = num_bins(sketch_size);
-        let kmer_stride = usigs_size as usize;
+        if transposed {
+            assert!(sketch_size % u64::BITS as u64 == 0);
+        } else {
+            assert!(sketch_size % 4 == 0);
+        }
+        let (sketchsize64, signs_size, usigs_size) = num_bins(sketch_size);
+        let kmer_stride = if transposed {usigs_size as usize} else {signs_size as usize / 4};
         Self {
             sketch_size,
             sketchsize64,
@@ -73,6 +81,7 @@ impl MultiSketch {
             sample_stride: kmer_stride * kmer_lengths.len(),
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
             hash_type,
+            transposed,
         }
     }
 
@@ -198,6 +207,7 @@ impl MultiSketch {
         self.kmer_lengths() == sketch2.kmer_lengths()
             && self.sketch_size == sketch2.sketch_size
             && self.get_hash_type() == sketch2.get_hash_type()
+            && self.transposed == sketch2.transposed
     }
 
     /// Checks for append compatibility with another [`MultiSketch`] object
@@ -436,6 +446,15 @@ impl PartialEq for MultiSketch {
                 self.hash_type, other.hash_type
             );
         }
+
+        if self.transposed != other.transposed {
+            metadata_match = false;
+            eprintln!(
+                "Transpose (usigs/signs) not matched. Self: {:?}, Other: {:?}",
+                self.transposed, other.transposed
+            );
+        }
+
         metadata_match
     }
 }

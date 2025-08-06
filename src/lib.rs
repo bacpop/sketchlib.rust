@@ -247,100 +247,14 @@ pub fn main() -> Result<(), Error> {
                 *min_qual,
                 args.quiet,
             );
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_bins, &kmers, seq_type);
+            let transposed = true;
+            let sketch_vec = MultiSketch::new(&mut sketches, sketch_bins, &kmers, seq_type, transposed);
             sketch_vec
                 .save_metadata(output)
                 .expect("Error saving metadata");
             Ok(())
         }
-        Commands::Containment {
-            ref_db,
-            query_seq_files,
-            query_file_list,
-            output,
-            kmer,
-            subset,
-            single_strand,
-            min_count,
-            min_qual,
-            threads,
-        } => {
-            check_and_set_threads(*threads);
-
-            let mut output_file = set_ostream(output);
-
-            let ref_db_name = utils::strip_sketch_extension(ref_db);
-
-            let mut references = MultiSketch::load_metadata(ref_db_name)
-                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
-
-            log::info!("Loading sketch data from {ref_db_name}.skd");
-            if let Some(subset_file) = subset {
-                let subset_names = read_subset_names(subset_file);
-                references.read_sketch_data_block(ref_db_name, &subset_names);
-            } else {
-                references.read_sketch_data(ref_db_name);
-            }
-            log::info!("Read reference sketches:\n{references:?}");
-
-            let k_idx = references.get_k_idx(*kmer).expect(&format!("K-mer size {kmer} not found in file"));
-            let rc = !*single_strand;
-
-            log::info!("Getting input files");
-            let input_files = get_input_list(query_file_list, query_seq_files);
-            log::info!("Parsed {} samples in input list", input_files.len());
-
-            let percent = false;
-            let progress_bar = get_progress_bar(input_files.len(), percent, args.quiet);
-            let containment_vec: Vec<Vec<f64>> = input_files
-                .par_iter()
-                .progress_with(progress_bar)
-                .map(|(name, fastx1, fastx2)| {
-                    // TODO: I think we probably need a containment sketch subcommand
-                    // This will sketch into u16, and not load all seq into memory
-                    let mut hash_it = NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual);
-                    let hash_it = hash_it.first_mut().expect("Empty hash iterator");
-
-                    if hash_it.seq_len() == 0 {
-                        panic!("{name} has no valid sequence");
-                    }
-
-                    let mut read_filter = if hash_it.reads() {
-                        let mut filter = KmerFilter::new(*min_count);
-                        filter.init();
-                        Some(filter)
-                    } else {
-                        None
-                    };
-
-                    let signs =
-                        Sketch::get_all_signs(hash_it, *kmer, &mut read_filter);
-
-                    // TODO: fix this, sketches are transposed and 14 bits, new sketches are full u64
-                    // TODO: use the distance matrix class to store and print results
-                    let mut containments = Vec::with_capacity(references.number_samples_loaded());
-                    for reference_idx in 0..references.number_samples_loaded() {
-                        let mut intersection = 0;
-                        let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
-                        for bin in ref_bins {
-                            if signs.contains(bin) {
-                                intersection += 1;
-                            }
-                        }
-                        containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
-                    }
-                    containments
-
-                }).collect();
-
-            containment_vec.iter().zip(input_files).for_each(|(c_vals, (name, _, _))| {
-                c_vals.iter().enumerate().for_each(|(query_idx, containment)| {
-                    println!("{name}\t{}\t{containment}", references.sketch_name(query_idx));
-                });
-            });
-
-            Ok(())
-        }
+        
         Commands::Dist {
             ref_db,
             query_db,
@@ -459,6 +373,111 @@ pub fn main() -> Result<(), Error> {
             // merge actual sketch data
             log::info!("Merging and saving sketch data to {output}.skd");
             utils::save_sketch_data(ref_db_name1, ref_db_name2, output)
+        }
+        Commands::Containment { command } => match command {
+            ContainmentCommands::Index {
+                seq_files,
+                file_list,
+                output,
+                kmers,
+                n_downsample,
+                min_count,
+                min_qual,
+                threads,
+            } => {
+                todo!();
+                // TODO: in read filter, bloom filter size should be based on downsampling rate
+                // TODO: use/edit the inverted interface to get signs. Pack 4xu16 in a u64
+                // in fact, just use inverted interface rather than messing with multisketch -- can turn off inverted part and just write the .skq
+                // TODO: support streaming of reads (probably just on by default). Also consider how to downsample
+            }
+            ContainmentCommands::Query {
+                ref_db,
+                query_seq_files,
+                query_file_list,
+                output,
+                subset,
+                single_strand,
+                min_count,
+                min_qual,
+                threads,
+            } => {
+                check_and_set_threads(*threads);
+
+                let mut output_file = set_ostream(output);
+
+                let ref_db_name = utils::strip_sketch_extension(ref_db);
+
+                let mut references = MultiSketch::load_metadata(ref_db_name)
+                    .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
+
+                log::info!("Loading sketch data from {ref_db_name}.skd");
+                if let Some(subset_file) = subset {
+                    let subset_names = read_subset_names(subset_file);
+                    references.read_sketch_data_block(ref_db_name, &subset_names);
+                } else {
+                    references.read_sketch_data(ref_db_name);
+                }
+                log::info!("Read reference sketches:\n{references:?}");
+
+                // TODO Need to loop over k-mers in loop below
+                let k_idx = references.get_k_idx(*kmer).expect(&format!("K-mer size {kmer} not found in file"));
+                let rc = !*single_strand;
+
+                log::info!("Getting input files");
+                let input_files = get_input_list(query_file_list, query_seq_files);
+                log::info!("Parsed {} samples in input list", input_files.len());
+
+                let percent = false;
+                let progress_bar = get_progress_bar(input_files.len(), percent, args.quiet);
+                let containment_vec: Vec<Vec<f64>> = input_files
+                    .par_iter()
+                    .progress_with(progress_bar)
+                    .map(|(name, fastx1, fastx2)| {
+                        // TODO: eventually add a query pre-sketch command (same as inverted write-skq)
+                        let mut hash_it = NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual);
+                        let hash_it = hash_it.first_mut().expect("Empty hash iterator");
+
+                        if hash_it.seq_len() == 0 {
+                            panic!("{name} has no valid sequence");
+                        }
+
+                        let mut read_filter = if hash_it.reads() {
+                            let mut filter = KmerFilter::new(*min_count);
+                            filter.init();
+                            Some(filter)
+                        } else {
+                            None
+                        };
+
+                        let signs =
+                            Sketch::get_all_signs(hash_it, *kmer, &mut read_filter);
+
+                        // TODO: fix this, sketches are transposed and 14 bits, new sketches are full u64
+                        // TODO: use the distance matrix class to store and print results
+                        let mut containments = Vec::with_capacity(references.number_samples_loaded());
+                        for reference_idx in 0..references.number_samples_loaded() {
+                            let mut intersection = 0;
+                            let ref_bins = references.get_sketch_slice(reference_idx, k_idx);
+                            for bin in ref_bins {
+                                if signs.contains(bin) {
+                                    intersection += 1;
+                                }
+                            }
+                            containments.push(intersection as f64 / signs.len() as f64); // |A ∩ B| / |A|
+                        }
+                        containments
+
+                    }).collect();
+
+                containment_vec.iter().zip(input_files).for_each(|(c_vals, (name, _, _))| {
+                    c_vals.iter().enumerate().for_each(|(query_idx, containment)| {
+                        println!("{name}\t{}\t{containment}", references.sketch_name(query_idx));
+                    });
+                });
+
+                Ok(())
+            }
         }
         Commands::Inverted { command } => match command {
             InvertedCommands::Build {
@@ -763,7 +782,7 @@ pub fn main() -> Result<(), Error> {
                 args.quiet,
             );
             let mut db2_metadata =
-                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type);
+                MultiSketch::new(&mut db2_sketches, sketch_size, kmers, seq_type, db_metadata.transposed);
 
             // save skd data from db1 and from freshly sketched input files
             log::info!("Merging and saving sketch data to {output}.skd");
