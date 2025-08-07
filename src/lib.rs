@@ -137,6 +137,7 @@ use std::time::Instant;
 extern crate arrayref;
 extern crate num_cpus;
 use anyhow::Error;
+use hashbrown::HashSet;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
@@ -412,7 +413,7 @@ pub fn main() -> Result<(), Error> {
                 // Open the .skq
                 let skq_filename = &format!("{ref_db_name}.skq");
                 log::info!("Loading queries from {skq_filename}");
-                let sketch_size = 1000000;
+                let sketch_size = 28423956;
                 let kmer = 21;
                 log::warn!("Sketch size hard-coded as {sketch_size}; kmer as {kmer}");
                 let (mmap, bin_stride, kmer_stride, sample_stride) =
@@ -426,6 +427,7 @@ pub fn main() -> Result<(), Error> {
                 );
                 let skq_bins =
                     skq_reader.read_all_from_skq(sample_stride);
+                let skq_set: HashSet<u16> = skq_bins.into_iter().collect();
 
                 log::info!("Getting input files");
                 let input_files = get_input_list(query_file_list, query_seq_files);
@@ -456,13 +458,9 @@ pub fn main() -> Result<(), Error> {
                         let signs =
                             Sketch::get_all_signs(hash_it, kmer, &mut read_filter);
 
-                        let mut intersection = 0;
-                        for bin in &skq_bins {
-                            if signs.contains(bin) {
-                                intersection += 1;
-                            }
-                        }
-                        intersection as f64 / signs.len() as f64 // |A ∩ B| / |A|
+                        let intersection = &skq_set & &signs;
+                        log::debug!("signs: {}; skq_bins: {}; intersection: {}", signs.len(), skq_set.len(), intersection.len());
+                        intersection.len() as f64 / signs.len() as f64 // |A ∩ B| / |A|
                     }).collect();
 
                 containment_vec.iter().zip(input_files).for_each(|(containment, (name, _, _))| {
