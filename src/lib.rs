@@ -150,7 +150,7 @@ pub mod sketch;
 use crate::sketch::Sketch;
 use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::sketch_datafile::SketchArrayReader;
-use crate::sketch::{num_bins, sketch_files};
+use crate::sketch::{num_bins, sketch_files, SIGN_MOD};
 
 pub mod inverted;
 use crate::inverted::Inverted;
@@ -427,7 +427,7 @@ pub fn main() -> Result<(), Error> {
                 );
                 let skq_bins =
                     skq_reader.read_all_from_skq(sample_stride);
-                let skq_set: HashSet<u16> = skq_bins.into_iter().collect();
+                let binsize: u64 = SIGN_MOD.div_ceil(sample_stride as u64);
 
                 log::info!("Getting input files");
                 let input_files = get_input_list(query_file_list, query_seq_files);
@@ -455,12 +455,18 @@ pub fn main() -> Result<(), Error> {
                             None
                         };
 
+                        let mut intersection = 0;
                         let signs =
                             Sketch::get_all_signs(hash_it, kmer, &mut read_filter);
-
-                        let intersection = &skq_set & &signs;
-                        log::debug!("signs: {}; skq_bins: {}; intersection: {}", signs.len(), skq_set.len(), intersection.len());
-                        intersection.len() as f64 / signs.len() as f64 // |A ∩ B| / |A|
+                        for sign in &signs {
+                            let bin_sign = sign % SIGN_MOD;
+                            let binidx = (sign / binsize) as usize;
+                            if skq_bins[binidx] == bin_sign as u16 {
+                                intersection += 1;
+                            }
+                        }
+                        log::debug!("signs: {}; skq_bins: {}; intersection: {}", signs.len(), skq_bins.len(), intersection);
+                        intersection as f64 / signs.len() as f64 // |A ∩ B| / |A|
                     }).collect();
 
                 containment_vec.iter().zip(input_files).for_each(|(containment, (name, _, _))| {
