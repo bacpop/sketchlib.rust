@@ -460,7 +460,7 @@ pub fn main() -> Result<(), Error> {
                             Sketch::get_all_signs(hash_it, kmer, &mut read_filter);
                         for sign in &signs {
                             let bin_sign = sign % SIGN_MOD;
-                            let binidx = (sign / binsize) as usize;
+                            let binidx = (bin_sign / binsize) as usize;
                             if skq_bins[binidx] == bin_sign as u16 {
                                 intersection += 1;
                             }
