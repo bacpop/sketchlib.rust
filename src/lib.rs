@@ -394,11 +394,9 @@ pub fn main() -> Result<(), Error> {
                 // TODO: could add abundance, for angular similarity support
             }
             ContainmentCommands::Query {
-                ref_db,
-                query_seq_files,
-                query_file_list,
+                skq_file,
+                ref_inverted,
                 output,
-                subset,
                 single_strand,
                 min_count,
                 min_qual,
@@ -408,18 +406,21 @@ pub fn main() -> Result<(), Error> {
 
                 let mut output_file = set_ostream(output);
                 let rc = !*single_strand;
-                let ref_db_name = utils::strip_sketch_extension(ref_db);
 
-                // Open the .skq
-                let skq_filename = &format!("{ref_db_name}.skq");
-                log::info!("Loading queries from {skq_filename}");
+                // Open the reference inverted index
+                let inverted_index = Inverted::load(strip_sketch_extension(ref_inverted))?;
+                log::info!("Read inverted index:\n{inverted_index:?}");
+                let inverted_binsize: u64 = SIGN_MOD.div_ceil(inverted_index.sketch_size() as u64);
+
+                // Open the metagenome .skq
+                log::info!("Loading queries from {skq_file}");
                 let sketch_size = 28423956;
                 let kmer = 21;
-                log::warn!("Sketch size hard-coded as {sketch_size}; kmer as {kmer}");
+                log::warn!("skq sketch size hard-coded as {sketch_size}; kmer as {kmer}");
                 let (mmap, bin_stride, kmer_stride, sample_stride) =
                     (false, 1, 1, sketch_size);
                 let mut skq_reader = SketchArrayReader::open(
-                    skq_filename,
+                    skq_file,
                     mmap,
                     bin_stride,
                     kmer_stride,
@@ -427,51 +428,34 @@ pub fn main() -> Result<(), Error> {
                 );
                 let skq_bins =
                     skq_reader.read_all_from_skq(sample_stride);
-                let binsize: u64 = SIGN_MOD.div_ceil(sample_stride as u64);
+                let skq_binsize: u64 = SIGN_MOD.div_ceil(sample_stride as u64);
+                log::debug!("inverted_binsize:{inverted_binsize} skq_binsize:{skq_binsize}");
 
-                log::info!("Getting input files");
-                let input_files = get_input_list(query_file_list, query_seq_files);
-                log::info!("Parsed {} samples in input list", input_files.len());
+                log::info!("Running queries");
+                // Header
+                write!(output_file, "Query")?;
+                for name in inverted_index.sample_names() {
+                    write!(output_file, "\t{name}")?;
+                }
+                writeln!(output_file)?;
 
-                let percent = false;
-                let progress_bar = get_progress_bar(input_files.len(), percent, args.quiet);
-                let containment_vec: Vec<f64> = input_files
-                    .par_iter()
-                    .progress_with(progress_bar)
-                    .map(|(name, fastx1, fastx2)| {
-                        // TODO: eventually add a query pre-sketch command (same as inverted write-skq)
-                        let mut hash_it = NtHashIterator::new((fastx1, fastx2.as_ref()), rc, *min_qual);
-                        let hash_it = hash_it.first_mut().expect("Empty hash iterator");
+                let mut match_counts = vec![0; inverted_index.n_samples()];
+                let index = inverted_index.inverted_index_ref();
 
-                        if hash_it.seq_len() == 0 {
-                            panic!("{name} has no valid sequence");
+                for (query_bin_idx, query_bin_hash) in skq_bins.iter().enumerate() {
+                    let inverted_bin_idx = ((query_bin_idx as u64 * skq_binsize) / inverted_binsize) as usize;
+                    if let Some(matching_samples) = index[inverted_bin_idx].get(query_bin_hash) {
+                        for sample_idx in matching_samples {
+                            match_counts[sample_idx as usize] += 1;
                         }
+                    }
+                }
 
-                        let mut read_filter = if hash_it.reads() {
-                            let mut filter = KmerFilter::new(*min_count);
-                            filter.init();
-                            Some(filter)
-                        } else {
-                            None
-                        };
-
-                        let mut intersection = 0;
-                        let signs =
-                            Sketch::get_all_signs(hash_it, kmer, &mut read_filter);
-                        for sign in &signs {
-                            let bin_sign = sign % SIGN_MOD;
-                            let binidx = (bin_sign / binsize) as usize;
-                            if skq_bins[binidx] == bin_sign as u16 {
-                                intersection += 1;
-                            }
-                        }
-                        log::debug!("signs: {}; skq_bins: {}; intersection: {}", signs.len(), skq_bins.len(), intersection);
-                        intersection as f64 / signs.len() as f64 // |A ∩ B| / |A|
-                    }).collect();
-
-                containment_vec.iter().zip(input_files).for_each(|(containment, (name, _, _))| {
-                    writeln!(output_file, "{name}\t{containment}");
-                });
+                write!(output_file, "SRR6269135")?;
+                for distance in match_counts {
+                    write!(output_file, "\t{}", distance as f64 / inverted_index.sketch_size() as f64)?;
+                }
+                writeln!(output_file)?;
 
                 /*
                 let mut output_file = set_ostream(output);

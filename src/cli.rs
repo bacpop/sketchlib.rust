@@ -462,26 +462,17 @@ pub enum ContainmentCommands {
 
     /// Calculate containment
     Query {
-        /// The .skc file used as the reference (usually sketched metagenome reads)
+        /// The .skq file used as the query (usually sketched metagenome reads)
         #[arg(required = true)]
-        ref_db: String,
+        skq_file: String,
 
-        /// List of input FASTA files
-        // TODO: support pre-sketched input
-        #[arg(group = "input")]
-        query_seq_files: Option<Vec<String>>,
-
-        /// File listing input files (tab separated name, sequences, see README)
-        #[arg(short, group = "input")]
-        query_file_list: Option<String>,
+        /// The .ski file used as the reference
+        #[arg(required = true)]
+        ref_inverted: String,
 
         /// Output filename (omit to output to stdout)
         #[arg(short)]
         output: Option<String>,
-
-        /// Sample names from .skc to analyse
-        #[arg(long)]
-        subset: Option<String>,
 
         /// Ignore reverse complement (all contigs are oriented along same strand)
         #[arg(long, default_value_t = DEFAULT_STRAND)]

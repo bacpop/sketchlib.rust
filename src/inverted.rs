@@ -170,6 +170,10 @@ impl Inverted {
         match_counts
     }
 
+    pub fn inverted_index_ref(&self) -> &Vec<HashMap<u16, RoaringBitmap>> {
+        &self.index
+    }
+
     /// Return indexes of samples where all sketch bins are the same as a query
     pub fn all_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
         let mut matching_bits = RoaringBitmap::new();
