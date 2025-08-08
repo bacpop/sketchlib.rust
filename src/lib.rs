@@ -414,11 +414,10 @@ pub fn main() -> Result<(), Error> {
 
                 // Open the metagenome .skq
                 log::info!("Loading queries from {skq_file}");
-                let sketch_size = 28423956;
                 let kmer = 21;
-                log::warn!("skq sketch size hard-coded as {sketch_size}; kmer as {kmer}");
+                log::warn!("kmer hard-coded as {kmer}");
                 let (mmap, bin_stride, kmer_stride, sample_stride) =
-                    (false, 1, 1, sketch_size);
+                    (false, 1, 1, 0);
                 let mut skq_reader = SketchArrayReader::open(
                     skq_file,
                     mmap,
@@ -428,7 +427,8 @@ pub fn main() -> Result<(), Error> {
                 );
                 let skq_bins =
                     skq_reader.read_all_from_skq(sample_stride);
-                let skq_binsize: u64 = SIGN_MOD.div_ceil(sample_stride as u64);
+                let sketch_size = skq_bins.len();
+                let skq_binsize: u64 = SIGN_MOD.div_ceil(sketch_size as u64);
                 log::debug!("inverted_binsize:{inverted_binsize} skq_binsize:{skq_binsize}");
 
                 log::info!("Running queries");
