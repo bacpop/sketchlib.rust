@@ -21,12 +21,12 @@ use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-type InvSketches = (Vec<Vec<u16>>, Vec<String>);
+type InvSketches = (Vec<Vec<u32>>, Vec<String>);
 
 /// An inverted index and associated metadata
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Inverted {
-    index: Vec<HashMap<u16, RoaringBitmap>>,
+    index: Vec<HashMap<u32, RoaringBitmap>>,
     n_samples: usize,
     sample_names: Vec<String>,
     kmer_size: usize,
@@ -157,7 +157,7 @@ impl Inverted {
 
     /// Query a single sample against the index, returning the number of matches
     /// of bins against all samples in the index
-    pub fn query_against_inverted_index(&self, query_sigs: &[u16]) -> Vec<u32> {
+    pub fn query_against_inverted_index(&self, query_sigs: &[u32]) -> Vec<u32> {
         let mut match_counts = vec![0; self.sample_names.len()];
 
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
@@ -170,12 +170,12 @@ impl Inverted {
         match_counts
     }
 
-    pub fn inverted_index_ref(&self) -> &Vec<HashMap<u16, RoaringBitmap>> {
+    pub fn inverted_index_ref(&self) -> &Vec<HashMap<u32, RoaringBitmap>> {
         &self.index
     }
 
     /// Return indexes of samples where all sketch bins are the same as a query
-    pub fn all_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
+    pub fn all_shared_bins(&self, query_sigs: &[u32]) -> Vec<u32> {
         let mut matching_bits = RoaringBitmap::new();
         matching_bits.insert_range(0..self.sample_names.len() as u32);
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
@@ -191,7 +191,7 @@ impl Inverted {
     }
 
     /// Return indexes of samples where at least one sketch bins is the same as a query
-    pub fn any_shared_bins(&self, query_sigs: &[u16]) -> Vec<u32> {
+    pub fn any_shared_bins(&self, query_sigs: &[u32]) -> Vec<u32> {
         let mut matching_bits = RoaringBitmap::new();
         for (bin_idx, query_bin_hash) in query_sigs.iter().enumerate() {
             if let Some(matching_samples) = self.index[bin_idx].get(query_bin_hash) {
@@ -288,7 +288,7 @@ impl Inverted {
 
         let mut sketch_results = vec![Vec::new(); input_files.len()];
         while let Ok((genome_idx, sketch)) = rx.recv() {
-            let sketch_u16 = sketch.iter().map(|h| *h as u16).collect();
+            let sketch_u16 = sketch.iter().map(|h| *h as u32).collect();
             sketch_results[genome_idx] = sketch_u16;
         }
 
@@ -304,11 +304,11 @@ impl Inverted {
     }
 
     fn build_inverted_index(
-        genome_sketches: &[Vec<u16>],
+        genome_sketches: &[Vec<u32>],
         sketch_size: u64,
-    ) -> Vec<HashMap<u16, RoaringBitmap>> {
+    ) -> Vec<HashMap<u32, RoaringBitmap>> {
         // initialize inverted index structure
-        let mut inverted_index: Vec<HashMap<u16, RoaringBitmap>> =
+        let mut inverted_index: Vec<HashMap<u32, RoaringBitmap>> =
             vec![HashMap::new(); sketch_size as usize];
 
         // process each sketch

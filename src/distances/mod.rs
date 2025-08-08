@@ -247,7 +247,7 @@ pub fn self_query_dists_all<'a>(
 pub fn self_dists_knn_precluster<'a>(
     sketches: &'a MultiSketch,
     inverted_index: &Inverted,
-    skq_bins: &[u16],
+    skq_bins: &[u32],
     skq_stride: usize,
     n: usize,
     knn: usize,
