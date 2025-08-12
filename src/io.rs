@@ -1,5 +1,6 @@
 //! Functions to read input fasta/fastq files
 use crate::cli::Kmers;
+use crate::sketch::multisketch::MultiSketch;
 
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
@@ -209,11 +210,10 @@ pub fn read_subset_names(subset_file: &str) -> Vec<String> {
 }
 
 /// Read completeness values from a file and create a vector for each genome in the provided sketches.
-/// Uses streaming to avoid loading the entire file into memory.
 /// If a genome is not found in the file, a default value of 1.0 is used.
 pub fn read_completeness_file(
     completeness_file: &str,
-    sketches: &crate::sketch::multisketch::MultiSketch,
+    sketches: &MultiSketch,
 ) -> Result<Vec<f64>, crate::Error> {
     // Pre-allocate vector with default values (1.0 for missing genomes)
     let mut completeness_vec = vec![1.0_f64; sketches.number_samples_loaded()];
