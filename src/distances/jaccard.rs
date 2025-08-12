@@ -3,7 +3,14 @@ use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BBITS;
 
 /// Returns the Jaccard index between two samples
-pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f64 {
+pub fn jaccard_index(
+    sketch1: &[u64],
+    sketch2: &[u64],
+    sketchsize64: u64,
+    c1: Option<f64>,
+    c2: Option<f64>,
+    completeness_cutoff: f64,
+) -> f64 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f64;
     let samebits: u32 = sketch1
         .chunks_exact(BBITS as usize)
@@ -23,7 +30,18 @@ pub fn jaccard_index(sketch1: &[u64], sketch2: &[u64], sketchsize64: u64) -> f64
     let diff = samebits.saturating_sub(expected_samebits);
     let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
     log::trace!("intersize:{intersize} unionsize:{unionsize}");
-    intersize / unionsize
+    let mut jaccard_index = intersize / unionsize;
+
+    // Apply completeness correction if both completeness values are provided
+    if let (Some(c1_val), Some(c2_val)) = (c1, c2) {
+        if c1_val * c2_val >= completeness_cutoff {
+            jaccard_index = completeness_correction(jaccard_index, c1_val, c2_val);
+            // Cap the corrected Jaccard index at 1.0 to prevent negative distances
+            jaccard_index = jaccard_index.min(1.0);
+        }
+    }
+
+    jaccard_index
 }
 
 /// Converts between Jaccard distance and ANI, using a Poisson model of mutations
@@ -34,7 +52,7 @@ pub fn ani_pois(jaccard: f64, k: f64) -> f64 {
 
 /// Completeness correction for MAGs
 #[inline(always)]
-pub fn completeness_correction(jaccard: f64, c1: &f64, c2: &f64) -> f64 {
+pub fn completeness_correction(jaccard: f64, c1: f64, c2: f64) -> f64 {
     jaccard / (c1 * c2 / (c1 + c2 - c1 * c2))
 }
 
@@ -45,6 +63,8 @@ pub fn core_acc_dist(
     query_sketches: &MultiSketch,
     ref_sketch_idx: usize,
     query_sketch_idx: usize,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
 ) -> (f32, f32) {
     if ref_sketches.kmer_lengths().len() < 2 {
         panic!("Need at least two k-mer lengths to calculate core/accessory distances");
@@ -54,10 +74,15 @@ pub fn core_acc_dist(
     let tolerance = (2.0_f64 / ((ref_sketches.sketch_size * u64::BITS as u64) as f64)).ln();
     //let tolerance = -100.0_f32;
     for (k_idx, k) in ref_sketches.kmer_lengths().iter().enumerate() {
+        let c1 = completeness_vec.map(|cv| cv[ref_sketch_idx]);
+        let c2 = completeness_vec.map(|cv| cv[query_sketch_idx]);
         let y = jaccard_index(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
             query_sketches.get_sketch_slice(query_sketch_idx, k_idx),
             ref_sketches.sketchsize64,
+            c1,
+            c2,
+            completeness_cutoff,
         )
         .ln();
         if y < tolerance {

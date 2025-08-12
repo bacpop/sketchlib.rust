@@ -155,11 +155,12 @@ use crate::inverted::Inverted;
 
 pub mod distances;
 use crate::distances::*;
-// use crate::distances::create_completeness_vector;
-
 
 pub mod io;
-use crate::io::{get_input_list, parse_kmers, read_subset_names, reorder_input_files, set_ostream};
+use crate::io::{
+    get_input_list, parse_kmers, read_completeness_file, read_subset_names, reorder_input_files,
+    set_ostream,
+};
 pub mod structures;
 
 pub mod hashing;
@@ -172,9 +173,6 @@ use std::io::copy;
 
 use std::io::BufRead;
 use std::path::Path;
-
-use hashbrown::HashMap;
-use std::fs;
 
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 21;
@@ -265,6 +263,7 @@ pub fn main() -> Result<(), Error> {
             ani,
             threads,
             completeness_file,
+            completeness_cutoff,
         } => {
             check_and_set_threads(*threads);
 
@@ -290,19 +289,9 @@ pub fn main() -> Result<(), Error> {
                     knn = Some(n - 1);
                 }
             }
-            // Read in completeness file
+            // Read in completeness (parallel implementation)
             let completeness_vec: Option<Vec<f64>> = if let Some(file_path) = completeness_file {
-            let contents = fs::read_to_string(file_path)?;
-            let mut completeness_map = HashMap::new();
-            
-            for line in contents.lines() {
-                if let Some((genome_id, completeness_str)) = line.split_once('\t') {
-                    if let Ok(completeness) = completeness_str.parse::<f64>() {
-                        completeness_map.insert(genome_id.to_string(), completeness);
-                    }
-                }
-            }
-                Some(create_completeness_vector(&completeness_map, &references))
+                Some(read_completeness_file(file_path, &references)?)
             } else {
                 None
             };
@@ -331,7 +320,14 @@ pub fn main() -> Result<(), Error> {
                         None => {
                             // Self mode (dense)
                             log::info!("Calculating all ref vs ref distances");
-                            let distances = self_dists_all(&references, n, dist_type, args.quiet, completeness_vec.as_ref());
+                            let distances = self_dists_all(
+                                &references,
+                                n,
+                                dist_type,
+                                args.quiet,
+                                completeness_vec.as_ref(),
+                                *completeness_cutoff,
+                            );
                             log::info!("Writing out in long matrix form");
                             write!(output_file, "{distances}")
                                 .expect("Error writing output distances");
@@ -339,8 +335,15 @@ pub fn main() -> Result<(), Error> {
                         Some(nn) => {
                             // Self mode (sparse)
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-                            let distances =
-                                self_dists_knn(&references, n, nn, dist_type, args.quiet, completeness_vec.as_ref());
+                            let distances = self_dists_knn(
+                                &references,
+                                n,
+                                nn,
+                                dist_type,
+                                args.quiet,
+                                completeness_vec.as_ref(),
+                                *completeness_cutoff,
+                            );
 
                             log::info!("Writing out in sparse matrix form");
                             write!(output_file, "{distances}")
@@ -353,8 +356,16 @@ pub fn main() -> Result<(), Error> {
                     log::info!("Calculating all ref vs query distances");
 
                     let nq = query_db.number_samples_loaded();
-                    let distances =
-                        self_query_dists_all(&references, &query_db, n, nq, dist_type, args.quiet, completeness_vec.as_ref());
+                    let distances = self_query_dists_all(
+                        &references,
+                        &query_db,
+                        n,
+                        nq,
+                        dist_type,
+                        args.quiet,
+                        completeness_vec.as_ref(),
+                        *completeness_cutoff,
+                    );
 
                     log::info!("Writing out in long matrix form");
                     write!(output_file, "{distances}").expect("Error writing output distances");
@@ -542,6 +553,7 @@ pub fn main() -> Result<(), Error> {
                 ani,
                 threads,
                 completeness_file,
+                completeness_cutoff,
             } => {
                 check_and_set_threads(*threads);
 
@@ -601,24 +613,13 @@ pub fn main() -> Result<(), Error> {
                         panic!("K-mer size {kmer} used for .ski not found in .skd: {e}");
                     });
 
-                    let completeness_map: Option<HashMap<String, f64>> = if let Some(file_path) = completeness_file {
-                        let contents = fs::read_to_string(file_path)?;
-                        let mut map = HashMap::new();
-                        
-                        for line in contents.lines() {
-                            if let Some((genome_id, completeness_str)) = line.split_once('\t') {
-                                if let Ok(completeness) = completeness_str.parse::<f64>() {
-                                    map.insert(genome_id.to_string(), completeness);
-                                }
-                            }
-                        }
-                        Some(map)
-                    } else {
-                        None
-                    };
-
-                    let completeness_vec: Option<Vec<f64>> = completeness_map.as_ref()
-                    .map(|map| create_completeness_vector(map, &references));
+                    // Read in completeness (parallel implementation)
+                    let completeness_vec: Option<Vec<f64>> =
+                        if let Some(file_path) = completeness_file {
+                            Some(read_completeness_file(file_path, &references)?)
+                        } else {
+                            None
+                        };
                     // Run the distances with both indexes
                     log::info!(
                         "Calculating sparse ref vs ref distances with {knn} nearest neighbours"
@@ -638,6 +639,7 @@ pub fn main() -> Result<(), Error> {
                         dist_type,
                         args.quiet,
                         completeness_vec.as_ref(),
+                        *completeness_cutoff,
                     );
 
                     // Write the results

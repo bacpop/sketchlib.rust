@@ -52,7 +52,7 @@ pub fn reorder_input_files(
     // Read through labels, assign each name to a cluster in increasing order
     for line in f.lines() {
         let line = line.expect("Unable to read line in species_list");
-        let fields: Vec<&str> = line.split_terminator("\t").collect();
+        let fields: Vec<&str> = line.split_terminator('\t').collect();
         if input_names.contains(fields[0]) {
             if let Some(idx) = species_labels.get(fields[1]) {
                 label_order.push((fields[0].to_string(), *idx));
@@ -203,6 +203,75 @@ pub fn read_subset_names(subset_file: &str) -> Vec<String> {
     }
     log::info!("Read {} names to subset", subset_names.len());
     subset_names
+}
+
+/// Read completeness values from a file and create a vector for each genome in the provided sketches.
+/// Uses streaming to avoid loading the entire file into memory.
+/// If a genome is not found in the file, a default value of 1.0 is used.
+pub fn read_completeness_file(
+    completeness_file: &str,
+    sketches: &crate::sketch::multisketch::MultiSketch,
+) -> Result<Vec<f64>, crate::Error> {
+    use anyhow::Context;
+    use rayon::prelude::*;
+    use std::sync::Mutex;
+
+    // Pre-allocate vector with default values (1.0 for missing genomes)
+    let mut completeness_vec = vec![1.0_f64; sketches.number_samples_loaded()];
+    let missing_genomes = Mutex::new(Vec::new());
+
+    // Open file with buffered reader for streaming
+    let f = File::open(completeness_file)
+        .with_context(|| format!("Failed to open completeness file: {}", completeness_file))?;
+    let f = BufReader::new(f);
+
+    // Read lines and collect valid updates
+    let lines: Vec<String> = f.lines().collect::<Result<Vec<_>, _>>().with_context(|| {
+        format!(
+            "Failed to read lines from completeness file: {}",
+            completeness_file
+        )
+    })?;
+
+    // Parse all lines in parallel and collect valid updates
+    let updates: Vec<(usize, f64)> = lines
+        .par_iter()
+        .filter_map(|line| {
+            if let Some((genome_id, completeness_str)) = line.split_once('\t') {
+                if let Ok(completeness) = completeness_str.parse::<f64>() {
+                    // Use MultiSketch's method to get the logical index
+                    if let Some(index) = sketches.get_sample_index(genome_id) {
+                        Some((index, completeness))
+                    } else {
+                        // Track missing genomes
+                        missing_genomes.lock().unwrap().push(genome_id.to_string());
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Apply updates to completeness_vec (thread safe)
+    for (index, completeness) in updates {
+        completeness_vec[index] = completeness;
+    }
+
+    // Report missing genomes
+    let missing = missing_genomes.into_inner().unwrap();
+    if !missing.is_empty() {
+        log::warn!(
+            "Found {} genomes not in completeness file, using default 1.0: {}",
+            missing.len(),
+            missing.join(", ")
+        );
+    }
+
+    Ok(completeness_vec)
 }
 
 #[cfg(test)]

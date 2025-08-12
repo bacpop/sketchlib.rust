@@ -143,6 +143,26 @@ impl MultiSketch {
         }
     }
 
+    /// Get the logical index of a sample by name, if it exists
+    /// Returns the index that should be used with completeness vectors (0..number_samples_loaded)
+    pub fn get_sample_index(&self, name: &str) -> Option<usize> {
+        match &self.block_reindex {
+            Some(block_map) => {
+                // When subsampled
+                for (logical_idx, &metadata_idx) in block_map.iter().enumerate() {
+                    if self.sketch_metadata[metadata_idx].name() == name {
+                        return Some(logical_idx);
+                    }
+                }
+                None
+            }
+            None => {
+                // When not subsampled, use the name_map directly
+                self.name_map.get(name).copied()
+            }
+        }
+    }
+
     /// Read all the sketch bins from an .skd file
     pub fn read_sketch_data(&mut self, file_prefix: &str) {
         let filename = format!("{file_prefix}.skd");

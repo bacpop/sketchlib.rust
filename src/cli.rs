@@ -197,10 +197,14 @@ pub enum Commands {
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
-        
-        /// Completeness file
+
+        /// File listing sample and completeness estimate 0.0-1.0 (tab separated)
         #[arg(long)]
         completeness_file: Option<String>,
+
+        /// minimum completeness for a sample to be corrected but the completeness correction
+        #[arg(long, default_value_t = 0.64)]
+        completeness_cutoff: f64,
     },
 
     /// Building and querying with inverted indices (.ski)
@@ -414,10 +418,14 @@ pub enum InvertedCommands {
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
-        
+
         /// Completeness file
         #[arg(long)]
         completeness_file: Option<String>,
+
+        /// minimum completeness for a sample to be corrected but the completeness correction
+        #[arg(long, default_value_t = 0.64)]
+        completeness_cutoff: f64,
     },
 }
 
