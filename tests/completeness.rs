@@ -1,7 +1,5 @@
 use approx::assert_abs_diff_eq;
 use snapbox::cmd::{cargo_bin, Command};
-// use std::fs::File;
-// use std::io::{BufRead, BufReader, Write};
 
 pub mod common;
 use crate::common::TestSetup;

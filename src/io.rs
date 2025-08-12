@@ -4,8 +4,11 @@ use crate::cli::Kmers;
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+use std::sync::Mutex;
 
+use anyhow::Context;
 use hashbrown::{HashMap, HashSet};
+use rayon::prelude::*;
 use regex::Regex;
 
 /// Wrapper type for the three fields in an rfile
@@ -212,10 +215,6 @@ pub fn read_completeness_file(
     completeness_file: &str,
     sketches: &crate::sketch::multisketch::MultiSketch,
 ) -> Result<Vec<f64>, crate::Error> {
-    use anyhow::Context;
-    use rayon::prelude::*;
-    use std::sync::Mutex;
-
     // Pre-allocate vector with default values (1.0 for missing genomes)
     let mut completeness_vec = vec![1.0_f64; sketches.number_samples_loaded()];
     let missing_genomes = Mutex::new(Vec::new());
@@ -225,7 +224,7 @@ pub fn read_completeness_file(
         .with_context(|| format!("Failed to open completeness file: {}", completeness_file))?;
     let f = BufReader::new(f);
 
-    // Read lines and collect valid updates
+    // Read lines and collect completeness values
     let lines: Vec<String> = f.lines().collect::<Result<Vec<_>, _>>().with_context(|| {
         format!(
             "Failed to read lines from completeness file: {}",
@@ -233,7 +232,7 @@ pub fn read_completeness_file(
         )
     })?;
 
-    // Parse all lines in parallel and collect valid updates
+    // Parse all lines in parallel and collect completeness values
     let updates: Vec<(usize, f64)> = lines
         .par_iter()
         .filter_map(|line| {
