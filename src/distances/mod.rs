@@ -80,6 +80,9 @@ pub fn self_dists_all<'a>(
 
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f64)) = k_vals {
+                    // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                    // If completeness_vec is None, the result will also be None.
+                    // This uses Option::map to safely access the completeness value for each sample.
                     let c1 = completeness_vec.map(|cv| cv[i]);
                     let c2 = completeness_vec.map(|cv| cv[j]);
                     let j_index = jaccard_index(
@@ -152,6 +155,9 @@ pub fn self_dists_knn<'a>(
                         if i == j {
                             continue;
                         }
+                        // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                        // If completeness_vec is None, the result will also be None.
+                        // This uses Option::map to safely access the completeness value for each sample.
                         let c1 = completeness_vec.map(|cv| cv[i]);
                         let c2 = completeness_vec.map(|cv| cv[j]);
                         let dist = jaccard_index(
@@ -241,6 +247,9 @@ pub fn self_query_dists_all<'a>(
             let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f64)) = k_vals {
+                    // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                    // If completeness_vec is None, the result will also be None.
+                    // This uses Option::map to safely access the completeness value for each sample.
                     let c1 = completeness_vec.map(|cv| cv[i]);
                     let c2 = completeness_vec.map(|cv| cv[j]);
                     let j_index = jaccard_index(
@@ -341,6 +350,9 @@ pub fn self_dists_knn_precluster<'a>(
                         if i == j {
                             continue;
                         }
+                        // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                        // If completeness_vec is None, the result will also be None.
+                        // This uses Option::map to safely access the completeness value for each sample.
                         let c1 = completeness_vec.map(|cv| cv[i]);
                         let c2 = completeness_vec.map(|cv| cv[j]);
                         let dist = jaccard_index(
@@ -383,38 +395,4 @@ pub fn self_dists_knn_precluster<'a>(
         }
     }
     sp_distances
-}
-
-/// Legacy function - Creates a vector of completeness values using a pre-built HashMap.
-/// This is kept for backward compatibility but the new create_completeness_vector_from_file is preferred.
-pub fn create_completeness_vector(
-    completeness_map: &HashMap<String, f64>,
-    sketches: &MultiSketch,
-) -> Vec<f64> {
-    let mut completeness_vec = Vec::with_capacity(sketches.number_samples_loaded());
-    let mut missing_genomes = Vec::with_capacity(sketches.number_samples_loaded());
-
-    for i in 0..sketches.number_samples_loaded() {
-        let genome_name = sketches.sketch_name(i);
-        let completeness = completeness_map
-            .get(genome_name)
-            .copied()
-            .unwrap_or_else(|| {
-                missing_genomes.push(genome_name.to_string());
-                1.0_f64
-            });
-        // Add the completeness value to our result vector
-        completeness_vec.push(completeness);
-    }
-
-    // Report all missing genomes at once
-    if !missing_genomes.is_empty() {
-        log::warn!(
-            "Found {} genomes not in completeness file, using default 1.0: {}",
-            missing_genomes.len(),
-            missing_genomes.join(", ")
-        );
-    }
-
-    completeness_vec
 }
