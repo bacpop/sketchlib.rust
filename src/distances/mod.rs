@@ -27,7 +27,7 @@ pub fn set_k(sketches: &MultiSketch, kmer: Option<usize>, ani: bool) -> Result<D
         k_idx = sketches
             .get_k_idx(k)
             .with_context(|| format!("K-mer size {k} not found in file"))?;
-        DistType::Jaccard(k_idx, k as f32, ani)
+        DistType::Jaccard(k_idx, k as f64, ani)
     } else {
         DistType::CoreAcc
     };
@@ -54,12 +54,14 @@ fn push_heap<T: PartialOrd + Ord>(heap: &mut BinaryHeap<T>, dist_item: T, knn: u
 //      Streaming out of distances, when a sample is 'ready'
 
 /// Self query mode (dense, all distances)
-pub fn self_dists_all(
-    sketches: &MultiSketch,
+pub fn self_dists_all<'a>(
+    sketches: &'a MultiSketch,
     n: usize,
     dist_type: DistType,
     quiet: bool,
-) -> DistanceMatrix {
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+) -> DistanceMatrix<'a> {
     let mut distances = DistanceMatrix::new(sketches, None, dist_type);
     let k_vals = distances.k_vals();
     let ani = distances.ani();
@@ -75,21 +77,37 @@ pub fn self_dists_all(
             let start_dist_idx = chunk_idx * CHUNK_SIZE;
             let mut i = calc_row_idx(start_dist_idx, n);
             let mut j = calc_col_idx(start_dist_idx, i, n);
+
             for dist_idx in 0..CHUNK_SIZE {
-                if let Some((k_idx, k_f32)) = k_vals {
+                if let Some((k_idx, k_f64)) = k_vals {
+                    // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                    // If completeness_vec is None, the result will also be None.
+                    // This uses Option::map to safely access the completeness value for each sample.
+                    let c1 = completeness_vec.map(|cv| cv[i]);
+                    let c2 = completeness_vec.map(|cv| cv[j]);
                     let j_index = jaccard_index(
                         sketches.get_sketch_slice(i, k_idx),
                         sketches.get_sketch_slice(j, k_idx),
                         sketches.sketchsize64,
+                        c1,
+                        c2,
+                        completeness_cutoff,
                     );
                     let dist = if ani {
-                        ani_pois(j_index, k_f32)
+                        ani_pois(j_index, k_f64) as f32
                     } else {
-                        1.0_f32 - j_index
+                        (1.0_f64 - j_index) as f32
                     };
                     dist_slice[dist_idx] = dist;
                 } else {
-                    let dist = core_acc_dist(sketches, sketches, i, j);
+                    let dist = core_acc_dist(
+                        sketches,
+                        sketches,
+                        i,
+                        j,
+                        completeness_vec,
+                        completeness_cutoff,
+                    );
                     dist_slice[dist_idx * 2] = dist.0;
                     dist_slice[dist_idx * 2 + 1] = dist.1;
                 }
@@ -110,20 +128,22 @@ pub fn self_dists_all(
 }
 
 /// Self query mode (dense, all distances)
-pub fn self_dists_knn(
-    sketches: &MultiSketch,
+pub fn self_dists_knn<'a>(
+    sketches: &'a MultiSketch,
     n: usize,
     knn: usize,
     dist_type: DistType,
     quiet: bool,
-) -> SparseDistanceMatrix {
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+) -> SparseDistanceMatrix<'a> {
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
     let k_vals = sp_distances.k_vals();
     let ani = sp_distances.ani();
     let progress_bar = get_progress_bar(n, BAR_PERCENT, quiet);
     match sp_distances.dists_mut() {
         DistVec::Jaccard(distances) => {
-            let (k_idx, k_f32) = k_vals.unwrap();
+            let (k_idx, k_f64) = k_vals.unwrap();
             distances
                 .par_chunks_mut(knn)
                 .progress_with(progress_bar)
@@ -135,18 +155,26 @@ pub fn self_dists_knn(
                         if i == j {
                             continue;
                         }
-                        let mut dist = jaccard_index(
+                        // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                        // If completeness_vec is None, the result will also be None.
+                        // This uses Option::map to safely access the completeness value for each sample.
+                        let c1 = completeness_vec.map(|cv| cv[i]);
+                        let c2 = completeness_vec.map(|cv| cv[j]);
+                        let dist = jaccard_index(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
+                            c1,
+                            c2,
+                            completeness_cutoff,
                         );
-                        dist = if ani {
+                        let dist_f32 = if ani {
                             // This is just done so the heap sorts correctly (as want to keep higher ANI)
-                            1.0_f32 - ani_pois(dist, k_f32)
+                            (1.0_f64 - ani_pois(dist, k_f64)) as f32
                         } else {
-                            1.0_f32 - dist
+                            (1.0_f64 - dist) as f32
                         };
-                        let dist_item = SparseJaccard(j, dist);
+                        let dist_item = SparseJaccard(j, dist_f32);
                         push_heap(&mut heap, dist_item, knn);
                     }
                     debug_assert_eq!(row_dist_slice.len(), heap.len());
@@ -173,7 +201,14 @@ pub fn self_dists_knn(
                         if i == j {
                             continue;
                         }
-                        let dists = core_acc_dist(sketches, sketches, i, j);
+                        let dists = core_acc_dist(
+                            sketches,
+                            sketches,
+                            i,
+                            j,
+                            completeness_vec,
+                            completeness_cutoff,
+                        );
                         let dist_item = SparseCoreAcc(j, dists.0, dists.1);
                         push_heap(&mut heap, dist_item, knn);
                     }
@@ -193,6 +228,8 @@ pub fn self_query_dists_all<'a>(
     nq: usize,
     dist_type: DistType,
     quiet: bool,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
 ) -> DistanceMatrix<'a> {
     let mut distances = DistanceMatrix::new(ref_sketches, Some(query_sketches), dist_type);
     let k_vals = distances.k_vals();
@@ -209,20 +246,35 @@ pub fn self_query_dists_all<'a>(
             let start_dist_idx = chunk_idx * CHUNK_SIZE;
             let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
             for dist_idx in 0..CHUNK_SIZE {
-                if let Some((k_idx, k_f32)) = k_vals {
+                if let Some((k_idx, k_f64)) = k_vals {
+                    // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                    // If completeness_vec is None, the result will also be None.
+                    // This uses Option::map to safely access the completeness value for each sample.
+                    let c1 = completeness_vec.map(|cv| cv[i]);
+                    let c2 = completeness_vec.map(|cv| cv[j]);
                     let j_index = jaccard_index(
                         ref_sketches.get_sketch_slice(i, k_idx),
                         query_sketches.get_sketch_slice(j, k_idx),
                         ref_sketches.sketchsize64,
+                        c1,
+                        c2,
+                        completeness_cutoff,
                     );
                     let dist = if ani {
-                        ani_pois(j_index, k_f32)
+                        ani_pois(j_index, k_f64) as f32
                     } else {
-                        1.0_f32 - j_index
+                        (1.0_f64 - j_index) as f32
                     };
                     dist_slice[dist_idx] = dist;
                 } else {
-                    let dist = core_acc_dist(ref_sketches, query_sketches, i, j);
+                    let dist = core_acc_dist(
+                        ref_sketches,
+                        query_sketches,
+                        i,
+                        j,
+                        completeness_vec,
+                        completeness_cutoff,
+                    );
                     dist_slice[dist_idx * 2] = dist.0;
                     dist_slice[dist_idx * 2 + 1] = dist.1;
                 }
@@ -253,6 +305,8 @@ pub fn self_dists_knn_precluster<'a>(
     knn: usize,
     dist_type: DistType,
     quiet: bool,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
 ) -> SparseDistanceMatrix<'a> {
     // Check that sample sets in ski and skm are the same and create i,j lookup
     let mut skq_lookup = HashMap::with_capacity(n);
@@ -278,7 +332,7 @@ pub fn self_dists_knn_precluster<'a>(
     let progress_bar = get_progress_bar(n, BAR_PERCENT, quiet);
     match sp_distances.dists_mut() {
         DistVec::Jaccard(distances) => {
-            let (k_idx, k_f32) = k_vals.unwrap();
+            let (k_idx, k_f64) = k_vals.unwrap();
             distances
                 .par_chunks_mut(knn)
                 .progress_with(progress_bar)
@@ -296,17 +350,25 @@ pub fn self_dists_knn_precluster<'a>(
                         if i == j {
                             continue;
                         }
-                        let mut dist = jaccard_index(
+                        // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
+                        // If completeness_vec is None, the result will also be None.
+                        // This uses Option::map to safely access the completeness value for each sample.
+                        let c1 = completeness_vec.map(|cv| cv[i]);
+                        let c2 = completeness_vec.map(|cv| cv[j]);
+                        let dist = jaccard_index(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
+                            c1,
+                            c2,
+                            completeness_cutoff,
                         );
-                        dist = if ani {
-                            1.0_f32 - ani_pois(dist, k_f32)
+                        let dist_f32 = if ani {
+                            (1.0_f64 - ani_pois(dist, k_f64)) as f32
                         } else {
-                            1.0_f32 - dist
+                            (1.0_f64 - dist) as f32
                         };
-                        let dist_item = SparseJaccard(j, dist);
+                        let dist_item = SparseJaccard(j, dist_f32);
                         push_heap(&mut heap, dist_item, knn);
                     }
                     let mut dist_vec = heap.into_sorted_vec();

@@ -54,7 +54,7 @@ pub fn calc_row_idx(k: usize, n: usize) -> usize {
 #[derive(PartialEq, PartialOrd)]
 pub enum DistType {
     /// Jaccard distance (k-mer index, k-mer size, ANI on/off)
-    Jaccard(usize, f32, bool),
+    Jaccard(usize, f64, bool),
     /// Core and accessory distances
     CoreAcc,
 }
@@ -89,7 +89,7 @@ pub trait Distances<'a> {
     }
 
     /// If calcualting Jaccard distances, the index of the k-mer, and the k-mer as a float
-    fn k_vals(&self) -> Option<(usize, f32)> {
+    fn k_vals(&self) -> Option<(usize, f64)> {
         match self.jaccard() {
             DistType::Jaccard(k_idx, k_val, _) => Some((*k_idx, *k_val)),
             _ => None,

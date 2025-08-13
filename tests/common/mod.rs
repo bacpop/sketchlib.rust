@@ -1,6 +1,6 @@
 use std::{
     fs::{copy, File},
-    io::{LineWriter, Write},
+    io::{BufRead, BufReader, LineWriter, Write},
     path::{Path, PathBuf},
 };
 
@@ -156,5 +156,35 @@ impl TestSetup {
             .unwrap();
         }
         RFILE_NAME
+    }
+
+    /// Helper function to create completeness files with specified entries
+    pub fn create_completeness_file(sandbox: &TestSetup, filename: &str, entries: &[(&str, f64)]) {
+        let file_path = sandbox.file_string(filename, TestDir::Output);
+        let mut file = File::create(&file_path)
+            .unwrap_or_else(|_| panic!("Failed to create completeness file: {}", file_path));
+
+        for (genome, completeness) in entries {
+            writeln!(file, "{}\t{}", genome, completeness)
+                .expect("Failed to write to completeness file");
+        }
+    }
+
+    /// Helper function to parse distance output and extract distance values
+    pub fn parse_distances(output_file: &str) -> Vec<f64> {
+        let file = File::open(output_file).expect("Failed to open distance output file");
+        let reader = BufReader::new(file);
+
+        reader
+            .lines()
+            .map(|line| {
+                line.expect("Failed to read line")
+                    .split_whitespace()
+                    .last()
+                    .expect("Line has incorrect format")
+                    .parse::<f64>()
+                    .expect("Failed to parse distance")
+            })
+            .collect()
     }
 }
