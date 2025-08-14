@@ -221,15 +221,12 @@ pub fn read_completeness_file(
 
     // Open file with buffered reader for streaming
     let f = File::open(completeness_file)
-        .with_context(|| format!("Failed to open completeness file: {}", completeness_file))?;
+        .with_context(|| format!("Failed to open completeness file: {completeness_file}"))?;
     let f = BufReader::new(f);
 
     // Read lines and collect completeness values
     let lines: Vec<String> = f.lines().collect::<Result<Vec<_>, _>>().with_context(|| {
-        format!(
-            "Failed to read lines from completeness file: {}",
-            completeness_file
-        )
+        format!("Failed to read lines from completeness file: {completeness_file}")
     })?;
 
     // Parse all lines in parallel and collect completeness values

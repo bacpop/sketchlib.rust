@@ -526,7 +526,7 @@ pub fn main() -> Result<(), Error> {
                         for distance in dist {
                             write!(output_file, "\t{distance}")?;
                         }
-                    } else if dist.len() > 0 {
+                    } else if !dist.is_empty() {
                         write!(
                             output_file,
                             "\t{}",
