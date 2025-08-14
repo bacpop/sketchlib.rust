@@ -135,7 +135,7 @@ mod tests {
             .arg("-f")
             .arg("rfile.txt")
             .arg("inverted.ski")
-            .args(&["--query-type", "any-bin"])
+            .args(&["--query-type", "any-bins"])
             .assert()
             .stdout_eq(
                 sandbox

@@ -90,7 +90,7 @@
 //! Three query types are supported:
 //! - `match-count` (default). Gives the count of bins matching between samples and queries.
 //! - `all-bins`. Give samples which have identical sketches to the query.
-//! - `any-bin`. Gives samples which have at least one bin matching with the query.
+//! - `any-bins`. Gives samples which have at least one bin matching with the query.
 //!
 //! To convert from counts to a Jaccard index, you can use the count (intersection, c) from
 //! the first mode using the sketch size (s) by J = c / (2s - c).
@@ -511,7 +511,7 @@ pub fn main() -> Result<(), Error> {
                                 InvertedQueryType::AllBins => {
                                     (q_name, inverted_index.all_shared_bins(q))
                                 }
-                                InvertedQueryType::AnyBin => {
+                                InvertedQueryType::AnyBins => {
                                     (q_name, inverted_index.any_shared_bins(q))
                                 }
                             })

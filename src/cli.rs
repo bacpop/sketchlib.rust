@@ -27,7 +27,7 @@ pub enum InvertedQueryType {
     /// Return samples which match at every bin
     AllBins,
     /// Return samples which match at least one bin
-    AnyBin,
+    AnyBins,
 }
 
 impl fmt::Display for InvertedQueryType {
@@ -35,7 +35,7 @@ impl fmt::Display for InvertedQueryType {
         match self {
             InvertedQueryType::MatchCount => write!(f, "Count of matching bins")?,
             InvertedQueryType::AllBins => write!(f, "All bins matching")?,
-            InvertedQueryType::AnyBin => write!(f, "At least one bin matching")?,
+            InvertedQueryType::AnyBins => write!(f, "At least one bin matching")?,
         }
         Ok(())
     }
