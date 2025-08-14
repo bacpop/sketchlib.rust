@@ -38,6 +38,7 @@ ahash = ">=0.8.7"
 roaring = { version = "0.10", features = ["serde"] }
 # ordered-float = "4.2"
 # save/load
+flate2 = { version = "1.1", features = ["zlib-rs"] }
 needletail = { version = "0.5", features = ["compression"] }
 serde = { version = "1.0", features = ["derive"] }
 ciborium = "0.2"
@@ -74,3 +75,5 @@ approx = "0.5"
 
 [profile.release]
 lto = true
+strip = false # could be changed in future
+codegen-units = 1
