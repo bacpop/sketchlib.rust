@@ -57,7 +57,7 @@ impl MultiSketch {
             name_map.insert(sketch.name().to_string(), sketch.get_index());
         }
 
-        assert!(sketch_size % u64::BITS as u64 == 0);
+        debug_assert!(sketch_size.is_multiple_of(u64::BITS as u64));
         let (sketchsize64, _signs_size, usigs_size) = num_bins(sketch_size);
         let kmer_stride = usigs_size as usize;
         Self {
