@@ -25,12 +25,12 @@ No preprint or paper yet, but we rely on algorithms from:
 *bindash* (written by XiaoFei Zhao):\
 Zhao, X. BinDash, software for fast genome distance estimation on a typical personal laptop.\
 *Bioinformatics* **35**:671–673 (2019).\
-doi:[10.1093/bioinformatics/bty651](https://dx.doi.org/10.1093/bioinformatics/bty651>)
+doi:[10.1093/bioinformatics/bty651](https://dx.doi.org/10.1093/bioinformatics/bty651)
 
 *ntHash* (written by Hamid Mohamadi):\
 Mohamadi, H., Chu, J., Vandervalk, B. P. & Birol, I. ntHash: recursive nucleotide hashing.\
 *Bioinformatics* **32**:3492–3494 (2016).\
-doi:[10.1093/bioinformatics/btw397](https://dx.doi.org/10.1093/bioinformatics/btw397>)
+doi:[10.1093/bioinformatics/btw397](https://dx.doi.org/10.1093/bioinformatics/btw397)
 
 ## Documentation
 
