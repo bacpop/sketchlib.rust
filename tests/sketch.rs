@@ -1,4 +1,4 @@
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 
 pub mod common;
 use crate::common::*;
@@ -12,7 +12,7 @@ mod tests {
     fn sketch_fasta() {
         let sandbox = TestSetup::setup();
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -26,14 +26,14 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("assembly.skm"));
         assert_eq!(true, sandbox.file_exists("assembly.skd"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("assembly")
             .assert()
             .stdout_eq(sandbox.snapbox_file("assembly_sketch_info.stdout", TestDir::Correct));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("--sample-info")
@@ -49,7 +49,7 @@ mod tests {
 
         // Create a fastq rfile in the tmp dir
         let rfile_name = sandbox.create_fastq_rfile("test");
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-f")
@@ -63,14 +63,14 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("reads.skm"));
         assert_eq!(true, sandbox.file_exists("reads.skd"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("reads")
             .assert()
             .stdout_eq(sandbox.snapbox_file("read_sketch_info.stdout", TestDir::Correct));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("--sample-info")
@@ -92,7 +92,7 @@ mod tests {
         // Old command:
         // sketchlib sketch -v -o legacy_db --k-vals 17,21,25 -s 100 R6.fa.gz TIGR4.fa.gz
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")

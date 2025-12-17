@@ -1,4 +1,4 @@
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 
 pub mod common;
 use crate::common::*;
@@ -16,7 +16,7 @@ mod tests {
 
         sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
         sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -30,7 +30,7 @@ mod tests {
 
         assert_eq!(true, sandbox.file_exists("inverted.ski"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("inverted.ski")
@@ -38,7 +38,7 @@ mod tests {
             .assert()
             .stdout_eq(sandbox.snapbox_file("inverted_sketch_info.stdout", TestDir::Correct));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("--sample-info")
@@ -56,7 +56,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
         sandbox.copy_input_file_to_wd("R6.fa.gz");
         sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -74,7 +74,7 @@ mod tests {
 
         assert_eq!(true, sandbox.file_exists("inverted.ski"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
             .arg("inverted.ski")
@@ -98,7 +98,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Build an inverted index
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -111,7 +111,7 @@ mod tests {
             .success();
 
         // Query with the same samples, default is 'match-count'
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("query")
@@ -127,7 +127,7 @@ mod tests {
             );
 
         // Any bin matching gives two pairs
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("query")
@@ -144,7 +144,7 @@ mod tests {
             );
 
         // All matching gives self only
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("query")
@@ -173,7 +173,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Build an inverted index .ski and .skq
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -195,7 +195,7 @@ mod tests {
         // See the match-count results in inverted_query_count.stdout
         // 14412_3#82.contigs_velvet.fa.gz and 14412_3#84.contigs_velvet.fa.gz match
         // R6.fa.gz and TIGR4.fa.gz match
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -206,7 +206,7 @@ mod tests {
             .stdout_eq("Identified 2 prefilter pairs from a max of 6\n");
 
         // Build a standard .skd
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -218,7 +218,7 @@ mod tests {
             .success();
 
         // Run preclustering mode
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -234,7 +234,7 @@ mod tests {
             );
 
         // Same with ANI
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -251,7 +251,7 @@ mod tests {
             );
 
         // Default knn, check no junk distances printed
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
