@@ -1,4 +1,4 @@
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 use std::path::Path;
 
 pub mod common;
@@ -83,7 +83,7 @@ mod tests {
         //Test 1: One short sequence vs one short seqeunce (1 SNP apart)
 
         //Test 1 begin -------------
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "3"])
@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test1_part1.skd"));
         assert_eq!(true, sandbox.file_exists("test1_part1.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "3"])
@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test1_part2.skd"));
         assert_eq!(true, sandbox.file_exists("test1_part2.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test1_part1")
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("short_sequence_dist_3"));
 
         //Test 2 begin -------------
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test2_part1.skm"));
 
         // removed second to last contigs which is 3610 bps
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test2_part2.skd"));
         assert_eq!(true, sandbox.file_exists("test2_part2.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test2_part1")
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test2_rust_results"));
 
         //Test 3 begin -------------
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "31"])
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test3_part1.skd"));
         assert_eq!(true, sandbox.file_exists("test3_part1.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test3_part1")
@@ -278,7 +278,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Sketch the files
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -290,7 +290,7 @@ mod tests {
             .success();
 
         // C-a dists at knn=1
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
@@ -301,7 +301,7 @@ mod tests {
             .stdout_eq(sandbox.snapbox_file("dists_knn_ca.stdout", TestDir::Correct));
 
         // Jaccard dists at knn=1
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
@@ -314,7 +314,7 @@ mod tests {
             .stdout_eq(sandbox.snapbox_file("dists_knn_jaccard.stdout", TestDir::Correct));
 
         // ANI dists at knn=1
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
@@ -340,7 +340,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Sketch the files
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -352,7 +352,7 @@ mod tests {
             .success();
 
         // Subset three samples and calc dists
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
