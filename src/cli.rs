@@ -324,6 +324,10 @@ pub enum InvertedCommands {
         #[arg(long)]
         species_names: Option<String>,
 
+        /// File listing species names, or clusters, for phylogenetic ordering
+        #[arg(long)]
+        metadata: Option<String>,
+
         /// Sketch size
         #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
         sketch_size: u64,

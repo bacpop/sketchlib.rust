@@ -31,7 +31,7 @@ crate-type = ["cdylib", "lib"]
 [features]
 3di = ["dep:pyo3", "dep:pyo3-build-config"]
 
-[dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # data structures
 hashbrown = { version = "0.14", features = ["rayon", "serde"] }
 ahash = ">=0.8.7"
@@ -61,10 +61,50 @@ anyhow = "1.0"
 rayon = "1.8"
 num_cpus = "1.0"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# data structures
+hashbrown = { version = "0.14", features = ["rayon", "serde"] }
+# ahash = ">=0.8.7"
+roaring = { version = "0.10", features = ["serde"] }
+# ordered-float = "4.2"
+# save/load
+seq_io = { version = "0.3.2" }
+flate2 = { version = "1.0.25" }
+# needletail = { version = "0.5", features = ["compression"] } ###############################################
+serde = { version = "1.0", features = ["derive"] }
+ciborium = "0.2"
+rmp-serde = "1.3"
+snap = "1.1"
+memmap2 = "0.9"
+arrayref = "0.3"
+num-traits = "0.2"
+# logging
+log = "0.4"
+simple_logger = { version = "4", features = ["stderr"] }
+indicatif = { version = "0.17", features = ["rayon", "improved_unicode"]}
+# cli
+clap = { version = "4.5", features = ["derive"] }
+regex = "1.10"
+anyhow = "1.0"
+# parallelisation
+rayon = "1.8"
+num_cpus = "1.0"
+# wasm
+wasm-bindgen = {version = "0.2" }
+wasm-bindgen-file-reader = {version = "1" }
+console_error_panic_hook = {version = "0.1.7" }
+json = {version = "0.12.4" }
+speedytree = {version = "0.1.0" }
+getrandom = {version = "0.2", features = ["js"]}
+web-sys = {version = "0.3.77",features = ["Blob", "console", "Document", "Element", "HtmlCanvasElement", "HtmlImageElement", "Response", "Window"]}
+js-sys = {version = "0.3.51" }
+
+
+
 [build-dependencies]
 pyo3-build-config = {version = "0.22", optional = true}
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # testing
 snapbox = "0.6.21"
 predicates = "2.1.5"
@@ -72,6 +112,13 @@ assert_fs = "1.0.10"
 pretty_assertions = "1.3.0"
 tempfile = "3.19"
 approx = "0.5"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+snapbox = "0.6.21"
+predicates = "2.1.5"
+pretty_assertions = "1.3.0"
+tempfile = "3.19"
+
 
 [profile.release]
 lto = true

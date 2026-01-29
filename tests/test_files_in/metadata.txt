@@ -1,0 +1,4 @@
+TIGR4.fa.gz	Metadata of TIGR4
+R6.fa.gz	Metadata of R6
+14412_3#82.contigs_velvet.fa.gz	Metadata of 14412_3 82
+14412_3#84.contigs_velvet.fa.gz	Metadata of 14412_3 84

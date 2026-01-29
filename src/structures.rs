@@ -32,10 +32,22 @@ pub fn pdb_to_3di(input_files: &[InputFastx]) -> Result<Vec<String>, Error> {
 
         for ftup in input_files.iter().progress_with_style(bar_style) {
             //             println!("{:?}", ftup);
-            let struct_string: Py<PyAny> = converter_fun
-                .call1(py, (ftup.0.clone(), ftup.1.clone()))
-                .unwrap();
-            struct_strings.push(struct_string.extract::<String>(py).unwrap());
+            if ftup.1.len() == 1 {
+                let struct_string: Py<PyAny> = converter_fun
+                    .call1(py, (ftup.0.clone(), ftup.1[0].clone()))
+                    .unwrap();
+                struct_strings.push(struct_string.extract::<String>(py).unwrap());
+            } else {
+                let mut struct_string = "".to_owned();
+                for file in ftup.1.iter() {
+                    let struct_string_tmp: Py<PyAny> =
+                        converter_fun.call1(py, (ftup.0.clone(), file)).unwrap();
+                    struct_string.push_str(",");
+                    struct_string
+                        .push_str(struct_string_tmp.extract::<String>(py).unwrap().as_str());
+                }
+                struct_strings.push(struct_string);
+            }
         }
     });
 

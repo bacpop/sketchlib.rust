@@ -158,6 +158,28 @@ impl TestSetup {
         RFILE_NAME
     }
 
+    /// Create an rfile wtih two fastqs in the tmp dir
+    pub fn create_bad_fastq_rfile(&self, prefix: &str) -> &str {
+        let mut rfile = LineWriter::new(
+            File::create(format!("{}/{}", self.get_wd(), RFILE_NAME))
+                .expect("Could not write rfile"),
+        );
+        for file_idx in 1..=2 {
+            let sample_name = format!("{prefix}_{file_idx}");
+            writeln!(
+                rfile,
+                "{}",
+                &format!(
+                    "{sample_name}\t{}\t{}\t{}",
+                    self.file_string(&format!("{sample_name}_fwd.fastq.gz"), TestDir::Input),
+                    self.file_string(&format!("{sample_name}_rev.fastq.gz"), TestDir::Input),
+                    "Some_random_file.fastq.gz"
+                )
+            )
+            .unwrap();
+        }
+        RFILE_NAME
+    }
     /// Helper function to create completeness files with specified entries
     pub fn create_completeness_file(sandbox: &TestSetup, filename: &str, entries: &[(&str, f64)]) {
         let file_path = sandbox.file_string(filename, TestDir::Output);

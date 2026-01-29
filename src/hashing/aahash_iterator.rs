@@ -1,5 +1,7 @@
 //! Functions to support `aaHash` generation over sequences
+#[cfg(not(target_arch = "wasm32"))]
 use needletail::parse_fastx_file;
+
 use std::cmp::Ordering;
 
 use super::*;
@@ -79,49 +81,51 @@ impl AaHashIterator {
     }
 
     /// Create a new aaHash iterator from a fasta file, at the set comparison level
-    pub fn new(file: &str, level: AaLevel, concat_fasta: bool) -> Vec<Self> {
+    pub fn new(files: &[String], level: AaLevel, concat_fasta: bool) -> Vec<Self> {
         let mut hash_vec = Vec::new();
 
         // Read sequence into memory (as we go through multiple times)
         log::debug!("Preprocessing sequence");
-        let mut reader =
-            parse_fastx_file(file).unwrap_or_else(|_| panic!("Invalid path/file: {file}"));
         let mut seq_hash_it = Self::default(level.clone());
-        loop {
-            let record_read = reader.next();
-            if let Some(record) = record_read {
-                let seqrec = record.expect("Invalid FASTA/Q record");
-                if seqrec.qual().is_some() {
-                    panic!("Unexpected quality information with AA sequences in {file}. Correct sequence type set?");
-                } else {
-                    for aa in seqrec.seq().iter() {
-                        if valid_aa(*aa) {
-                            seq_hash_it.seq.push(*aa)
-                        } else {
-                            seq_hash_it.invalid_count += 1;
-                            seq_hash_it.seq.push(SEQSEP);
+        for file in files.iter() {
+            let mut reader =
+                parse_fastx_file(file).unwrap_or_else(|_| panic!("Invalid path/file: {file}"));
+            loop {
+                let record_read = reader.next();
+                if let Some(record) = record_read {
+                    let seqrec = record.expect("Invalid FASTA/Q record");
+                    if seqrec.qual().is_some() {
+                        panic!("Unexpected quality information with AA sequences in {file}. Correct sequence type set?");
+                    } else {
+                        for aa in seqrec.seq().iter() {
+                            if valid_aa(*aa) {
+                                seq_hash_it.seq.push(*aa)
+                            } else {
+                                seq_hash_it.invalid_count += 1;
+                                seq_hash_it.seq.push(SEQSEP);
+                            }
                         }
                     }
-                }
-                if concat_fasta {
-                    hash_vec.push(seq_hash_it);
-                    seq_hash_it = Self::default(level.clone());
+                    if concat_fasta {
+                        hash_vec.push(seq_hash_it);
+                        seq_hash_it = Self::default(level.clone());
+                    } else {
+                        seq_hash_it.seq.push(SEQSEP);
+                    }
                 } else {
-                    seq_hash_it.seq.push(SEQSEP);
+                    break;
                 }
-            } else {
-                if !concat_fasta {
-                    hash_vec.push(seq_hash_it);
-                }
-                break;
             }
+        }
+        if !concat_fasta {
+            hash_vec.push(seq_hash_it);
         }
         hash_vec
     }
 
     /// Create a new iterator from a 3di embedding file of a structure
-    pub fn from_3di_file(file: &str) -> Vec<Self> {
-        Self::new(file, AaLevel::Level1, false)
+    pub fn from_3di_file(files: &[String]) -> Vec<Self> {
+        Self::new(files, AaLevel::Level1, false)
     }
 
     /// Create a new iterator from a 3di embedding string of a structure

@@ -49,6 +49,85 @@ mod tests {
     }
 
     #[test]
+    fn inverted_sketch_with_metadata() {
+        let sandbox = TestSetup::setup();
+
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+        sandbox.copy_input_file_to_wd("metadata.txt");
+        sandbox.copy_input_file_to_wd("species_names.txt");
+        Command::new(cmd::cargo_bin!("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "31"])
+            .args(["-f", "rfile.txt"])
+            .args(["--species-names", "species_names.txt"])
+            .args(["--metadata", "metadata.txt"])
+            .assert()
+            .success();
+
+        assert_eq!(true, sandbox.file_exists("inverted.ski"));
+    }
+
+    #[test]
+    fn inverted_sketch_errors() {
+        let sandbox = TestSetup::setup();
+
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+        sandbox.copy_input_file_to_wd("species_names_empty.txt");
+
+        // This shouldn't give an error, but it is an unfortunate situation with respect to the species-names file the user provided
+        Command::new(cmd::cargo_bin!("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "31"])
+            .args(["-f", "rfile.txt"])
+            .args(["--species-names", "species_names_empty.txt"])
+            .assert()
+            .success();
+
+        assert_eq!(true, sandbox.file_exists("inverted.ski"));
+    }
+
+    #[test]
+    fn inverted_sketch_multifile() {
+        let sandbox = TestSetup::setup();
+
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile_multi.txt");
+
+        // This shouldn't give an error, but it is an unfortunate situation with respect to the species-names file the user provided
+        Command::new(cmd::cargo_bin!("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "31", "-s", "1000"])
+            .args(["-f", "rfile_multi.txt"])
+            .assert()
+            .success();
+
+        assert_eq!(true, sandbox.file_exists("inverted.ski"));
+    }
+
+    #[test]
     fn inverted_reorder() {
         let sandbox = TestSetup::setup();
 
