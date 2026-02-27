@@ -145,6 +145,7 @@ impl Inverted {
         min_count: u16,
         min_qual: u8,
         quiet: bool,
+        proportion_reads: Option<f64>,
     ) -> InvSketches {
         let file_order: Vec<usize> = if input_files.1.is_some() {
             vec![0, 1]
@@ -162,6 +163,7 @@ impl Inverted {
             min_count,
             min_qual,
             quiet,
+            proportion_reads,
         )
     }
 
@@ -426,9 +428,10 @@ impl Inverted {
         min_count: u16,
         min_qual: u8,
         _quiet: bool,
+        proportion_reads: Option<f64>,
     ) -> InvSketches {
         let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
-            HashType::DNA => NtHashIterator::new(input_files, rc, min_qual)
+            HashType::DNA => NtHashIterator::new(input_files, rc, min_qual, proportion_reads)
                 .into_iter()
                 .map(|it| Box::new(it) as Box<dyn RollHash>)
                 .collect(),
