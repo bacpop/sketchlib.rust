@@ -1,7 +1,20 @@
 //! Fast distance calculations between biological sequences (DNA, AA or structures
 //! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
 //! distance, with the [PopPUNK method](https://poppunk.bacpop.org/index.html) to calculate core and accessory distances. nthash/aahash
-//! are used for hash functions to create the sketches
+//! are used for hash functions to create the sketches.
+//!
+//! ## Important biological considerations
+//!
+//! - Core/accessory distances are only tested within-species (>95% ANI). Using input
+//!   above these distances is unsupported and may lead to poor estimation of distances
+//!   without clear warning.
+//! - Short k-mer lengths are likely to match at random, see [PopPUNK's docs](https://poppunk-docs.bacpop.org/sketching.html#choosing-the-right-k-mer-lengths)
+//!   for information on how to select good lengths. Note that this library does not support
+//!   random match correction.
+//! - ANI distance resolution is highly affected by sketch size at higher mismatch
+//!   levels, so note that if you see lots of samples at around 80% they may be much lower than
+//!   this. We recommend checking the Jaccard values in this case, if they are close to 0
+//!   you should increase the sketch size.
 //!
 //! ## Files/databases
 //!
