@@ -136,6 +136,22 @@ impl TestSetup {
         RFILE_NAME
     }
 
+    pub fn create_named_rfile(&self, rfile_name: &str, filenames: &[&str]) -> String {
+        let mut rfile = LineWriter::new(
+            File::create(format!("{}/{}", self.get_wd(), rfile_name))
+                .expect("Could not write rfile"),
+        );
+        for file in filenames {
+            writeln!(
+                rfile,
+                "{}",
+                &format!("{}\t{}", file, self.file_string(file, TestDir::Input),)
+            )
+            .unwrap();
+        }
+        rfile_name.to_string()
+    }
+
     /// Create an rfile wtih two fastqs in the tmp dir
     pub fn create_fastq_rfile(&self, prefix: &str) -> &str {
         let mut rfile = LineWriter::new(

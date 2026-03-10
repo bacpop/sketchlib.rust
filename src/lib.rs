@@ -554,6 +554,7 @@ pub fn main() -> Result<(), Error> {
                 threads,
                 completeness_file,
                 completeness_cutoff,
+                retain_unmatched,
             } => {
                 check_and_set_threads(*threads);
 
@@ -629,6 +630,9 @@ pub fn main() -> Result<(), Error> {
                         kmer,
                         inverted_index.sketch_size()
                     );
+                    if let Some(ref mode) = retain_unmatched {
+                        log::info!("Retain unmatched mode: {mode}");
+                    }
                     let distances = self_dists_knn_precluster(
                         &references,
                         &inverted_index,
@@ -640,6 +644,7 @@ pub fn main() -> Result<(), Error> {
                         args.quiet,
                         completeness_vec.as_ref(),
                         *completeness_cutoff,
+                        retain_unmatched,
                     );
 
                     // Write the results

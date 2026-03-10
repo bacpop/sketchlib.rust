@@ -5,7 +5,6 @@ use crate::sketch::multisketch::MultiSketch;
 use std::fs::File;
 use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::Context;
 use hashbrown::{HashMap, HashSet};
@@ -217,7 +216,7 @@ pub fn read_completeness_file(
 ) -> Result<Vec<f64>, crate::Error> {
     // Pre-allocate vector with default values (1.0 for missing genomes)
     let mut completeness_vec = vec![1.0_f64; sketches.number_samples_loaded()];
-    let missing_genomes = Mutex::new(Vec::new());
+    let mut matched = vec![false; sketches.number_samples_loaded()];
 
     // Open file with buffered reader for streaming
     let f = File::open(completeness_file)
@@ -235,14 +234,7 @@ pub fn read_completeness_file(
         .filter_map(|line| {
             if let Some((genome_id, completeness_str)) = line.split_once('\t') {
                 if let Ok(completeness) = completeness_str.parse::<f64>() {
-                    // Use MultiSketch's method to get the logical index
-                    if let Some(index) = sketches.get_sample_index(genome_id) {
-                        Some((index, completeness))
-                    } else {
-                        // Track missing genomes
-                        missing_genomes.lock().unwrap().push(genome_id.to_string());
-                        None
-                    }
+                    sketches.get_sample_index(genome_id).map(|index| (index, completeness))
                 } else {
                     None
                 }
@@ -252,16 +244,22 @@ pub fn read_completeness_file(
         })
         .collect();
 
-    // Apply updates to completeness_vec (thread safe)
+    // Apply updates to completeness_vec
     for (index, completeness) in updates {
         completeness_vec[index] = completeness;
+        matched[index] = true;
     }
 
-    // Report missing genomes
-    let missing = missing_genomes.into_inner().unwrap();
+    // Report sketch genomes not found in completeness file
+    let missing: Vec<String> = matched
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| !m)
+        .map(|(i, _)| sketches.sketch_name(i).to_string())
+        .collect();
     if !missing.is_empty() {
         log::warn!(
-            "Found {} genomes not in completeness file, using default 1.0: {}",
+            "{} genome(s) not found in completeness file, using default 1.0: {}",
             missing.len(),
             missing.join(", ")
         );
