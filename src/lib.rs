@@ -230,8 +230,8 @@ pub fn main() -> Result<(), Error> {
     if args.quiet {
         simple_logger::init_with_level(log::Level::Error).unwrap();
     } else if args.verbose {
-        simple_logger::init_with_level(log::Level::Info).unwrap();
-        // simple_logger::init_with_level(log::Level::Trace).unwrap();
+        // simple_logger::init_with_level(log::Level::Info).unwrap();
+        simple_logger::init_with_level(log::Level::Debug).unwrap();
     } else {
         simple_logger::init_with_level(log::Level::Warn).unwrap();
     }
@@ -253,6 +253,7 @@ pub fn main() -> Result<(), Error> {
             single_strand,
             min_count,
             min_qual,
+            est_coverage,
             threads,
         } => {
             if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
@@ -292,6 +293,7 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
+                *est_coverage,
                 args.quiet,
             );
             let sketch_vec = MultiSketch::new(&mut sketches, sketch_bins, &kmers, seq_type);
@@ -461,6 +463,7 @@ pub fn main() -> Result<(), Error> {
                 single_strand,
                 min_count,
                 min_qual,
+                est_coverage,
                 threads,
                 sketch_size,
                 kmer_length,
@@ -554,6 +557,7 @@ pub fn main() -> Result<(), Error> {
                     rc,
                     *min_count,
                     *min_qual,
+                    *est_coverage,
                     args.quiet,
                     &metadata_vec,
                     &species_labels_vec,
@@ -570,6 +574,7 @@ pub fn main() -> Result<(), Error> {
                 query_type,
                 min_count,
                 min_qual,
+                est_coverage,
                 threads,
             } => {
                 let mut output_file = set_ostream(output);
@@ -584,7 +589,7 @@ pub fn main() -> Result<(), Error> {
                 log::info!("Sketching input queries");
                 check_and_set_threads(*threads + 1); // Writer thread
                 let (queries, query_names) =
-                    inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
+                    inverted_index.sketch_queries(&input_files, *min_count, *min_qual, *est_coverage, args.quiet);
 
                 log::info!("Running queries in mode: {query_type}");
                 // Header
@@ -763,6 +768,7 @@ pub fn main() -> Result<(), Error> {
             single_strand,
             min_count,
             min_qual,
+            est_coverage,
             concat_fasta,
             threads,
             level,
@@ -817,6 +823,7 @@ pub fn main() -> Result<(), Error> {
                 rc,
                 *min_count,
                 *min_qual,
+                *est_coverage,
                 args.quiet,
             );
             let mut db2_metadata =
@@ -916,8 +923,8 @@ pub fn main() -> Result<(), Error> {
     log::info!("Complete");
     if print_success && !args.quiet {
         eprintln!(
-            "🧬🖋️ sketchlib done in {}s",
-            end.duration_since(start).as_secs()
+            "🧬🖋️ sketchlib done in {:.1}s",
+            end.duration_since(start).as_secs_f32()
         );
     }
     result

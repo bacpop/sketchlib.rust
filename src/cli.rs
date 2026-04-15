@@ -13,6 +13,8 @@ pub const DEFAULT_STRAND: bool = false;
 pub const DEFAULT_MINCOUNT: u16 = 5;
 /// Default minimum base quality (PHRED score) for FASTQ files
 pub const DEFAULT_MINQUAL: u8 = 20;
+/// Default estimated coverage for FASTQ files
+pub const DEFAULT_ESTCOVER: usize = 15000;
 /// Default sketch size
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 /// Default nearest neighbours
@@ -159,6 +161,10 @@ pub enum Commands {
         #[arg(long, default_value_t = DEFAULT_MINQUAL)]
         min_qual: u8,
 
+        /// Estimated sequencing coverage of the input sample(s) (with reads)
+        #[arg(long, default_value_t = DEFAULT_ESTCOVER)]
+        est_coverage: usize,
+
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
@@ -259,6 +265,10 @@ pub enum Commands {
         #[arg(long, default_value_t = DEFAULT_MINQUAL)]
         min_qual: u8,
 
+        /// Estimated sequencing coverage of the input sample(s) (with reads)
+        #[arg(long, default_value_t = DEFAULT_ESTCOVER)]
+        est_coverage: usize,
+        
         /// Treat every sequence in an input file as a new sample (aa only)
         // TODO: for now, could be extended to dna, but probably no need
         #[arg(long, default_value_t = false)]
@@ -347,6 +357,10 @@ pub enum InvertedCommands {
         /// Minimum k-mer quality (with reads)
         #[arg(long, default_value_t = DEFAULT_MINQUAL)]
         min_qual: u8,
+        
+        /// Estimated sequencing coverage of the input sample(s) (with reads)
+        #[arg(long, default_value_t = DEFAULT_ESTCOVER)]
+        est_coverage: usize,
 
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
@@ -382,6 +396,10 @@ pub enum InvertedCommands {
         /// Minimum k-mer quality (with reads)
         #[arg(long, default_value_t = DEFAULT_MINQUAL)]
         min_qual: u8,
+
+        /// Estimated sequencing coverage of the input sample(s) (with reads)
+        #[arg(long, default_value_t = DEFAULT_ESTCOVER)]
+        est_coverage: usize,
 
         /// Number of CPU threads
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]

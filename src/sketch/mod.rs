@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::hashing::{bloom_filter::KmerFilter, RollHash};
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::hashing::{nthash_iterator::NtHashIterator, HashType};
+use super::hashing::{nthash_iterator::NtHashIterator, HashType, simdsketch_wrapper::sketch_with_simd};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::hashing::aahash_iterator::AaHashIterator;
@@ -30,8 +30,11 @@ pub mod sketch_datafile;
 #[cfg(not(target_arch = "wasm32"))]
 use self::sketch_datafile::SketchArrayWriter;
 
+#[cfg(not(target_arch = "wasm32"))]
+use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch};
+
 /// Bin bits (lowest of 64-bits to keep)
-pub const BBITS: u64 = 14;
+pub const BBITS: u64 = 16;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
@@ -125,6 +128,70 @@ impl Sketch {
             densified,
             acgt,
             non_acgt,
+        }
+    }
+
+    /// Create a Sketch object from a simd_sketch Sketch object
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_sketch_simd(
+        sketches: &Vec<Sketch_simd>,
+        name: &str,
+        reads: bool,
+    ) -> Self {
+        let testinputsketchs;
+        let rc;
+        match &sketches[0] {
+            Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch at this moment."),
+            Sketch_simd::BucketSketch(sketch) => {
+                testinputsketchs = &sketch.buckets;
+                rc = sketch.rc;
+            },
+        }
+
+        let testwithwhichtoiter;
+        match testinputsketchs {
+            BitSketch::B16(thevec) => testwithwhichtoiter = thevec,
+            _ => panic!("Only supporting 16 bits as bin size at this moment.")
+        }
+        let sketch_size = testwithwhichtoiter.len() as u64;
+
+        let (_sketchsize64, _num_bins, usigs_size) = num_bins(sketch_size);
+        let flattened_size_u64 = usigs_size as usize * sketches.len();
+        // let mut usigs = Vec::with_capacity(flattened_size_u64);
+        let mut usigs = vec![0; flattened_size_u64];
+
+        for is in sketches {
+            let inputsketchs;
+            match is {
+                Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch at this moment."),
+                Sketch_simd::BucketSketch(sketch) => inputsketchs = &sketch.buckets,
+            }
+
+            let withwhichtoiter;
+            match inputsketchs {
+                BitSketch::B16(thevec) => withwhichtoiter = thevec,
+                _ => panic!("Only supporting 16 bits as bin size at this moment.")
+            }
+
+            for (sign_index, sign) in withwhichtoiter.iter().enumerate() {
+                let leftshift = sign_index % (u64::BITS as usize);
+                for i in 0..BBITS {
+                    let orval = Self::bit_at_pos(*sign as u64, i) << leftshift;
+                    usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
+                }
+            }
+        }
+
+        Self {
+            usigs,
+            name: name.to_string(),
+            index: None,
+            rc,
+            reads : reads,
+            seq_length : 0,                 // TODO
+            densified: false,               // TODO
+            acgt : [0,0,0,0],               // TODO
+            non_acgt : 0,                   // TODO
         }
     }
 
@@ -291,6 +358,7 @@ pub fn sketch_files(
     rc: bool,
     min_count: u16,
     min_qual: u8,
+    est_coverage: usize,
     quiet: bool,
 ) -> Vec<Sketch> {
     let bin_stride = 1;
@@ -318,6 +386,23 @@ pub fn sketch_files(
     let (tx, rx) = mpsc::channel();
     let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 
+    let sketchers = if *seq_type == HashType::DNA {
+        Some(k.iter().map(|ik| SketchParams {
+                alg: SketchAlg::Bucket,
+                rc: rc,
+                k : *ik,
+                s : sketch_size as usize,
+                b : BBITS as usize,
+                seed : 0,
+                count : min_count as usize,
+                coverage: 1,
+                filter_empty: true,
+                filter_out_n: true,
+            }).collect::<Vec<_>>())
+    } else {
+        None
+    };
+
     let percent = false;
     let progress_bar = get_progress_bar(input_files.len(), percent, quiet);
     // With thanks to https://stackoverflow.com/a/76963325
@@ -328,50 +413,61 @@ pub fn sketch_files(
                 .progress_with(progress_bar)
                 .enumerate()
                 .map(|(idx, (name, fastxvec))| {
-                    // Read in sequence and set up rolling hash by alphabet type
-                    let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
-                        HashType::DNA => NtHashIterator::new(fastxvec, rc, min_qual)
-                            .into_iter()
-                            .map(|it| Box::new(it) as Box<dyn RollHash>)
-                            .collect(),
-                        HashType::AA(level) => {
-                            AaHashIterator::new(fastxvec, level.clone(), concat_fasta)
-                                .into_iter()
-                                .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                .collect()
-                        }
-                        HashType::PDB => {
-                            if let Some(di) = &struct_strings {
-                                log::trace!("Length of string: {}", di.len());
-                                AaHashIterator::from_3di_string(di[idx].clone()) // TODO: clone is not ideal
-                                    .into_iter()
-                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                    .collect()
-                            } else {
-                                AaHashIterator::from_3di_file(fastxvec)
-                                    .into_iter()
-                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                    .collect()
-                            }
-                        }
-                    };
-
-                    hash_its
-                        .iter_mut()
-                        .enumerate()
-                        .map(|(idx, hash_it)| {
-                            let sample_name = if concat_fasta {
-                                format!("{name}_{}", idx + 1)
-                            } else {
-                                name.to_string()
+                    match seq_type {
+                        HashType::AA(_) | HashType::PDB => {
+                            // Read in sequence and set up rolling hash by alphabet type
+                            let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
+                                HashType::DNA => panic!("Not supposed to get here!"),
+                                HashType::AA(level) => {
+                                    AaHashIterator::new(fastxvec, level.clone(), concat_fasta)
+                                        .into_iter()
+                                        .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                        .collect()
+                                }
+                                HashType::PDB => {
+                                    if let Some(di) = &struct_strings {
+                                        log::trace!("Length of string: {}", di.len());
+                                        AaHashIterator::from_3di_string(di[idx].clone()) // TODO: clone is not ideal
+                                            .into_iter()
+                                            .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                            .collect()
+                                    } else {
+                                        AaHashIterator::from_3di_file(fastxvec)
+                                            .into_iter()
+                                            .map(|it| Box::new(it) as Box<dyn RollHash>)
+                                            .collect()
+                                    }
+                                }
                             };
-                            if hash_it.seq_len() == 0 {
-                                panic!("{sample_name} has no valid sequence");
-                            }
-                            // Run the sketching
-                            Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
-                        })
-                        .collect::<Vec<Sketch>>()
+
+                            hash_its
+                                .iter_mut()
+                                .enumerate()
+                                .map(|(idx, hash_it)| {
+                                    let sample_name = if concat_fasta {
+                                        format!("{name}_{}", idx + 1)
+                                    } else {
+                                        name.to_string()
+                                    };
+                                    if hash_it.seq_len() == 0 {
+                                        panic!("{sample_name} has no valid sequence");
+                                    }
+                                    // Run the sketching
+                                    Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
+                                })
+                                .collect::<Vec<Sketch>>()
+                        }
+                        HashType::DNA => {
+                            // Note that we must not pass as reference the sketchers, as those might be used simultaneously by several parallel threads,
+                            // and we might be processing reads and assemblies mixed!
+                            let (reads, sketches_simd) = sketch_with_simd(fastxvec, min_qual, est_coverage, sketchers.clone().unwrap());
+                            vec![Sketch::from_sketch_simd(
+                                &sketches_simd, 
+                                &name.to_string(), 
+                                reads
+                            )]
+                        }
+                    }
                 })
                 .for_each_with(tx, |tx, sketch| {
                     // Emit the sketch results to the writer thread
