@@ -909,7 +909,17 @@ pub fn main() -> Result<(), Error> {
 
             print_success = false; // Turn the final message off
             Ok(())
-        }
+        },
+        Commands::Containment { command } => match command {
+            ContainmentCommands::Preprocess {
+                seq_files,
+                file_list,
+                output
+            } => {
+                println!("Hello from `containment preprocess`");
+                Ok(())
+            }
+        },
     };
     let end = Instant::now();
 

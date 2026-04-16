@@ -297,6 +297,13 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         sample_info: bool,
     },
+
+    /// Containment
+    Containment {
+        /// Containment
+        #[command(subcommand)]
+        command: ContainmentCommands,
+    },
 }
 
 /// Commands to support building and querying with an inverted index
@@ -431,6 +438,28 @@ pub enum InvertedCommands {
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
     },
+}
+
+/// Containment subcommands
+#[derive(Subcommand)]
+pub enum ContainmentCommands {
+    /// Preprocess reads into an efficient binary format
+    Preprocess {
+        /// List of input FASTQ files
+        #[arg(group = "input")]
+        seq_files: Option<Vec<String>>,
+
+        /// File listing input files (tab separated name, sequences, see README)
+        #[arg(short, group = "input")]
+        file_list: Option<String>,
+
+        /// Output filename for the preprocessed reads
+        #[arg(required = true, short)]
+        output: String,
+    },
+
+    //Distances {
+    //},
 }
 
 /// Function to parse command line args into [`MainArgs`] struct
