@@ -24,7 +24,7 @@ pub struct NtHashIterator {
     rh: Option<u64>,
     index: usize,
     seq: Vec<u8>,
-    seq_len: usize, // NB seq.len() - 1 due to terminating char
+    offsets: std::iter::Peekable<std::vec::IntoIter<usize>>,
     acgt: [usize; 4],
     non_acgt: usize,
     reads: bool,
@@ -33,7 +33,7 @@ pub struct NtHashIterator {
 impl RollHash for NtHashIterator {
     fn set_k(&mut self, k: usize) {
         self.k = k;
-        if let Some(new_it) = Self::new_iterator(0, &self.seq, k, self.rc) {
+        if let Some(new_it) = self.new_iterator(0) {
             self.fh = new_it.0;
             self.rh = new_it.1;
             self.index = new_it.2;
@@ -56,7 +56,7 @@ impl RollHash for NtHashIterator {
     }
 
     fn seq_len(&self) -> usize {
-        self.acgt.iter().sum()
+        self.seq.len()
     }
 
     fn seq(&self) -> &Vec<u8> {
@@ -91,27 +91,29 @@ impl NtHashIterator {
             }
         }
 
-        let mut hash_it = Self {
+        let mut seq = Vec::new();
+        let mut offsets = Vec::new();
+        let mut acgt = [0, 0, 0, 0];
+        let mut non_acgt = 0;
+
+        // Read sequence into memory (as we go through multiple times)
+        log::debug!("Preprocessing sequence");
+        for file in files.iter() {
+            Self::add_dna_seq(file, min_qual, &mut seq, &mut offsets, &mut acgt, &mut non_acgt);
+        }
+
+        vec![Self {
             k: 0,
             rc,
             fh: 0,
             rh: None,
             index: 0,
-            seq: Vec::new(),
-            seq_len: 0,
-            acgt: [0, 0, 0, 0],
-            non_acgt: 0,
+            seq,
+            offsets: offsets.into_iter().peekable(),
+            acgt,
+            non_acgt,
             reads,
-        };
-
-        // Read sequence into memory (as we go through multiple times)
-        log::debug!("Preprocessing sequence");
-        for file in files.iter() {
-            hash_it.add_dna_seq(file, min_qual);
-        }
-
-        hash_it.seq_len = hash_it.seq.len() - 1;
-        vec![hash_it]
+        }]
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -168,40 +170,40 @@ impl NtHashIterator {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn add_dna_seq(&mut self, filename: &str, min_qual: u8) {
+    fn add_dna_seq(filename: &str, min_qual: u8, seq: &mut Vec<u8>, offsets: &mut Vec<usize>, acgt: &mut [usize; 4], non_acgt: &mut usize) {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
+
+        let mut b = 0;
+        let mut i = 0;
+
         while let Some(record) = reader.next() {
             let seqrec = record.expect("Invalid FASTA/Q record");
-            if let Some(quals) = seqrec.qual() {
-                for (base, qual) in seqrec.seq().iter().zip(quals) {
-                    if *qual >= min_qual {
-                        if valid_base(*base) {
-                            let encoded_base = encode_base(*base);
-                            self.acgt[encoded_base as usize] += 1;
-                            self.seq.push(encoded_base)
-                        } else {
-                            self.non_acgt += 1;
-                            self.seq.push(SEQSEP);
-                        }
+
+            for (base_idx, base) in seqrec.seq().iter().enumerate() {
+                if valid_base(*base) && seqrec.qual().is_none_or(|q| q[base_idx] >= min_qual) {
+                    let encoded_base = encode_base(*base);
+                    acgt[encoded_base as usize] += 1;
+                    b |= encoded_base;
+                    i += 1;
+
+                    if i > 3 {
+                        i = 0;
+                        seq.push(b);
+                        b = 0;
                     } else {
-                        self.seq.push(SEQSEP);
+                        b << 2;
                     }
-                }
-            } else {
-                for base in seqrec.seq().iter() {
-                    if valid_base(*base) {
-                        let encoded_base = encode_base(*base);
-                        self.acgt[encoded_base as usize] += 1;
-                        self.seq.push(encoded_base)
-                    } else {
-                        self.non_acgt += 1;
-                        self.seq.push(SEQSEP);
-                    }
+                } else {
+                    *non_acgt += 1;
+                    offsets.push(seq.len() * 4 + i);
                 }
             }
+            offsets.push(seq.len() * 4 + i);
+        }
 
-            self.seq.push(SEQSEP);
+        if i != 0 {
+            seq.push(b);
         }
     }
 
@@ -266,35 +268,60 @@ impl NtHashIterator {
     }
 
     fn new_iterator(
+        &mut self,
         mut start: usize,
-        seq: &[u8],
-        k: usize,
-        rc: bool,
     ) -> Option<(u64, Option<u64>, usize)> {
         let mut fh = 0_u64;
-        'outer: while start < (seq.len() - k) {
-            '_inner: for (i, v) in seq[start..(start + k)].iter().enumerate() {
-                // If invalid seq
-                if *v > 3 {
-                    start += i + 1;
-                    if start >= seq.len() {
-                        return None;
+
+        let end = start + self.k;
+
+        // Find next offset from start
+        if let Some(&next_offset) = self.offsets.peek() {
+            if next_offset < end {
+                start = next_offset;
+                while let Some(offset) = self.offsets.next() {
+                    if next_offset >= end {
+                        start = offset;
+                        break;
                     }
-                    fh = 0;
-                    continue 'outer; // Try again from new start
                 }
-                fh = fh.rotate_left(1_u32);
-                fh = swapbits033(fh);
-                fh ^= nthash_tables::HASH_LOOKUP[*v as usize];
             }
-            break 'outer; // success
-        }
-        if start >= (seq.len() - k) {
+        } else {
+            // Already past end of sequence before call
             return None;
         }
 
+        if start >= (self.seq_len() - self.k) {
+            // No valid k-mer left
+            return None;
+        }
+
+        // TODO
+        // calculate hash from start..end using u8 range correctly
+
+        //'outer: while start < (seq.len() - k) {
+            //// TODO sort out seq and loop
+            //'_inner: for (i, v) in seq[start..(start + k)].iter().enumerate() {
+                //// If invalid seq
+                //// TODO add check that offset is inside window
+                //if *v > 3 {
+                    //start += i + 1;
+                    //if start >= seq.len() {
+                        //return None;
+                    //}
+                    //fh = 0;
+                    //continue 'outer; // Try again from new start
+                //}
+                //fh = fh.rotate_left(1_u32);
+                //fh = swapbits033(fh);
+                //fh ^= nthash_tables::HASH_LOOKUP[*v as usize];
+            //}
+            //break 'outer; // success
+        //}
+
         let rh = if rc {
             let mut h = 0_u64;
+            // TODO similar to above
             for v in seq[start..(start + k)].iter().rev() {
                 h = h.rotate_left(1_u32);
                 h = swapbits033(h);
@@ -332,14 +359,15 @@ impl Iterator for NtHashIterator {
     type Item = u64;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.index.cmp(&self.seq_len) {
+        match self.index.cmp(&self.seq_len()) {
             Ordering::Less => {
                 let current = self.curr_hash();
+                // TODO update index with u8
                 let new_base = self.seq[self.index];
                 // Restart hash if invalid base
                 if new_base > 3 {
                     if let Some(new_it) =
-                        Self::new_iterator(self.index + 1, &self.seq, self.k, self.rc)
+                        self.new_iterator(self.index + 1)
                     {
                         self.fh = new_it.0;
                         self.rh = new_it.1;
@@ -348,6 +376,7 @@ impl Iterator for NtHashIterator {
                         self.index = self.seq_len; // End of valid sequence
                     }
                 } else {
+                    // TODO fix getting old base
                     self.roll_fwd(self.seq[self.index - self.k], new_base);
                     self.index += 1;
                 }
