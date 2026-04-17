@@ -176,7 +176,7 @@ use crate::sketch::multisketch::MultiSketch;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sketch::sketch_datafile::SketchArrayReader;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::sketch::{num_bins, sketch_files};
+use crate::sketch::sketch_files;
 
 pub mod inverted;
 use crate::inverted::Inverted;
@@ -277,7 +277,7 @@ pub fn main() -> Result<(), Error> {
                 seq_type.clone()
             };
 
-            let (_, sketch_bins, _) = num_bins(*sketch_size);
+            let sketch_bins = sketch_size.div_ceil(64);
             log::info!(
                 "Running sketching: k:{kmers:?}; sketch_size:{sketch_bins}; seq:{seq_type:?}; threads:{threads}"
             );

@@ -38,7 +38,7 @@ use crate::io::InputFastx;
 #[cfg(target_arch = "wasm32")]
 use crate::sketch::Sketch;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::sketch::{sketch_datafile::SketchArrayWriter, BBITS};
+use crate::sketch::sketch_datafile::SketchArrayWriter;
 
 use crate::utils::get_progress_bar;
 use anyhow::Error;
@@ -350,7 +350,7 @@ impl Inverted {
             rc: rc,
             k : k,
             s : sketch_size as usize,
-            b : BBITS as usize,
+            b : 16,
             seed : 0,
             count : min_count as usize,
             coverage: 1,
@@ -392,7 +392,7 @@ impl Inverted {
         let mut sketch_results: Vec<Vec<u16>> =
             vec![Vec::with_capacity(sketch_size as usize); differentsamples.len()];
         let mut indexes: HashSet<usize> = HashSet::with_capacity(multientrysamples.len());
-        while let Ok((genome_idx, mut sketch, name)) = rx.recv() {
+        while let Ok((genome_idx, sketch, name)) = rx.recv() {
             if differentsamples.contains(name) {
                 // Not yet written!
                 if !multientrysamples.contains(name) {

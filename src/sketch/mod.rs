@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::hashing::{bloom_filter::KmerFilter, RollHash};
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::hashing::{nthash_iterator::NtHashIterator, HashType, simdsketch_wrapper::sketch_with_simd};
+use super::hashing::{HashType, simdsketch_wrapper::sketch_with_simd};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::hashing::aahash_iterator::AaHashIterator;
@@ -33,34 +33,15 @@ use self::sketch_datafile::SketchArrayWriter;
 #[cfg(not(target_arch = "wasm32"))]
 use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch};
 
-/// Bin bits (lowest of 64-bits to keep)
-pub const BBITS: u64 = 16;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
-/// Get the number of elements in the sketch vectors for a given sketch size
-///
-/// Returns a tuple:
-/// - First element is sketch size divided by 64 (used in Jaccard fn)
-/// - Second element is the number of bins (rounded up to the
-///   nearest 64)
-/// - Third element is the number of transposed bins
-///
-/// # Arguments
-///
-/// - `sketch_size` -- number of bins wanted.
-pub fn num_bins(sketch_size: u64) -> (u64, u64, u64) {
-    let sketchsize64 = sketch_size.div_ceil(u64::BITS as u64);
-    let signs_size = sketchsize64 * (u64::BITS as u64);
-    let usigs_size = sketchsize64 * BBITS;
-    (sketchsize64, signs_size, usigs_size)
-}
 
 /// A single sample's sketch
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
 pub struct Sketch {
     #[serde(skip)]
-    usigs: Vec<u64>,
+    usigs: Vec<u16>,
     name: String,
     index: Option<usize>,
     rc: bool,
@@ -82,9 +63,7 @@ impl Sketch {
         rc: bool,
         min_count: u16,
     ) -> Self {
-        let (_sketchsize64, num_bins, usigs_size) = num_bins(sketch_size);
-        let flattened_size_u64 = usigs_size as usize * kmer_lengths.len();
-        let mut usigs = Vec::with_capacity(flattened_size_u64);
+        let mut usigs: Vec<u16> = Vec::with_capacity(sketch_size as usize * kmer_lengths.len());
 
         let mut read_filter = if seq_hashes.reads() {
             let mut filter = KmerFilter::new(min_count);
@@ -99,15 +78,13 @@ impl Sketch {
         let mut densified = false;
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
-            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, num_bins);
+            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, sketch_size);
             densified |= k_densified;
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
-            // Transpose the bins and save to the sketch map
-            log::debug!("Transposing bins");
-            let mut kmer_usigs = vec![0; usigs_size as usize];
-            Self::fill_usigs(&mut kmer_usigs, &signs);
-            usigs.append(&mut kmer_usigs);
+            for h in signs {
+                usigs.push(h as u16);
+            }
         }
         let (reads, acgt, non_acgt) = seq_hashes.sketch_data();
 
@@ -134,14 +111,14 @@ impl Sketch {
     /// Create a Sketch object from a simd_sketch Sketch object
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_sketch_simd(
-        sketches: &Vec<Sketch_simd>,
+        sketches: &mut Vec<Sketch_simd>,
         name: &str,
         reads: bool,
     ) -> Self {
         let testinputsketchs;
         let rc;
         match &sketches[0] {
-            Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch at this moment."),
+            Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch."),
             Sketch_simd::BucketSketch(sketch) => {
                 testinputsketchs = &sketch.buckets;
                 rc = sketch.rc;
@@ -151,35 +128,25 @@ impl Sketch {
         let testwithwhichtoiter;
         match testinputsketchs {
             BitSketch::B16(thevec) => testwithwhichtoiter = thevec,
-            _ => panic!("Only supporting 16 bits as bin size at this moment.")
+            _ => panic!("Only supporting 16 bits as bin size.")
         }
-        let sketch_size = testwithwhichtoiter.len() as u64;
+        let sketch_size = testwithwhichtoiter.len() as usize;
 
-        let (_sketchsize64, _num_bins, usigs_size) = num_bins(sketch_size);
-        let flattened_size_u64 = usigs_size as usize * sketches.len();
-        // let mut usigs = Vec::with_capacity(flattened_size_u64);
-        let mut usigs = vec![0; flattened_size_u64];
+        let mut usigs = vec![0; sketch_size * sketches.len()];
 
         for is in sketches {
             let inputsketchs;
             match is {
-                Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch at this moment."),
-                Sketch_simd::BucketSketch(sketch) => inputsketchs = &sketch.buckets,
+                Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch."),
+                Sketch_simd::BucketSketch(sketch) => inputsketchs = &mut sketch.buckets,
             }
 
-            let withwhichtoiter;
             match inputsketchs {
-                BitSketch::B16(thevec) => withwhichtoiter = thevec,
-                _ => panic!("Only supporting 16 bits as bin size at this moment.")
+                BitSketch::B16(thevec) => usigs.append(thevec),
+                _ => panic!("Only supporting 16 bits as bin size.")
             }
 
-            for (sign_index, sign) in withwhichtoiter.iter().enumerate() {
-                let leftshift = sign_index % (u64::BITS as usize);
-                for i in 0..BBITS {
-                    let orval = Self::bit_at_pos(*sign as u64, i) << leftshift;
-                    usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
-                }
-            }
+            // TODO: get the other stats/values listed below
         }
 
         Self {
@@ -258,7 +225,7 @@ impl Sketch {
     }
 
     /// Take the (transposed) sketch, emptying it from the [`Sketch`]
-    pub fn get_usigs(&mut self) -> Vec<u64> {
+    pub fn get_usigs(&mut self) -> Vec<u16> {
         std::mem::take(&mut self.usigs)
     }
 
@@ -274,19 +241,10 @@ impl Sketch {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline(always)]
     fn bit_at_pos(x: u64, pos: u64) -> u64 {
         (x & (1_u64 << pos)) >> pos
-    }
-
-    fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
-        for (sign_index, sign) in signs.iter().enumerate() {
-            let leftshift = sign_index % (u64::BITS as usize);
-            for i in 0..BBITS {
-                let orval = Self::bit_at_pos(*sign, i) << leftshift;
-                usigs[sign_index / (u64::BITS as usize) * (BBITS as usize) + (i as usize)] |= orval;
-            }
-        }
     }
 
     #[inline(always)]
@@ -361,8 +319,10 @@ pub fn sketch_files(
     est_coverage: usize,
     quiet: bool,
 ) -> Vec<Sketch> {
+    // TODO: perhaps, although not 100% necessary, some IO logics could be removed now that we are not supporting
+    // arbitrary BBITS values, though this might not imply a very large speed improvement (it's just a couple of variables, I think...)
     let bin_stride = 1;
-    let kmer_stride = (sketch_size * BBITS) as usize;
+    let kmer_stride = (sketch_size * 16) as usize;
     let sample_stride = kmer_stride * k.len();
 
     #[cfg(feature = "3di")]
@@ -392,10 +352,10 @@ pub fn sketch_files(
                 rc: rc,
                 k : *ik,
                 s : sketch_size as usize,
-                b : BBITS as usize,
+                b : 16,
                 seed : 0,
                 count : min_count as usize,
-                coverage: 1,
+                coverage: est_coverage,
                 filter_empty: true,
                 filter_out_n: true,
             }).collect::<Vec<_>>())
@@ -460,9 +420,9 @@ pub fn sketch_files(
                         HashType::DNA => {
                             // Note that we must not pass as reference the sketchers, as those might be used simultaneously by several parallel threads,
                             // and we might be processing reads and assemblies mixed!
-                            let (reads, sketches_simd) = sketch_with_simd(fastxvec, min_qual, est_coverage, sketchers.clone().unwrap());
+                            let (reads, mut sketches_simd) = sketch_with_simd(fastxvec, min_qual, est_coverage, sketchers.clone().unwrap());
                             vec![Sketch::from_sketch_simd(
-                                &sketches_simd, 
+                                &mut sketches_simd, 
                                 &name.to_string(), 
                                 reads
                             )]

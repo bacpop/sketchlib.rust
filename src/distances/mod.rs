@@ -88,7 +88,7 @@ pub fn self_dists_all<'a>(
                     let j_index = jaccard_index(
                         sketches.get_sketch_slice(i, k_idx),
                         sketches.get_sketch_slice(j, k_idx),
-                        sketches.sketchsize64,
+                        sketches.sketch_size,
                         c1,
                         c2,
                         completeness_cutoff,
@@ -163,7 +163,7 @@ pub fn self_dists_knn<'a>(
                         let dist = jaccard_index(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
-                            sketches.sketchsize64,
+                            sketches.sketch_size,
                             c1,
                             c2,
                             completeness_cutoff,
@@ -255,7 +255,7 @@ pub fn self_query_dists_all<'a>(
                     let j_index = jaccard_index(
                         ref_sketches.get_sketch_slice(i, k_idx),
                         query_sketches.get_sketch_slice(j, k_idx),
-                        ref_sketches.sketchsize64,
+                        ref_sketches.sketch_size,
                         c1,
                         c2,
                         completeness_cutoff,
@@ -358,7 +358,7 @@ pub fn self_dists_knn_precluster<'a>(
                         let dist = jaccard_index(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
-                            sketches.sketchsize64,
+                            sketches.sketch_size,
                             c1,
                             c2,
                             completeness_cutoff,

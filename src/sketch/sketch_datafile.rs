@@ -32,9 +32,9 @@ pub fn append_batch(
             let mut sample_data = Vec::with_capacity(input_reader.sample_stride);
             for bin_idx in 0..input_reader.sample_stride {
                 let start_byte =
-                    (sample_idx * input_reader.sample_stride + bin_idx) * mem::size_of::<u64>();
+                    (sample_idx * input_reader.sample_stride + bin_idx) * mem::size_of::<u16>();
                 let bin_val =
-                    u64::from_le_bytes(*array_ref![mmap, start_byte, mem::size_of::<u64>()]);
+                    u16::from_le_bytes(*array_ref![mmap, start_byte, mem::size_of::<u16>()]);
                 sample_data.push(bin_val);
             }
             output_writer.write_sketch(&sample_data);
@@ -147,7 +147,7 @@ impl SketchArrayReader {
     pub fn read_all_from_skq(&mut self, total_number_bins: usize) -> Vec<u16> {
         // Fixed-size buffer for u16
         let mut buffer = [0u8; std::mem::size_of::<u16>()];
-        // Stream the whole file and convert to u64 vec
+        // Stream the whole file and convert to u16 vec
         let mut flat_sketch_array: Vec<u16> = Vec::with_capacity(total_number_bins);
         while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
             flat_sketch_array.push(u16::from_le_bytes(buffer));
@@ -156,31 +156,31 @@ impl SketchArrayReader {
     }
 
     /// Read all sketch data from an .skd into memory
-    pub fn read_all_from_skd(&mut self, total_number_bins: usize) -> Vec<u64> {
-        // Fixed-size buffer for u64
-        let mut buffer = [0u8; std::mem::size_of::<u64>()];
-        // Stream the whole file and convert to u64 vec
-        let mut flat_sketch_array: Vec<u64> = Vec::with_capacity(total_number_bins);
+    pub fn read_all_from_skd(&mut self, total_number_bins: usize) -> Vec<u16> {
+        // Fixed-size buffer for u16
+        let mut buffer = [0u8; std::mem::size_of::<u16>()];
+        // Stream the whole file and convert to u16 vec
+        let mut flat_sketch_array: Vec<u16> = Vec::with_capacity(total_number_bins);
         while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
-            flat_sketch_array.push(u64::from_le_bytes(buffer));
+            flat_sketch_array.push(u16::from_le_bytes(buffer));
         }
         flat_sketch_array
     }
 
     /// Read selected samples from an .skd into memory, providing the selected
     /// samples with `sample_indices`
-    pub fn read_batch_from_skd(&self, sample_indices: &[usize], sample_stride: usize) -> Vec<u64> {
-        let mut flat_sketch_array: Vec<u64> =
+    pub fn read_batch_from_skd(&self, sample_indices: &[usize], sample_stride: usize) -> Vec<u16> {
+        let mut flat_sketch_array: Vec<u16> =
             Vec::with_capacity(sample_stride * sample_indices.len());
         // TODO possible improvement would be to combine adjacent indices into ranges
         if let Some(mmap_array) = &self.mmap_file {
             for sample_idx in sample_indices {
                 for bin_idx in 0..sample_stride {
-                    let start_byte = (sample_idx * sample_stride + bin_idx) * mem::size_of::<u64>();
-                    let bin_val = u64::from_le_bytes(*array_ref![
+                    let start_byte = (sample_idx * sample_stride + bin_idx) * mem::size_of::<u16>();
+                    let bin_val = u16::from_le_bytes(*array_ref![
                         mmap_array,
                         start_byte,
-                        mem::size_of::<u64>()
+                        mem::size_of::<u16>()
                     ]);
                     // let bin_val = u64::from_le_bytes(mmap[start_byte..(start_byte + mem::size_of::<u64>())].try_into().unwrap());
                     flat_sketch_array.push(bin_val);

@@ -11,7 +11,6 @@ use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
-use crate::sketch::num_bins;
 use crate::sketch::sketch_datafile::SketchArrayReader;
 use crate::sketch::sketch_datafile::SketchArrayWriter;
 use crate::sketch::Sketch;
@@ -23,9 +22,9 @@ use super::sketch_datafile::append_batch;
 pub struct MultiSketch {
     /// Number of sketch bins (a multiple of 64)
     pub sketch_size: u64,
-    /// Sketch size divided by 64
-    #[serde(default)]
-    pub sketchsize64: u64,
+    // /// Sketch size divided by 64
+    // #[serde(default)]
+    // pub sketchsize64: u64,
     kmer_lengths: Vec<usize>,
     sketch_metadata: Vec<Sketch>,
     name_map: HashMap<String, usize>,
@@ -34,7 +33,7 @@ pub struct MultiSketch {
     // But this requires manual impl for ser and deser, and does the same indirection as an index anyway so not worth it
     block_reindex: Option<Vec<usize>>,
     #[serde(skip)]
-    sketch_bins: Vec<u64>,
+    sketch_bins: Vec<u16>,
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
@@ -58,11 +57,10 @@ impl MultiSketch {
         }
 
         debug_assert!(sketch_size.is_multiple_of(u64::BITS as u64));
-        let (sketchsize64, _signs_size, usigs_size) = num_bins(sketch_size);
-        let kmer_stride = usigs_size as usize;
+        let kmer_stride = sketch_size as usize;
         Self {
             sketch_size,
-            sketchsize64,
+            // sketchsize64,
             kmer_lengths: kmer_lengths.to_vec(),
             sketch_metadata: mem::take(sketches),
             name_map,
@@ -92,12 +90,13 @@ impl MultiSketch {
         log::info!("Loading sketch metadata from {filename}");
         let skm_file = BufReader::new(File::open(filename)?);
         let decompress_reader = snap::read::FrameDecoder::new(skm_file);
-        let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
-        // For backwards compatibility (field added in v0.2.0)
-        if skm_obj.sketchsize64 == 0 {
-            skm_obj.sketchsize64 = skm_obj.sketch_size;
-            skm_obj.sketch_size *= 64;
-        }
+        let skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        // // For backwards compatibility (field added in v0.2.0)
+        // // TODO: remove?
+        // if skm_obj.sketchsize64 == 0 {
+        //     skm_obj.sketchsize64 = skm_obj.sketch_size;
+        //     skm_obj.sketch_size *= 64;
+        // }
 
         Ok(skm_obj)
     }
@@ -210,7 +209,7 @@ impl MultiSketch {
     }
 
     /// Get the bins for a given sketch index at a given k-mer index
-    pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
+    pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u16] {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
         let s1_offset = sketch_idx * self.sample_stride + k_idx * self.kmer_stride;
         let s1_slice = &self.sketch_bins[s1_offset..(s1_offset + self.kmer_stride)];

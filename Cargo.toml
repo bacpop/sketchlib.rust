@@ -62,14 +62,9 @@ rayon = "1.8"
 num_cpus = "1.0"
 
 #### TEMP
-simd-sketch.git = "https://github.com/ragnargrootkoerkamp/simd-sketch"
-# packed-seq = "4.1.0"
-# packed-seq = { tag = "v4.1.0", git = "https://github.com/rust-seq/packed-seq", features = ["file_io"] }
+simd-sketch = {git = "https://github.com/vrbouza/simd-sketch"}
 packed-seq = {version = "4.1.0", features = ["file_io"] }
 
-[patch.crates-io]
-simd-sketch.git = "https://github.com/ragnargrootkoerkamp/simd-sketch"
-# packed-seq.git = "https://github.com/rust-seq/packed-seq"
 #### TEMP
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
