@@ -909,12 +909,14 @@ pub fn main() -> Result<(), Error> {
 
             print_success = false; // Turn the final message off
             Ok(())
-        },
+        }
+        // TODO remove allow(unused)
+        #[allow(unused)]
         Commands::Containment { command } => match command {
             ContainmentCommands::Preprocess {
                 seq_files,
                 file_list,
-                output
+                output,
             } => {
                 println!("Hello from `containment preprocess`");
                 Ok(())

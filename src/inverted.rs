@@ -333,7 +333,7 @@ impl Inverted {
                     .progress_with(progress_bar)
                     .map(|((name, fastxvec), genome_idx)| {
                         let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
-                            HashType::DNA => NtHashIterator::new(fastxvec, rc, min_qual)
+                            HashType::DNA => NtHashIterator::new(fastxvec, k, rc, min_qual)
                                 .into_iter()
                                 .map(|it| Box::new(it) as Box<dyn RollHash>)
                                 .collect(),

@@ -15,6 +15,15 @@ use std::cmp::Ordering;
 
 use super::*;
 
+fn unpack_byte(mut byte_packed: u8) -> [u8; 4] {
+    let mut out = [0; 4];
+    for i in 0..4 {
+        out[i] = (byte_packed & 0b11_00_00_00) >> 6;
+        byte_packed <<= 2;
+    }
+    out
+}
+
 /// Stores forward and (optionally) reverse complement hashes of k-mers in a nucleotide sequence
 #[derive(Debug)]
 pub struct NtHashIterator {
@@ -23,6 +32,8 @@ pub struct NtHashIterator {
     fh: u64,
     rh: Option<u64>,
     index: usize,
+    front_unpacked: [u8; 4],
+    back_unpacked: [u8; 4],
     seq: Vec<u8>,
     offsets: std::iter::Peekable<std::vec::IntoIter<usize>>,
     acgt: [usize; 4],
@@ -32,13 +43,11 @@ pub struct NtHashIterator {
 
 impl RollHash for NtHashIterator {
     fn set_k(&mut self, k: usize) {
-        self.k = k;
-        if let Some(new_it) = self.new_iterator(0) {
-            self.fh = new_it.0;
-            self.rh = new_it.1;
-            self.index = new_it.2;
-        } else {
-            panic!("K-mer larger than smallest valid sequence");
+        if k != self.k {
+            self.k = k;
+            if self.next_iterator(0).is_none() {
+                panic!("K-mer larger than smallest valid sequence");
+            }
         }
     }
 
@@ -75,7 +84,7 @@ impl RollHash for NtHashIterator {
 impl NtHashIterator {
     #[cfg(not(target_arch = "wasm32"))]
     /// Creates a new ntHash iterator, by loading DNA sequences into memory
-    pub fn new(files: &[String], rc: bool, min_qual: u8) -> Vec<Self> {
+    pub fn new(files: &[String], k: usize, rc: bool, min_qual: u8) -> Vec<Self> {
         // Check if we're working with reads, and initalise the filter if so
         let mut reader_peek = parse_fastx_file(files[0].clone())
             .unwrap_or_else(|_| panic!("Invalid path/file: {}", files[0]));
@@ -99,21 +108,32 @@ impl NtHashIterator {
         // Read sequence into memory (as we go through multiple times)
         log::debug!("Preprocessing sequence");
         for file in files.iter() {
-            Self::add_dna_seq(file, min_qual, &mut seq, &mut offsets, &mut acgt, &mut non_acgt);
+            Self::add_dna_seq(
+                file,
+                min_qual,
+                &mut seq,
+                &mut offsets,
+                &mut acgt,
+                &mut non_acgt,
+            );
         }
 
-        vec![Self {
-            k: 0,
+        let mut hash_it = Self {
+            k: 0, // this should be changed to an Option<usize>
             rc,
             fh: 0,
             rh: None,
             index: 0,
+            front_unpacked: [0; 4],
+            back_unpacked: [0; 4],
             seq,
             offsets: offsets.into_iter().peekable(),
             acgt,
             non_acgt,
             reads,
-        }]
+        };
+        hash_it.set_k(k);
+        vec![hash_it]
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -170,7 +190,14 @@ impl NtHashIterator {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn add_dna_seq(filename: &str, min_qual: u8, seq: &mut Vec<u8>, offsets: &mut Vec<usize>, acgt: &mut [usize; 4], non_acgt: &mut usize) {
+    fn add_dna_seq(
+        filename: &str,
+        min_qual: u8,
+        seq: &mut Vec<u8>,
+        offsets: &mut Vec<usize>,
+        acgt: &mut [usize; 4],
+        non_acgt: &mut usize,
+    ) {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
 
@@ -192,7 +219,7 @@ impl NtHashIterator {
                         seq.push(b);
                         b = 0;
                     } else {
-                        b << 2;
+                        b <<= 2;
                     }
                 } else {
                     *non_acgt += 1;
@@ -267,23 +294,25 @@ impl NtHashIterator {
         }
     }
 
-    fn new_iterator(
-        &mut self,
-        mut start: usize,
-    ) -> Option<(u64, Option<u64>, usize)> {
-        let mut fh = 0_u64;
+    // Only valid if start is greater or equal to previous call
+    fn next_iterator(&mut self, mut start: usize) -> Option<()> {
+        self.fh = 0_u64;
 
-        let end = start + self.k;
+        let mut end = start + self.k;
 
         // Find next offset from start
-        if let Some(&next_offset) = self.offsets.peek() {
-            if next_offset < end {
-                start = next_offset;
-                while let Some(offset) = self.offsets.next() {
+        if let Some(&current_offset) = self.offsets.peek() {
+            // Not sure if >= start is needed - playing it safe for now
+            if current_offset >= start && current_offset < end {
+                start = current_offset;
+                end = start + self.k;
+
+                while let Some(next_offset) = self.offsets.next() {
                     if next_offset >= end {
-                        start = offset;
                         break;
                     }
+                    start = next_offset;
+                    end = start + self.k;
                 }
             }
         } else {
@@ -296,43 +325,52 @@ impl NtHashIterator {
             return None;
         }
 
-        // TODO
         // calculate hash from start..end using u8 range correctly
+        let byterange_start = start / 4;
+        let byterange_end = end / 4;
+        let base_start = start % 4;
+        let base_end = end % 4 + 4 * (byterange_end - byterange_start);
 
-        //'outer: while start < (seq.len() - k) {
-            //// TODO sort out seq and loop
-            //'_inner: for (i, v) in seq[start..(start + k)].iter().enumerate() {
-                //// If invalid seq
-                //// TODO add check that offset is inside window
-                //if *v > 3 {
-                    //start += i + 1;
-                    //if start >= seq.len() {
-                        //return None;
-                    //}
-                    //fh = 0;
-                    //continue 'outer; // Try again from new start
-                //}
-                //fh = fh.rotate_left(1_u32);
-                //fh = swapbits033(fh);
-                //fh ^= nthash_tables::HASH_LOOKUP[*v as usize];
-            //}
-            //break 'outer; // success
-        //}
+        let mut bases = self.seq[byterange_start..=byterange_end].iter();
+        let mut curr_byte = 0;
+        let mut rev_bases = Vec::with_capacity(self.k);
+        for base_idx in 0..=base_end {
+            if base_idx % 4 == 0 {
+                curr_byte = *(bases.next().unwrap());
+            }
+            let base = (curr_byte & 0b11_00_00_00) >> 6;
+            // Store parsed bases for rc_hash below
+            if self.rc {
+                rev_bases.push(base);
+            }
+            curr_byte <<= 2;
+            if base_idx > base_start {
+                // hash
+                self.fh = self.fh.rotate_left(1_u32);
+                self.fh = swapbits033(self.fh);
+                self.fh ^= nthash_tables::HASH_LOOKUP[base as usize];
+            }
+        }
 
-        let rh = if rc {
+        self.rh = if self.rc {
             let mut h = 0_u64;
-            // TODO similar to above
-            for v in seq[start..(start + k)].iter().rev() {
+            for b in rev_bases.iter().rev() {
                 h = h.rotate_left(1_u32);
                 h = swapbits033(h);
-                h ^= nthash_tables::RC_HASH_LOOKUP[*v as usize];
+                h ^= nthash_tables::RC_HASH_LOOKUP[*b as usize];
             }
             Some(h)
         } else {
             None
         };
 
-        Some((fh, rh, start + k))
+        // Set the bytes at start and end of roll for use in roll_fwd
+        self.front_unpacked = unpack_byte(self.seq[byterange_end]);
+        self.back_unpacked = unpack_byte(self.seq[byterange_start]);
+
+        self.index = end;
+
+        Some(())
     }
 
     /// Move to the next k-mer by adding a new base, removing a base from the end, efficiently updating the hash.
@@ -361,25 +399,37 @@ impl Iterator for NtHashIterator {
     fn next(&mut self) -> Option<Self::Item> {
         match self.index.cmp(&self.seq_len()) {
             Ordering::Less => {
+                // Get the current hash to return
                 let current = self.curr_hash();
-                // TODO update index with u8
-                let new_base = self.seq[self.index];
-                // Restart hash if invalid base
-                if new_base > 3 {
-                    if let Some(new_it) =
-                        self.new_iterator(self.index + 1)
-                    {
-                        self.fh = new_it.0;
-                        self.rh = new_it.1;
-                        self.index = new_it.2;
-                    } else {
-                        self.index = self.seq_len; // End of valid sequence
+
+                // Calculate the next hash, which will be returned on the next call
+                let new_base = self.front_unpacked[self.index % 4];
+                //println!(
+                //"self.index = {}, self.k = {}, self.index + 1 = {}",
+                //self.index,
+                //self.k,
+                //self.index + 1,
+                //);
+                let old_base = self.back_unpacked[((self.index + 1) - self.k) % 4];
+                self.roll_fwd(old_base, new_base);
+
+                // Move to the next valid base, which prepares for the next call to
+                // calculate the next hash, which will be returned in two calls time
+                self.index += 1;
+                if self.index == *(self.offsets.peek().unwrap()) {
+                    if self.next_iterator(self.index).is_none() {
+                        self.index = self.seq_len();
                     }
-                } else {
-                    // TODO fix getting old base
-                    self.roll_fwd(self.seq[self.index - self.k], new_base);
-                    self.index += 1;
                 }
+                // Moved to a new byte at the front - update front_unpacked
+                if self.index % 4 == 0 {
+                    self.front_unpacked = unpack_byte(self.seq[self.index / 4]);
+                }
+                // Moved to a new byte at the back - update back_unpacked
+                if (self.index - self.k + 1) % 4 == 0 {
+                    self.back_unpacked = unpack_byte(self.seq[(self.index - self.k + 1) % 4]);
+                }
+
                 Some(current)
             }
             Ordering::Equal => {
@@ -393,11 +443,4 @@ impl Iterator for NtHashIterator {
             }
         }
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.seq_len, Some(self.seq_len))
-    }
 }
-
-// This lets you use collect etc
-impl ExactSizeIterator for NtHashIterator {}
