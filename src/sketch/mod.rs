@@ -132,7 +132,7 @@ impl Sketch {
         }
         let sketch_size = testwithwhichtoiter.len() as usize;
 
-        let mut usigs = vec![0; sketch_size * sketches.len()];
+        let mut usigs = Vec::with_capacity(sketch_size * sketches.len());
 
         for is in sketches {
             let inputsketchs;

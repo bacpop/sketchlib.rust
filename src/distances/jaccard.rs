@@ -12,7 +12,7 @@ pub fn jaccard_index(
 ) -> f64 {
 
     let mut jaccard_index = std::iter::zip(sketch1, sketch2)
-        .map(|(a, b)| (a != b) as u32)
+        .map(|(a, b)| (a == b) as u32)
         .sum::<u32>() as f64
         / sketchsize as f64;
 
