@@ -277,7 +277,7 @@ pub fn main() -> Result<(), Error> {
                 seq_type.clone()
             };
 
-            let sketch_bins = sketch_size.div_ceil(64);
+            let sketch_bins = sketch_size.div_ceil(64)*64;
             log::info!(
                 "Running sketching: k:{kmers:?}; sketch_size:{sketch_bins}; seq:{seq_type:?}; threads:{threads}"
             );
