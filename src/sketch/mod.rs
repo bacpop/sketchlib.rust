@@ -133,16 +133,24 @@ impl Sketch {
         let sketch_size = testwithwhichtoiter.len() as usize;
 
         let mut usigs = Vec::with_capacity(sketch_size * sketches.len());
+        let mut densified = false;
 
         for is in sketches {
             let inputsketchs;
+            let empty;
             match is {
                 Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch."),
-                Sketch_simd::BucketSketch(sketch) => inputsketchs = &mut sketch.buckets,
+                Sketch_simd::BucketSketch(sketch) => {
+                    inputsketchs = &mut sketch.buckets;
+                    empty = &sketch.empty;
+                }
             }
 
             match inputsketchs {
-                BitSketch::B16(thevec) => usigs.append(thevec),
+                BitSketch::B16(thevec) => {
+                    densified |= Self::densify_bin_u16(thevec, empty);
+                    usigs.append(thevec);
+                }
                 _ => panic!("Only supporting 16 bits as bin size.")
             }
 
@@ -156,7 +164,7 @@ impl Sketch {
             rc,
             reads : reads,
             seq_length : 0,                 // TODO
-            densified: false,               // TODO
+            densified,
             acgt : [0,0,0,0],               // TODO
             non_acgt : 0,                   // TODO
         }
@@ -280,6 +288,47 @@ impl Sketch {
             }
             true
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[inline(always)]
+    pub(crate) fn empty_mask_to_vec(empty: &[u64], len: usize) -> Vec<bool> {
+        let mut is_empty = vec![false; len];
+        for (chunk_idx, bits) in empty.iter().enumerate() {
+            let base_idx = chunk_idx * u64::BITS as usize;
+            for bit_idx in 0..u64::BITS as usize {
+                let idx = base_idx + bit_idx;
+                if idx >= len {
+                    break;
+                }
+                is_empty[idx] = ((bits >> bit_idx) & 1) == 1;
+            }
+        }
+        is_empty
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn densify_bin_u16(signs: &mut [u16], empty: &[u64]) -> bool {
+        let mut is_empty = Self::empty_mask_to_vec(empty, signs.len());
+        if !is_empty.iter().any(|&empty_bin| empty_bin) {
+            return false;
+        }
+        if is_empty.iter().all(|&empty_bin| empty_bin) {
+            panic!("Cannot densify sketch with all bins empty");
+        }
+        for i in 0..signs.len() {
+            let mut j = i;
+            let mut n_attempts = 0;
+            while is_empty[j] {
+                j = (Self::universal_hash(i as u64, n_attempts as u64) as usize) % signs.len();
+                n_attempts += 1;
+            }
+            if is_empty[i] {
+                signs[i] = signs[j];
+                is_empty[i] = false;
+            }
+        }
+        true
     }
 }
 

@@ -38,7 +38,7 @@ use crate::io::InputFastx;
 #[cfg(target_arch = "wasm32")]
 use crate::sketch::Sketch;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::sketch::sketch_datafile::SketchArrayWriter;
+use crate::sketch::{sketch_datafile::SketchArrayWriter, Sketch};
 
 use crate::utils::get_progress_bar;
 use anyhow::Error;
@@ -376,12 +376,19 @@ impl Inverted {
                         }
 
                         let signs;
+                        let empty;
                         match inputsketchs {
-                            BitSketch::B16(thevec) => signs = thevec,
+                            BitSketch::B16(thevec) => {
+                                signs = thevec;
+                                match &vec[0] {
+                                    Sketch_simd::BottomSketch(_sketch) => unreachable!(),
+                                    Sketch_simd::BucketSketch(sketch) => empty = sketch.empty.clone(),
+                                }
+                            }
                             _ => panic!("Only supporting 16 bits as bin size at this moment.")
                         }
 
-                        (*genome_idx, signs.clone(), name)
+                        (*genome_idx, signs.clone(), empty, name)
                     })
                     .for_each_with(tx, |tx, result| {
                         let _ = tx.send(result);
@@ -391,37 +398,55 @@ impl Inverted {
 
         let mut sketch_results: Vec<Vec<u16>> =
             vec![Vec::with_capacity(sketch_size as usize); differentsamples.len()];
+        let mut empty_masks: Vec<Option<Vec<bool>>> = vec![None; differentsamples.len()];
         let mut indexes: HashSet<usize> = HashSet::with_capacity(multientrysamples.len());
-        while let Ok((genome_idx, sketch, name)) = rx.recv() {
+        while let Ok((genome_idx, mut sketch, empty, name)) = rx.recv() {
+            let curr_empty = Sketch::empty_mask_to_vec(&empty, sketch_size as usize);
             if differentsamples.contains(name) {
                 // Not yet written!
                 if !multientrysamples.contains(name) {
-                    // Densifying now!
-                    // Sketch::densify_bin(&mut sketch);
-                    log::debug!("> Should densify here, not doing that!");
+                    Sketch::densify_bin_u16(&mut sketch, &empty);
                 } else {
                     // We'll need to densify afterwards, let's save the index
                     indexes.insert(genome_idx);
+                    empty_masks[genome_idx] = Some(curr_empty);
                 }
                 sketch_results[genome_idx] = sketch;
                 differentsamples.remove(name);
             } else {
                 // already written! We have to merge
+                let saved_empty = empty_masks[genome_idx]
+                    .as_mut()
+                    .expect("Missing empty mask for merged sketch");
                 for bin in 0..sketch_size {
-                    let saved_sketch = &mut sketch_results[genome_idx][bin as usize];
-                    *saved_sketch = cmp::min(*saved_sketch, sketch[bin as usize] as u16);
+                    let bin_idx = bin as usize;
+                    let curr_is_empty = curr_empty[bin_idx];
+                    let saved_is_empty = saved_empty[bin_idx];
+                    if saved_is_empty && curr_is_empty {
+                        continue;
+                    }
+                    if saved_is_empty {
+                        sketch_results[genome_idx][bin_idx] = sketch[bin_idx];
+                        saved_empty[bin_idx] = false;
+                    } else if !curr_is_empty {
+                        let saved_sketch = &mut sketch_results[genome_idx][bin_idx];
+                        *saved_sketch = cmp::min(*saved_sketch, sketch[bin_idx]);
+                    }
                 }
             }
         }
-        
-        // TODO: when reimplementing densifying, reactivate this loop!!!!!!
-        // for pos in indexes.iter() {
-            // // TODO: this is clearly improvable, but I'm going to do it temporarily this way...
-            // let mut tmpvec: Vec<u64> = sketch_results[*pos].iter().map(|h| *h as u64).collect();
-            // // Sketch::densify_bin(&mut tmpvec[..]);
-            // log::debug!("> Should densify here, not doing that!");
-            // sketch_results[*pos] = tmpvec.iter().map(|h| *h as u16).collect();
-        // }
+        for pos in indexes.iter() {
+            let empty_mask = empty_masks[*pos]
+                .take()
+                .expect("Missing empty mask for deferred densification");
+            let mut bitmap = vec![0u64; sketch_size.div_ceil(u64::BITS as u64) as usize];
+            for (idx, is_empty) in empty_mask.iter().enumerate() {
+                if *is_empty {
+                    bitmap[idx / u64::BITS as usize] |= 1_u64 << (idx % u64::BITS as usize);
+                }
+            }
+            Sketch::densify_bin_u16(&mut sketch_results[*pos], &bitmap);
+        }
 
         // Sample names in the correct order
         // (clones names, but reference would be annoying here)
