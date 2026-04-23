@@ -401,6 +401,11 @@ impl Inverted {
         let mut empty_masks: Vec<Option<Vec<bool>>> = vec![None; differentsamples.len()];
         let mut indexes: HashSet<usize> = HashSet::with_capacity(multientrysamples.len());
         while let Ok((genome_idx, mut sketch, empty, name)) = rx.recv() {
+            if Sketch::all_bins_empty(&empty, sketch_size as usize) {
+                panic!(
+                    "Sample {name} at k={k} has no valid k-mers after filtering; cannot build sketch"
+                );
+            }
             let curr_empty = Sketch::empty_mask_to_vec(&empty, sketch_size as usize);
             if differentsamples.contains(name) {
                 // Not yet written!

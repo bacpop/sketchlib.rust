@@ -138,16 +138,23 @@ impl Sketch {
         for is in sketches {
             let inputsketchs;
             let empty;
+            let k;
             match is {
                 Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch."),
                 Sketch_simd::BucketSketch(sketch) => {
                     inputsketchs = &mut sketch.buckets;
                     empty = &sketch.empty;
+                    k = sketch.k;
                 }
             }
 
             match inputsketchs {
                 BitSketch::B16(thevec) => {
+                    if Self::all_bins_empty(empty, thevec.len()) {
+                        panic!(
+                            "Sample {name} at k={k} has no valid k-mers after filtering; cannot build sketch"
+                        );
+                    }
                     densified |= Self::densify_bin_u16(thevec, empty);
                     usigs.append(thevec);
                 }
@@ -305,6 +312,12 @@ impl Sketch {
             }
         }
         is_empty
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[inline(always)]
+    pub(crate) fn all_bins_empty(empty: &[u64], len: usize) -> bool {
+        !empty.is_empty() && Self::empty_mask_to_vec(empty, len).iter().all(|&is_empty| is_empty)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
