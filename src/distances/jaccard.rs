@@ -10,12 +10,22 @@ pub fn jaccard_index(
     c2: Option<f64>,
     completeness_cutoff: f64,
 ) -> f64 {
-
-    let mut jaccard_index = std::iter::zip(sketch1, sketch2)
-        .map(|(a, b)| (a == b) as u32)
+    // Ragnar distance, could be optimised
+    let both_empty = std::iter::zip(sketch1, sketch2).map(|(a, b)| ((a | b) == 0) as u32).sum::<u32>() as f64;
+    let mut jaccard_index = 1.0 - std::iter::zip(sketch1, sketch2)
+        .map(|(a, b)| (a != b) as u32)
         .sum::<u32>() as f64
-        / sketchsize as f64;
+        / (sketchsize as f64 - both_empty);
+    
+    let bb = (1usize << 16) as f64;
 
+    // Correction for accidental matches.
+    // Take a max with 0 to avoid correcting into a negative jaccard similarity
+    // for uncorrelated sketches.
+    jaccard_index = (bb * jaccard_index - 1.0).max(0.0) / (bb - 1.0);
+
+    // John's sketchlib-distance
+    
     // Apply completeness correction if both completeness values are provided
     if let (Some(c1_val), Some(c2_val)) = (c1, c2) {
         if c1_val * c2_val >= completeness_cutoff {
