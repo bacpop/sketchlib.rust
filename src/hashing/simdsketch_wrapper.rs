@@ -27,6 +27,7 @@ pub fn sketch_with_simd(
     } else {
         for is in sketchers.iter_mut() {
             is.coverage = 1;
+            is.count = 1;
         }
     }
 
