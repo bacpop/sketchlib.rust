@@ -31,7 +31,7 @@ pub mod sketch_datafile;
 use self::sketch_datafile::SketchArrayWriter;
 
 #[cfg(not(target_arch = "wasm32"))]
-use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch};
+use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch, HashMode};
 
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
@@ -411,6 +411,7 @@ pub fn sketch_files(
     let sketchers = if *seq_type == HashType::DNA {
         Some(k.iter().map(|ik| SketchParams {
                 alg: SketchAlg::Bucket,
+                hash_mode: HashMode::NtHash64,
                 rc: rc,
                 k : *ik,
                 s : sketch_size as usize,

@@ -53,7 +53,7 @@ use wasm_bindgen_file_reader::WebSysFile;
 type InvSketches = (Vec<Vec<u16>>, Vec<String>);
 
 #[cfg(not(target_arch = "wasm32"))]
-use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch};
+use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch, HashMode};
 
 /// An inverted index and associated metadata
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
@@ -347,6 +347,7 @@ impl Inverted {
         }
         let sketchers = Some(vec![SketchParams {
             alg: SketchAlg::Bucket,
+            hash_mode: HashMode::NtHash64,
             rc: rc,
             k : k,
             s : sketch_size as usize,
