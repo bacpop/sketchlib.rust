@@ -10,7 +10,8 @@ pub fn jaccard_index(
     c2: Option<f64>,
     completeness_cutoff: f64,
 ) -> f64 {
-    // Ragnar distance, could be optimised
+    // Active implementation: native simd-sketch-style bucket similarity.
+    // Semantics: bucket equality with both-empty exclusion and accidental-match correction.
     let both_empty = std::iter::zip(sketch1, sketch2).map(|(a, b)| ((a | b) == 0) as u32).sum::<u32>() as f64;
     let mut jaccard_index = 1.0 - std::iter::zip(sketch1, sketch2)
         .map(|(a, b)| (a != b) as u32)
@@ -24,8 +25,26 @@ pub fn jaccard_index(
     // for uncorrelated sketches.
     jaccard_index = (bb * jaccard_index - 1.0).max(0.0) / (bb - 1.0);
 
-    // John's sketchlib-distance
-    
+    // Vanilla-sketchlib-style correction adapted to raw Vec<u16> buckets.
+    // Semantics: count equal full bucket values, subtract expected random full-bucket matches,
+    // then rescale into a corrected similarity.
+    // Relationship to old sketchlib: preserves the old "subtract random matches, then rescale"
+    // idea, but on bucket positions instead of transposed 14-bit planes.
+    // Performance: scalar; intended for behavioural comparison against old sketchlib semantics.
+    // NOTE: completeness correction below is shared and should remain unchanged.
+    //
+    // let maxnbits = sketchsize as u32;
+    // let samebits = std::iter::zip(sketch1, sketch2)
+    //     .map(|(a, b)| (a == b) as u32)
+    //     .sum::<u32>();
+    // let expected_samebits = maxnbits >> 16; // random full-bucket match probability = 1 / 2^16
+    // let diff = samebits.saturating_sub(expected_samebits);
+    // let intersize =
+    //     (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
+    // let unionsize = maxnbits as f64;
+    // let mut jaccard_index = intersize / unionsize;
+
+
     // Apply completeness correction if both completeness values are provided
     if let (Some(c1_val), Some(c2_val)) = (c1, c2) {
         if c1_val * c2_val >= completeness_cutoff {
