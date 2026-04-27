@@ -21,16 +21,12 @@ use rayon::prelude::*;
 use roaring::{RoaringBitmap, RoaringTreemap};
 use serde::{Deserialize, Serialize};
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::hashing::{
-    HashType, simdsketch_wrapper::sketch_with_simd
-};
 #[cfg(target_arch = "wasm32")]
 use super::hashing::{
-    HashType, RollHash, 
-    nthash_iterator::NtHashIterator,
-    bloom_filter::KmerFilter
+    bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use super::hashing::{simdsketch_wrapper::sketch_with_simd, HashType};
 
 use crate::distances::distance_matrix::square_to_condensed;
 #[cfg(not(target_arch = "wasm32"))]
@@ -53,7 +49,7 @@ use wasm_bindgen_file_reader::WebSysFile;
 type InvSketches = (Vec<Vec<u16>>, Vec<String>);
 
 #[cfg(not(target_arch = "wasm32"))]
-use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch, HashMode};
+use simd_sketch::{BitSketch, HashMode, Sketch as Sketch_simd, SketchAlg, SketchParams};
 
 /// An inverted index and associated metadata
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq)]
@@ -349,11 +345,11 @@ impl Inverted {
             alg: SketchAlg::Bucket,
             hash_mode: HashMode::NtHash64,
             rc: rc,
-            k : k,
-            s : sketch_size as usize,
-            b : 16,
-            seed : 0,
-            count : min_count as usize,
+            k: k,
+            s: sketch_size as usize,
+            b: 16,
+            seed: 0,
+            count: min_count as usize,
             coverage: 1,
             filter_empty: true,
             filter_out_n: true,
@@ -368,28 +364,26 @@ impl Inverted {
                     .map(|((name, fastxvec), genome_idx)| {
                         // This could be nicer. It is essentially Sketch::from_sketch_simd, but w/o a couple things
                         // This vec has a single element always
-                        let (_reads, vec) = sketch_with_simd(fastxvec, min_qual, est_coverage, sketchers.clone().unwrap());
-
-                        let inputsketchs;
-                        match &vec[0] {
-                            Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch at this moment."),
-                            Sketch_simd::BucketSketch(sketch) => inputsketchs = &sketch.buckets,
-                        }
-
-                        let signs;
-                        let empty;
-                        match inputsketchs {
-                            BitSketch::B16(thevec) => {
-                                signs = thevec;
-                                match &vec[0] {
-                                    Sketch_simd::BottomSketch(_sketch) => unreachable!(),
-                                    Sketch_simd::BucketSketch(sketch) => empty = sketch.empty.clone(),
-                                }
+                        let (_reads, mut vec) = sketch_with_simd(
+                            fastxvec,
+                            min_qual,
+                            est_coverage,
+                            sketchers.as_ref().unwrap(),
+                        );
+                        let sketch = match vec.pop().expect("missing simd sketch") {
+                            Sketch_simd::BottomSketch(_sketch) => {
+                                panic!("We only support BucketSketch at this moment.")
                             }
-                            _ => panic!("Only supporting 16 bits as bin size at this moment.")
-                        }
+                            Sketch_simd::BucketSketch(sketch) => sketch,
+                        };
 
-                        (*genome_idx, signs.clone(), empty, name)
+                        let empty = sketch.empty;
+                        let signs = match sketch.buckets {
+                            BitSketch::B16(thevec) => thevec,
+                            _ => panic!("Only supporting 16 bits as bin size at this moment."),
+                        };
+
+                        (*genome_idx, signs, empty, name)
                     })
                     .for_each_with(tx, |tx, result| {
                         let _ = tx.send(result);

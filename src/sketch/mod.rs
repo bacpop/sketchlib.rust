@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::hashing::{bloom_filter::KmerFilter, RollHash};
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::hashing::{HashType, simdsketch_wrapper::sketch_with_simd};
+use super::hashing::{simdsketch_wrapper::sketch_with_simd, HashType};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::hashing::aahash_iterator::AaHashIterator;
@@ -31,11 +31,10 @@ pub mod sketch_datafile;
 use self::sketch_datafile::SketchArrayWriter;
 
 #[cfg(not(target_arch = "wasm32"))]
-use simd_sketch::{SketchParams, Sketch as Sketch_simd, SketchAlg, BitSketch, HashMode};
+use simd_sketch::{BitSketch, HashMode, Sketch as Sketch_simd, SketchAlg, SketchParams};
 
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
-
 
 /// A single sample's sketch
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -78,7 +77,8 @@ impl Sketch {
         let mut densified = false;
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
-            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, sketch_size);
+            let (signs, k_densified) =
+                Self::get_signs(seq_hashes, *k, &mut read_filter, sketch_size);
             densified |= k_densified;
             minhash_sum += (signs[0] as f64) / (SIGN_MOD as f64);
 
@@ -110,11 +110,7 @@ impl Sketch {
 
     /// Create a Sketch object from a simd_sketch Sketch object
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_sketch_simd(
-        sketches: &mut Vec<Sketch_simd>,
-        name: &str,
-        reads: bool,
-    ) -> Self {
+    pub fn from_sketch_simd(sketches: Vec<Sketch_simd>, name: &str, reads: bool) -> Self {
         let testinputsketchs;
         let rc;
         match &sketches[0] {
@@ -122,43 +118,39 @@ impl Sketch {
             Sketch_simd::BucketSketch(sketch) => {
                 testinputsketchs = &sketch.buckets;
                 rc = sketch.rc;
-            },
+            }
         }
 
         let testwithwhichtoiter;
         match testinputsketchs {
             BitSketch::B16(thevec) => testwithwhichtoiter = thevec,
-            _ => panic!("Only supporting 16 bits as bin size.")
+            _ => panic!("Only supporting 16 bits as bin size."),
         }
         let sketch_size = testwithwhichtoiter.len() as usize;
 
         let mut usigs = Vec::with_capacity(sketch_size * sketches.len());
         let mut densified = false;
 
-        for is in sketches {
-            let inputsketchs;
-            let empty;
-            let k;
+        for is in sketches.into_iter() {
             match is {
                 Sketch_simd::BottomSketch(_sketch) => panic!("We only support BucketSketch."),
                 Sketch_simd::BucketSketch(sketch) => {
-                    inputsketchs = &mut sketch.buckets;
-                    empty = &sketch.empty;
-                    k = sketch.k;
-                }
-            }
-
-            match inputsketchs {
-                BitSketch::B16(thevec) => {
-                    if Self::all_bins_empty(empty, thevec.len()) {
-                        panic!(
-                            "Sample {name} at k={k} has no valid k-mers after filtering; cannot build sketch"
-                        );
+                    let empty = sketch.empty;
+                    let k = sketch.k;
+                    match sketch.buckets {
+                        BitSketch::B16(mut thevec) => {
+                            let empty_mask = Self::empty_mask_to_vec(&empty, thevec.len());
+                            if !empty_mask.is_empty() && empty_mask.iter().all(|&x| x) {
+                                panic!(
+                                    "Sample {name} at k={k} has no valid k-mers after filtering; cannot build sketch"
+                                );
+                            }
+                            densified |= Self::densify_bin_u16_from_mask(&mut thevec, empty_mask);
+                            usigs.append(&mut thevec);
+                        }
+                        _ => panic!("Only supporting 16 bits as bin size."),
                     }
-                    densified |= Self::densify_bin_u16(thevec, empty);
-                    usigs.append(thevec);
                 }
-                _ => panic!("Only supporting 16 bits as bin size.")
             }
 
             // TODO: get the other stats/values listed below
@@ -169,11 +161,11 @@ impl Sketch {
             name: name.to_string(),
             index: None,
             rc,
-            reads : reads,
-            seq_length : 0,                 // TODO
+            reads: reads,
+            seq_length: 0, // TODO
             densified,
-            acgt : [0,0,0,0],               // TODO
-            non_acgt : 0,                   // TODO
+            acgt: [0, 0, 0, 0], // TODO
+            non_acgt: 0,        // TODO
         }
     }
 
@@ -317,12 +309,22 @@ impl Sketch {
     #[cfg(not(target_arch = "wasm32"))]
     #[inline(always)]
     pub(crate) fn all_bins_empty(empty: &[u64], len: usize) -> bool {
-        !empty.is_empty() && Self::empty_mask_to_vec(empty, len).iter().all(|&is_empty| is_empty)
+        if empty.is_empty() {
+            return false;
+        }
+        (0..len).all(|idx| {
+            let chunk = empty[idx / u64::BITS as usize];
+            ((chunk >> (idx % u64::BITS as usize)) & 1) == 1
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn densify_bin_u16(signs: &mut [u16], empty: &[u64]) -> bool {
-        let mut is_empty = Self::empty_mask_to_vec(empty, signs.len());
+        Self::densify_bin_u16_from_mask(signs, Self::empty_mask_to_vec(empty, signs.len()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn densify_bin_u16_from_mask(signs: &mut [u16], mut is_empty: Vec<bool>) -> bool {
         if !is_empty.iter().any(|&empty_bin| empty_bin) {
             return false;
         }
@@ -409,19 +411,23 @@ pub fn sketch_files(
     let mut sketches: Vec<Sketch> = Vec::with_capacity(input_files.len());
 
     let sketchers = if *seq_type == HashType::DNA {
-        Some(k.iter().map(|ik| SketchParams {
-                alg: SketchAlg::Bucket,
-                hash_mode: HashMode::NtHash64,
-                rc: rc,
-                k : *ik,
-                s : sketch_size as usize,
-                b : 16,
-                seed : 0,
-                count : min_count as usize,
-                coverage: est_coverage,
-                filter_empty: true,
-                filter_out_n: true,
-            }).collect::<Vec<_>>())
+        Some(
+            k.iter()
+                .map(|ik| SketchParams {
+                    alg: SketchAlg::Bucket,
+                    hash_mode: HashMode::NtHash64,
+                    rc: rc,
+                    k: *ik,
+                    s: sketch_size as usize,
+                    b: 16,
+                    seed: 0,
+                    count: min_count as usize,
+                    coverage: est_coverage,
+                    filter_empty: true,
+                    filter_out_n: true,
+                })
+                .collect::<Vec<_>>(),
+        )
     } else {
         None
     };
@@ -476,19 +482,27 @@ pub fn sketch_files(
                                         panic!("{sample_name} has no valid sequence");
                                     }
                                     // Run the sketching
-                                    Sketch::new(&mut **hash_it, &sample_name, k, sketch_size, rc, min_count)
+                                    Sketch::new(
+                                        &mut **hash_it,
+                                        &sample_name,
+                                        k,
+                                        sketch_size,
+                                        rc,
+                                        min_count,
+                                    )
                                 })
                                 .collect::<Vec<Sketch>>()
                         }
                         HashType::DNA => {
                             // Note that we must not pass as reference the sketchers, as those might be used simultaneously by several parallel threads,
                             // and we might be processing reads and assemblies mixed!
-                            let (reads, mut sketches_simd) = sketch_with_simd(fastxvec, min_qual, est_coverage, sketchers.clone().unwrap());
-                            vec![Sketch::from_sketch_simd(
-                                &mut sketches_simd, 
-                                &name.to_string(), 
-                                reads
-                            )]
+                            let (reads, sketches_simd) = sketch_with_simd(
+                                fastxvec,
+                                min_qual,
+                                est_coverage,
+                                sketchers.as_ref().unwrap(),
+                            );
+                            vec![Sketch::from_sketch_simd(sketches_simd, name, reads)]
                         }
                     }
                 })
