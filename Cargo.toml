@@ -63,9 +63,13 @@ num_cpus = "1.0"
 
 #### TEMP
 simd-sketch = {git = "https://github.com/vrbouza/simd-sketch", branch = "simd64realWithNambInSIMD"}
+#simd-sketch = { path = "../simd-sketch" }
 packed-seq = {version = "4.1.0", features = ["file_io"] }
 
 #### TEMP
+
+[patch.crates-io]
+packed-seq = { git = "https://github.com/vrbouza/packed-seq.git", branch = "wasmsimd" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # data structures
