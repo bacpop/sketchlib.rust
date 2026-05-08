@@ -67,7 +67,7 @@ impl RollHash for NtHashIterator {
     }
 
     fn seq_len(&self) -> usize {
-        self.seq.len()
+        self.acgt.iter().sum()
     }
 
     fn seq(&self) -> &Vec<u8> {
@@ -234,7 +234,9 @@ impl NtHashIterator {
         }
 
         if i != 0 {
-            seq.push(b);
+            // Left-align the partial byte so bases are at the MSB positions,
+            // matching the layout of full bytes and the unpack_byte function.
+            seq.push(b << ((3 - i) * 2));
         }
     }
 
@@ -324,7 +326,7 @@ impl NtHashIterator {
             return None;
         }
 
-        if start >= (self.seq_len() - self.k) {
+        if start + self.k > self.seq_len() {
             // No valid k-mer left
             return None;
         }
@@ -333,27 +335,26 @@ impl NtHashIterator {
         let byterange_start = start / 4;
         let byterange_end = end / 4;
         let base_start = start % 4;
-        let base_end = end % 4 + 4 * (byterange_end - byterange_start);
 
-        let mut bases = self.seq[byterange_start..=byterange_end].iter();
-        let mut curr_byte = 0;
+        // Pre-shift first byte so the target start position is at the MSB
+        let mut curr_byte = self.seq[byterange_start] << (base_start * 2);
+        let mut byte_idx = byterange_start;
         let mut rev_bases = Vec::with_capacity(self.k);
-        for base_idx in 0..=base_end {
-            if base_idx % 4 == 0 {
-                curr_byte = *(bases.next().unwrap());
+
+        for hash_idx in 0..self.k {
+            let byte_pos = (start + hash_idx) / 4;
+            if byte_pos != byte_idx {
+                byte_idx = byte_pos;
+                curr_byte = self.seq[byte_idx];
             }
             let base = (curr_byte & 0b11_00_00_00) >> 6;
-            // Store parsed bases for rc_hash below
             if self.rc {
                 rev_bases.push(base);
             }
             curr_byte <<= 2;
-            if base_idx > base_start {
-                // hash
-                self.fh = self.fh.rotate_left(1_u32);
-                self.fh = swapbits033(self.fh);
-                self.fh ^= nthash_tables::HASH_LOOKUP[base as usize];
-            }
+            self.fh = self.fh.rotate_left(1_u32);
+            self.fh = swapbits033(self.fh);
+            self.fh ^= nthash_tables::HASH_LOOKUP[base as usize];
         }
 
         self.rh = if self.rc {
@@ -395,6 +396,56 @@ impl NtHashIterator {
             self.rh = Some(h);
         };
     }
+
+    #[cfg(test)]
+    fn from_seq(seq_str: &str, k: usize, rc: bool) -> Self {
+        let mut seq: Vec<u8> = Vec::new();
+        let mut offsets: Vec<usize> = Vec::new();
+        let mut acgt = [0usize; 4];
+        let mut non_acgt = 0usize;
+        let mut b: u8 = 0;
+        let mut i: usize = 0;
+
+        for ch in seq_str.bytes() {
+            if valid_base(ch) {
+                let e = encode_base(ch);
+                acgt[e as usize] += 1;
+                b |= e;
+                i += 1;
+                if i > 3 {
+                    i = 0;
+                    seq.push(b);
+                    b = 0;
+                } else {
+                    b <<= 2;
+                }
+            } else {
+                non_acgt += 1;
+                offsets.push(seq.len() * 4 + i);
+            }
+        }
+        offsets.push(seq.len() * 4 + i); // end-of-record sentinel
+        if i != 0 {
+            seq.push(b << ((3 - i) * 2));
+        }
+
+        let mut hash_it = Self {
+            k: 0,
+            rc,
+            fh: 0,
+            rh: None,
+            index: 0,
+            front_unpacked: [0; 4],
+            back_unpacked: [0; 4],
+            seq,
+            offsets: offsets.into_iter().peekable(),
+            acgt,
+            non_acgt,
+            reads: false,
+        };
+        hash_it.set_k(k);
+        hash_it
+    }
 }
 
 impl Iterator for NtHashIterator {
@@ -406,24 +457,27 @@ impl Iterator for NtHashIterator {
                 // Get the current hash to return
                 let current = self.curr_hash();
 
-                // Calculate the next hash, which will be returned on the next call
-                let new_base = self.front_unpacked[self.index % 4];
-                let old_base = self.back_unpacked[((self.index + 1) - self.k) % 4];
-                self.roll_fwd(old_base, new_base);
-
-                // Move to the next valid base, which prepares for the next call to
-                // calculate the next hash, which will be returned in two calls time
-                self.index += 1;
-                if self.index == *(self.offsets.peek().unwrap()) && self.next_iterator(self.index).is_none() {
-                    self.index = self.seq_len();
-                }
-                // Moved to a new byte at the front - update front_unpacked
-                if self.index.is_multiple_of(4) {
-                    self.front_unpacked = unpack_byte(self.seq[self.index / 4]);
-                }
-                // Moved to a new byte at the back - update back_unpacked
-                if (self.index - self.k + 1).is_multiple_of(4) {
-                    self.back_unpacked = unpack_byte(self.seq[(self.index - self.k + 1) % 4]);
+                // If the next base is an offset (N or record boundary), reinitialize
+                // from that position rather than rolling forward (which would corrupt
+                // the pre-computed hash for the k-mer we're about to return).
+                if self.index == *(self.offsets.peek().unwrap()) {
+                    if self.next_iterator(self.index).is_none() {
+                        self.index = self.seq_len();
+                    }
+                } else {
+                    // Roll forward to compute the hash for the next k-mer
+                    let new_base = self.front_unpacked[self.index % 4];
+                    let old_base = self.back_unpacked[(self.index - self.k) % 4];
+                    self.roll_fwd(old_base, new_base);
+                    self.index += 1;
+                    // Moved to a new byte at the front - update front_unpacked
+                    if self.index.is_multiple_of(4) && self.index < self.seq_len() {
+                        self.front_unpacked = unpack_byte(self.seq[self.index / 4]);
+                    }
+                    // Moved to a new byte at the back - update back_unpacked
+                    if (self.index - self.k + 1).is_multiple_of(4) {
+                        self.back_unpacked = unpack_byte(self.seq[(self.index - self.k + 1) / 4]);
+                    }
                 }
 
                 Some(current)
@@ -438,5 +492,135 @@ impl Iterator for NtHashIterator {
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::nthash_tables;
+
+    fn ref_new_iterator(
+        mut start: usize,
+        seq: &[u8],
+        k: usize,
+        rc: bool,
+    ) -> Option<(u64, Option<u64>, usize)> {
+        let mut fh = 0_u64;
+        'outer: while start + k <= seq.len() {
+            for (i, v) in seq[start..(start + k)].iter().enumerate() {
+                if *v > 3 {
+                    start += i + 1;
+                    fh = 0;
+                    continue 'outer;
+                }
+                fh = fh.rotate_left(1);
+                fh = swapbits033(fh);
+                fh ^= nthash_tables::HASH_LOOKUP[*v as usize];
+            }
+            break 'outer;
+        }
+        if start + k > seq.len() {
+            return None;
+        }
+        let rh = if rc {
+            let mut h = 0_u64;
+            for v in seq[start..(start + k)].iter().rev() {
+                h = h.rotate_left(1);
+                h = swapbits033(h);
+                h ^= nthash_tables::RC_HASH_LOOKUP[*v as usize];
+            }
+            Some(h)
+        } else {
+            None
+        };
+        Some((fh, rh, start + k))
+    }
+
+    fn ref_roll_fwd(fh: &mut u64, rh: &mut Option<u64>, old_base: u8, new_base: u8, k: usize) {
+        *fh = fh.rotate_left(1);
+        *fh = swapbits033(*fh);
+        *fh ^= nthash_tables::HASH_LOOKUP[new_base as usize];
+        *fh ^= nthash_tables::MS_TAB_31L[(old_base as usize * 31) + (k % 31)]
+            | nthash_tables::MS_TAB_33R[(old_base as usize) * 33 + (k % 33)];
+        if let Some(rev) = rh {
+            let mut h = *rev
+                ^ (nthash_tables::MS_TAB_31L[(rc_base(new_base) as usize * 31) + (k % 31)]
+                    | nthash_tables::MS_TAB_33R[(rc_base(new_base) as usize) * 33 + (k % 33)]);
+            h ^= nthash_tables::RC_HASH_LOOKUP[old_base as usize];
+            h = h.rotate_right(1);
+            h = swapbits3263(h);
+            *rh = Some(h);
+        }
+    }
+
+    fn ref_hashes(seq_str: &str, k: usize, rc: bool) -> Vec<u64> {
+        let mut seq: Vec<u8> = seq_str
+            .bytes()
+            .map(|b| if valid_base(b) { encode_base(b) } else { SEQSEP })
+            .collect();
+        seq.push(SEQSEP); // end-of-record sentinel
+        let seq_len = seq.len() - 1;
+        let mut out = Vec::new();
+        let Some((mut fh, mut rh, mut index)) = ref_new_iterator(0, &seq, k, rc) else {
+            return out;
+        };
+        let canonical = |fh: u64, rh: Option<u64>| rh.map_or(fh, |r| u64::min(fh, r));
+        loop {
+            match index.cmp(&seq_len) {
+                std::cmp::Ordering::Less => {
+                    out.push(canonical(fh, rh));
+                    let nb = seq[index];
+                    if nb > 3 {
+                        match ref_new_iterator(index + 1, &seq, k, rc) {
+                            Some((f, r, i)) => {
+                                fh = f;
+                                rh = r;
+                                index = i;
+                            }
+                            None => break,
+                        }
+                    } else {
+                        ref_roll_fwd(&mut fh, &mut rh, seq[index - k], nb, k);
+                        index += 1;
+                    }
+                }
+                std::cmp::Ordering::Equal => {
+                    out.push(canonical(fh, rh));
+                    break;
+                }
+                std::cmp::Ordering::Greater => break,
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn nthash_bitpacked_matches_reference_no_n() {
+        let seq = "ACGTACGTACGT";
+        let k = 4;
+        let expected = ref_hashes(seq, k, false);
+        assert!(!expected.is_empty());
+        let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, false).collect();
+        assert_eq!(actual, expected, "k={k} forward hashes differ");
+    }
+
+    #[test]
+    fn nthash_bitpacked_matches_reference_with_n() {
+        let seq = "ACGTANACGT";
+        let k = 4;
+        let expected = ref_hashes(seq, k, false);
+        assert!(!expected.is_empty());
+        let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, false).collect();
+        assert_eq!(actual, expected, "k={k} hashes with N differ");
+    }
+
+    #[test]
+    fn nthash_bitpacked_matches_reference_rc() {
+        let seq = "ACGTACGTACGT";
+        let k = 4;
+        let expected = ref_hashes(seq, k, true);
+        let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, true).collect();
+        assert_eq!(actual, expected, "k={k} RC hashes differ");
     }
 }
