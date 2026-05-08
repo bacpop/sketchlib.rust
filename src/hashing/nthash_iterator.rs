@@ -17,8 +17,8 @@ use super::*;
 
 fn unpack_byte(mut byte_packed: u8) -> [u8; 4] {
     let mut out = [0; 4];
-    for i in 0..4 {
-        out[i] = (byte_packed & 0b11_00_00_00) >> 6;
+    for byte_val in &mut out {
+        *byte_val = (byte_packed & 0b11_00_00_00) >> 6;
         byte_packed <<= 2;
     }
     out
@@ -32,7 +32,9 @@ pub struct NtHashIterator {
     fh: u64,
     rh: Option<u64>,
     index: usize,
+    // Bases at the front of the k-mer
     front_unpacked: [u8; 4],
+    // Bases at the end of the k-mer
     back_unpacked: [u8; 4],
     seq: Vec<u8>,
     offsets: std::iter::Peekable<std::vec::IntoIter<usize>>,
@@ -201,7 +203,9 @@ impl NtHashIterator {
         let mut reader =
             parse_fastx_file(filename).unwrap_or_else(|_| panic!("Invalid path/file: {filename}"));
 
+        // Current byte
         let mut b = 0;
+        // Nucleotide index within byte 0-3
         let mut i = 0;
 
         while let Some(record) = reader.next() {
@@ -307,7 +311,7 @@ impl NtHashIterator {
                 start = current_offset;
                 end = start + self.k;
 
-                while let Some(next_offset) = self.offsets.next() {
+                for next_offset in self.offsets.by_ref() {
                     if next_offset >= end {
                         break;
                     }
@@ -404,29 +408,21 @@ impl Iterator for NtHashIterator {
 
                 // Calculate the next hash, which will be returned on the next call
                 let new_base = self.front_unpacked[self.index % 4];
-                //println!(
-                //"self.index = {}, self.k = {}, self.index + 1 = {}",
-                //self.index,
-                //self.k,
-                //self.index + 1,
-                //);
                 let old_base = self.back_unpacked[((self.index + 1) - self.k) % 4];
                 self.roll_fwd(old_base, new_base);
 
                 // Move to the next valid base, which prepares for the next call to
                 // calculate the next hash, which will be returned in two calls time
                 self.index += 1;
-                if self.index == *(self.offsets.peek().unwrap()) {
-                    if self.next_iterator(self.index).is_none() {
-                        self.index = self.seq_len();
-                    }
+                if self.index == *(self.offsets.peek().unwrap()) && self.next_iterator(self.index).is_none() {
+                    self.index = self.seq_len();
                 }
                 // Moved to a new byte at the front - update front_unpacked
-                if self.index % 4 == 0 {
+                if self.index.is_multiple_of(4) {
                     self.front_unpacked = unpack_byte(self.seq[self.index / 4]);
                 }
                 // Moved to a new byte at the back - update back_unpacked
-                if (self.index - self.k + 1) % 4 == 0 {
+                if (self.index - self.k + 1).is_multiple_of(4) {
                     self.back_unpacked = unpack_byte(self.seq[(self.index - self.k + 1) % 4]);
                 }
 
