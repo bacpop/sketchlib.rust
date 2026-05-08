@@ -463,7 +463,11 @@ impl Iterator for NtHashIterator {
                 // If the next base is an offset (N or record boundary), reinitialize
                 // from that position rather than rolling forward (which would corrupt
                 // the pre-computed hash for the k-mer we're about to return).
-                if self.offsets.get(self.offset_idx).map_or(false, |&off| self.index == off) {
+                if self
+                    .offsets
+                    .get(self.offset_idx)
+                    .is_some_and(|&off| self.index == off)
+                {
                     if self.next_iterator(self.index).is_none() {
                         // next_iterator reset fh to 0; skip Equal (which would emit a
                         // spurious zero hash) and jump straight to Greater.
@@ -504,8 +508,8 @@ impl Iterator for NtHashIterator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::nthash_tables;
+    use super::*;
 
     fn ref_new_iterator(
         mut start: usize,
@@ -564,7 +568,13 @@ mod tests {
     fn ref_hashes(seq_str: &str, k: usize, rc: bool) -> Vec<u64> {
         let mut seq: Vec<u8> = seq_str
             .bytes()
-            .map(|b| if valid_base(b) { encode_base(b) } else { SEQSEP })
+            .map(|b| {
+                if valid_base(b) {
+                    encode_base(b)
+                } else {
+                    SEQSEP
+                }
+            })
             .collect();
         seq.push(SEQSEP); // end-of-record sentinel
         let seq_len = seq.len() - 1;
@@ -623,8 +633,16 @@ mod tests {
         it.set_k(7);
         let hashes_k7: Vec<u64> = it.by_ref().collect();
         assert_eq!(hashes_k3, ref_hashes(seq, 3, true), "k=3 hashes wrong");
-        assert_eq!(hashes_k5, ref_hashes(seq, 5, true), "k=5 hashes wrong after set_k(5)");
-        assert_eq!(hashes_k7, ref_hashes(seq, 7, true), "k=7 hashes wrong after set_k(7)");
+        assert_eq!(
+            hashes_k5,
+            ref_hashes(seq, 5, true),
+            "k=5 hashes wrong after set_k(5)"
+        );
+        assert_eq!(
+            hashes_k7,
+            ref_hashes(seq, 7, true),
+            "k=7 hashes wrong after set_k(7)"
+        );
     }
 
     #[test]
@@ -664,7 +682,11 @@ mod tests {
         for k in [4usize, 5] {
             let expected = ref_hashes(seq, k, true);
             let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, true).collect();
-            assert_eq!(actual.len(), expected.len(), "spurious hash count for k={k}");
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "spurious hash count for k={k}"
+            );
             assert_eq!(actual, expected, "spurious hash value for k={k}");
         }
     }
