@@ -300,6 +300,144 @@ unsafe fn jaccard_packed_avx2_unroll2_inner(a: &[u64], b: &[u64]) -> u32 {
     total
 }
 
+/// AVX-512F packed u64: 512-bit registers → 8 u64 per load, 2 loads per chunk.
+/// Depth-1 OR tree. Falls back to AVX2 or scalar if not available.
+/// vpternlogq imm8=0x01 = NOR(a,b,c): NOT(a OR b OR c) — combines OR+NOT in one op.
+#[cfg(target_arch = "x86_64")]
+fn jaccard_packed_avx512(a: &[u64], b: &[u64]) -> u32 {
+    if is_x86_feature_detected!("avx512f") {
+        unsafe { jaccard_packed_avx512_inner(a, b) }
+    } else if is_x86_feature_detected!("avx2") {
+        unsafe { jaccard_packed_avx2_inner(a, b) }
+    } else {
+        jaccard_packed_u64(a, b)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,popcnt")]
+unsafe fn jaccard_packed_avx512_inner(a: &[u64], b: &[u64]) -> u32 {
+    use std::arch::x86_64::*;
+    // BBITS=16 u64 per chunk, 8 u64 per zmm → 2 registers per array per chunk.
+    let n_chunks = a.len() / (BBITS as usize);
+    let mut total = 0u32;
+    for i in 0..n_chunks {
+        let base = i * BBITS as usize;
+        let ap = a.as_ptr().add(base) as *const __m512i;
+        let bp = b.as_ptr().add(base) as *const __m512i;
+        let a0 = _mm512_loadu_si512(ap);
+        let a1 = _mm512_loadu_si512(ap.add(1));
+        let b0 = _mm512_loadu_si512(bp);
+        let b1 = _mm512_loadu_si512(bp.add(1));
+        let x0 = _mm512_xor_si512(a0, b0);
+        let x1 = _mm512_xor_si512(a1, b1);
+        // vpternlogq(d, a, b, 0xFE) = a OR b OR d  (0xFE = 0b11111110)
+        // Here we use it as OR(x0, x1) via ternary; but simpler to just vpord:
+        let or_all = _mm512_or_si512(x0, x1);
+        // NOT: XOR with all-ones (no vpnotq; vpternlogq with 0x0F NOT's first arg)
+        // vpternlogq(d, a, b, imm) with imm=0x0F: result = NOT(d), ignores a,b
+        let not_or = _mm512_ternarylogic_epi64(or_all, or_all, or_all, 0x0F);
+        // Fold 512 → 256 → 128 → 64 using AND, then scalar popcnt
+        let hi256 = _mm512_extracti64x4_epi64(not_or, 1);
+        let lo256 = _mm512_castsi512_si256(not_or);
+        let r256 = _mm256_and_si256(lo256, hi256);
+        let hi128 = _mm256_extracti128_si256(r256, 1);
+        let lo128 = _mm256_castsi256_si128(r256);
+        let r128 = _mm_and_si128(lo128, hi128);
+        let hi64 = _mm_unpackhi_epi64(r128, r128);
+        let r64 = _mm_and_si128(r128, hi64);
+        total += (_mm_cvtsi128_si64(r64) as u64).count_ones();
+    }
+    total
+}
+
+/// AVX-512 + VPOPCNTDQ packed u64: uses _mm512_popcnt_epi64 for native per-lane popcount.
+/// Eliminates the fold-to-scalar sequence entirely.
+#[cfg(target_arch = "x86_64")]
+fn jaccard_packed_avx512_vpop(a: &[u64], b: &[u64]) -> u32 {
+    if is_x86_feature_detected!("avx512f")
+        && is_x86_feature_detected!("avx512vpopcntdq")
+    {
+        unsafe { jaccard_packed_avx512_vpop_inner(a, b) }
+    } else {
+        jaccard_packed_avx512(a, b)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512vpopcntdq")]
+unsafe fn jaccard_packed_avx512_vpop_inner(a: &[u64], b: &[u64]) -> u32 {
+    use std::arch::x86_64::*;
+    let n_chunks = a.len() / (BBITS as usize);
+    let mut vacc = _mm512_setzero_si512(); // accumulate popcnt results as u64
+    for i in 0..n_chunks {
+        let base = i * BBITS as usize;
+        let ap = a.as_ptr().add(base) as *const __m512i;
+        let bp = b.as_ptr().add(base) as *const __m512i;
+        let a0 = _mm512_loadu_si512(ap);
+        let a1 = _mm512_loadu_si512(ap.add(1));
+        let b0 = _mm512_loadu_si512(bp);
+        let b1 = _mm512_loadu_si512(bp.add(1));
+        let x0 = _mm512_xor_si512(a0, b0);
+        let x1 = _mm512_xor_si512(a1, b1);
+        let or_all = _mm512_or_si512(x0, x1);
+        // NOT via vpternlogq with imm=0x0F
+        let not_or = _mm512_ternarylogic_epi64(or_all, or_all, or_all, 0x0F);
+        // Native 8-wide 64-bit popcount: each u64 lane → popcount → u64
+        let pops = _mm512_popcnt_epi64(not_or);
+        vacc = _mm512_add_epi64(vacc, pops);
+    }
+    // Horizontal sum of 8 u64 lanes
+    _mm512_reduce_add_epi64(vacc) as u32
+}
+
+/// AVX-512 u16: 32 pairs per register (vs 16 for AVX2). u16×32 accumulator.
+#[cfg(target_arch = "x86_64")]
+fn jaccard_u16_avx512(a: &[u16], b: &[u16]) -> u32 {
+    if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+        unsafe { jaccard_u16_avx512_inner(a, b) }
+    } else if is_x86_feature_detected!("avx2") {
+        unsafe { jaccard_u16_avx2_inner(a, b) }
+    } else {
+        a.iter().zip(b.iter()).map(|(x, y)| (x == y) as u32).sum()
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn jaccard_u16_avx512_inner(a: &[u16], b: &[u16]) -> u32 {
+    use std::arch::x86_64::*;
+    let n = a.len();
+    // Production: n = sketchsize64 × 64, always a multiple of 64 ≥ 32.
+    debug_assert_eq!(n % 32, 0, "u16 length must be multiple of 32 for AVX-512");
+    let n32 = n / 32;
+    // u16×32 accumulator. Max per lane per iter = 1. For sketch_size=10000:
+    // n32 ≤ 157*2 = 314 → max 314 per lane ≪ 65535. ✓
+    let mut vacc = _mm512_setzero_si512();
+    for i in 0..n32 {
+        let ap = a.as_ptr().add(i * 32) as *const __m512i;
+        let bp = b.as_ptr().add(i * 32) as *const __m512i;
+        let va = _mm512_loadu_si512(ap);
+        let vb = _mm512_loadu_si512(bp);
+        // vpcmpeqw → mask (k-register on AVX-512BW); convert to 0/1 per lane
+        let eq_mask = _mm512_cmpeq_epi16_mask(va, vb); // __mmask32
+        // Expand mask to u16 lanes (0xFFFF where equal, 0 otherwise) then shift
+        let eq_vec = _mm512_maskz_set1_epi16(eq_mask, 1i16);
+        vacc = _mm512_add_epi16(vacc, eq_vec);
+    }
+    // Horizontal reduce: fold 512 → 256 → 128, then hadd
+    let hi256 = _mm512_extracti64x4_epi64(vacc, 1);
+    let lo256 = _mm512_castsi512_si256(vacc);
+    let sum256 = _mm256_add_epi16(lo256, hi256);
+    let hi128 = _mm256_extracti128_si256(sum256, 1);
+    let lo128 = _mm256_castsi256_si128(sum256);
+    let sum128 = _mm_add_epi16(lo128, hi128);
+    let s1 = _mm_hadd_epi16(sum128, sum128);
+    let s2 = _mm_hadd_epi16(s1, s1);
+    let s3 = _mm_hadd_epi16(s2, s2);
+    (_mm_cvtsi128_si32(s3) & 0xFFFF) as u32
+}
+
 /// AVX2 u16: compare 32 u16 pairs per iteration with u16×16 accumulator.
 /// Counts EQUAL pairs. Requires SSSE3 for the final hadd-based reduction.
 #[cfg(target_arch = "x86_64")]
@@ -417,7 +555,10 @@ fn bench_jaccard(c: &mut Criterion) {
         {
             assert_eq!(jaccard_packed_avx2(&usigs1, &usigs2), ref_count, "avx2 mismatch");
             assert_eq!(jaccard_packed_avx2_unroll2(&usigs1, &usigs2), ref_count, "avx2_unroll2 mismatch");
+            assert_eq!(jaccard_packed_avx512(&usigs1, &usigs2), ref_count, "avx512 mismatch");
+            assert_eq!(jaccard_packed_avx512_vpop(&usigs1, &usigs2), ref_count, "avx512_vpop mismatch");
             assert_eq!(jaccard_u16_avx2(&signs1_u16, &signs2_u16), _u16_ref, "u16_avx2 mismatch");
+            assert_eq!(jaccard_u16_avx512(&signs1_u16, &signs2_u16), _u16_ref, "u16_avx512 mismatch");
         }
 
         // ── packed_u64 variants ───────────────────────────────────────────────
@@ -469,6 +610,28 @@ fn bench_jaccard(c: &mut Criterion) {
             BenchmarkId::new("avx2_packed_unroll2", sketch_size),
             &sketch_size,
             |b, _| b.iter(|| jaccard_packed_avx2_unroll2(black_box(&usigs1), black_box(&usigs2))),
+        );
+
+        // ── AVX-512 packed_u64 variants ───────────────────────────────────────
+        #[cfg(target_arch = "x86_64")]
+        group.bench_with_input(
+            BenchmarkId::new("avx512_packed", sketch_size),
+            &sketch_size,
+            |b, _| b.iter(|| jaccard_packed_avx512(black_box(&usigs1), black_box(&usigs2))),
+        );
+        #[cfg(target_arch = "x86_64")]
+        group.bench_with_input(
+            BenchmarkId::new("avx512_packed_vpop", sketch_size),
+            &sketch_size,
+            |b, _| b.iter(|| jaccard_packed_avx512_vpop(black_box(&usigs1), black_box(&usigs2))),
+        );
+
+        // ── AVX-512 u16 ───────────────────────────────────────────────────────
+        #[cfg(target_arch = "x86_64")]
+        group.bench_with_input(
+            BenchmarkId::new("u16_avx512", sketch_size),
+            &sketch_size,
+            |b, _| b.iter(|| jaccard_u16_avx512(black_box(&signs1_u16), black_box(&signs2_u16))),
         );
 
         // ── u16 variants ──────────────────────────────────────────────────────
