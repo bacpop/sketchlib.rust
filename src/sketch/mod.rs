@@ -31,7 +31,7 @@ pub mod sketch_datafile;
 use self::sketch_datafile::SketchArrayWriter;
 
 /// Bin bits (lowest of 64-bits to keep)
-pub const BBITS: u64 = 14;
+pub const BBITS: u64 = 16;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 
@@ -212,7 +212,8 @@ impl Sketch {
         (x & (1_u64 << pos)) >> pos
     }
 
-    fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
+    /// Transpose raw signs into the bit-packed usigs representation used by [`crate::distances::jaccard::jaccard_index`]
+    pub fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
         for (sign_index, sign) in signs.iter().enumerate() {
             let leftshift = sign_index % (u64::BITS as usize);
             for i in 0..BBITS {
