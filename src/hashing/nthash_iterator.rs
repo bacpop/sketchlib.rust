@@ -36,9 +36,9 @@ pub struct NtHashIterator {
     front_unpacked: [u8; 4],
     // Bases at the end of the k-mer
     back_unpacked: [u8; 4],
+    // Bitpacked seq
     seq: Vec<u8>,
     // Nucleotide positions of N's and record boundaries (monotonically increasing).
-    // Stored as a plain Vec so it can be rewound when set_k() restarts from 0.
     offsets: Vec<usize>,
     // Index into `offsets` for the current k-value pass; reset by set_k().
     offset_idx: usize,
@@ -126,7 +126,7 @@ impl NtHashIterator {
         }
 
         let mut hash_it = Self {
-            k: 0, // this should be changed to an Option<usize>
+            k: 0, // TODO neater if an Option<usize> rather than using 0 as a guard
             rc,
             fh: 0,
             rh: None,
@@ -399,6 +399,7 @@ impl NtHashIterator {
         };
     }
 
+    // Helper function to generate iterator from sequence string in tests
     #[cfg(test)]
     fn from_seq(seq_str: &str, k: usize, rc: bool) -> Self {
         let mut seq: Vec<u8> = Vec::new();
@@ -511,6 +512,9 @@ mod tests {
     use super::super::nthash_tables;
     use super::*;
 
+    // These are reference implementations for how the rolling works in ntHash, and
+    // in v0.2.4 of sketchlib. The bitpacking is quite tricky, so this is essentially
+    // an internal consistency test which could be removed in future versions
     fn ref_new_iterator(
         mut start: usize,
         seq: &[u8],
