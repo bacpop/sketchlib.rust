@@ -37,7 +37,11 @@ pub struct NtHashIterator {
     // Bases at the end of the k-mer
     back_unpacked: [u8; 4],
     seq: Vec<u8>,
-    offsets: std::iter::Peekable<std::vec::IntoIter<usize>>,
+    // Nucleotide positions of N's and record boundaries (monotonically increasing).
+    // Stored as a plain Vec so it can be rewound when set_k() restarts from 0.
+    offsets: Vec<usize>,
+    // Index into `offsets` for the current k-value pass; reset by set_k().
+    offset_idx: usize,
     acgt: [usize; 4],
     non_acgt: usize,
     reads: bool,
@@ -47,6 +51,7 @@ impl RollHash for NtHashIterator {
     fn set_k(&mut self, k: usize) {
         if k != self.k {
             self.k = k;
+            self.offset_idx = 0; // rewind: offsets must be re-traversed for each k
             if self.next_iterator(0).is_none() {
                 panic!("K-mer larger than smallest valid sequence");
             }
@@ -129,7 +134,8 @@ impl NtHashIterator {
             front_unpacked: [0; 4],
             back_unpacked: [0; 4],
             seq,
-            offsets: offsets.into_iter().peekable(),
+            offsets,
+            offset_idx: 0,
             acgt,
             non_acgt,
             reads,
@@ -307,23 +313,19 @@ impl NtHashIterator {
         let mut end = start + self.k;
 
         // Find next offset from start
-        if let Some(&current_offset) = self.offsets.peek() {
-            // Not sure if >= start is needed - playing it safe for now
-            if current_offset >= start && current_offset < end {
-                start = current_offset;
-                end = start + self.k;
-
-                for next_offset in self.offsets.by_ref() {
-                    if next_offset >= end {
-                        break;
-                    }
-                    start = next_offset;
-                    end = start + self.k;
-                }
-            }
-        } else {
+        if self.offset_idx >= self.offsets.len() {
             // Already past end of sequence before call
             return None;
+        }
+        // Advance past offsets that fall within the current window, moving start
+        // past each N/boundary until we find a window with no offset inside it.
+        while let Some(&current_offset) = self.offsets.get(self.offset_idx) {
+            if current_offset < start || current_offset >= end {
+                break;
+            }
+            self.offset_idx += 1;
+            start = current_offset;
+            end = start + self.k;
         }
 
         if start + self.k > self.seq_len() {
@@ -438,7 +440,8 @@ impl NtHashIterator {
             front_unpacked: [0; 4],
             back_unpacked: [0; 4],
             seq,
-            offsets: offsets.into_iter().peekable(),
+            offsets,
+            offset_idx: 0,
             acgt,
             non_acgt,
             reads: false,
@@ -460,9 +463,11 @@ impl Iterator for NtHashIterator {
                 // If the next base is an offset (N or record boundary), reinitialize
                 // from that position rather than rolling forward (which would corrupt
                 // the pre-computed hash for the k-mer we're about to return).
-                if self.index == *(self.offsets.peek().unwrap()) {
+                if self.offsets.get(self.offset_idx).map_or(false, |&off| self.index == off) {
                     if self.next_iterator(self.index).is_none() {
-                        self.index = self.seq_len();
+                        // next_iterator reset fh to 0; skip Equal (which would emit a
+                        // spurious zero hash) and jump straight to Greater.
+                        self.index = self.seq_len() + 1;
                     }
                 } else {
                     // Roll forward to compute the hash for the next k-mer
@@ -474,9 +479,11 @@ impl Iterator for NtHashIterator {
                     if self.index.is_multiple_of(4) && self.index < self.seq_len() {
                         self.front_unpacked = unpack_byte(self.seq[self.index / 4]);
                     }
-                    // Moved to a new byte at the back - update back_unpacked
-                    if (self.index - self.k + 1).is_multiple_of(4) {
-                        self.back_unpacked = unpack_byte(self.seq[(self.index - self.k + 1) / 4]);
+                    // Moved to a new byte at the back - update back_unpacked.
+                    // old_base for the next roll is at position index-k; reload when that
+                    // position is the first base of a new packed byte.
+                    if (self.index - self.k).is_multiple_of(4) {
+                        self.back_unpacked = unpack_byte(self.seq[(self.index - self.k) / 4]);
                     }
                 }
 
@@ -596,6 +603,49 @@ mod tests {
     }
 
     #[test]
+    /// set_k() must rewind the offsets so multiple k values each see all N positions.
+    /// This is the key multi-k regression: the sketch command calls set_k() once per k value
+    /// using the same iterator, so offsets must not be consumed across k-value passes.
+    fn nthash_bitpacked_offsets_rewind_across_k_values() {
+        // All three segments are ≥ 7 bases so every k value has valid k-mers.
+        let seq = "ACGTACGTANACGTACGTNNTACGTACGT";
+        for k in [3usize, 5, 7] {
+            let expected = ref_hashes(seq, k, true);
+            let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, true).collect();
+            assert_eq!(actual.len(), expected.len(), "count mismatch at k={k}");
+            assert_eq!(actual, expected, "hash mismatch at k={k}");
+        }
+        // Simulate the sketch command: one iterator, multiple set_k calls in sequence.
+        let mut it = NtHashIterator::from_seq(seq, 3, true);
+        let hashes_k3: Vec<u64> = it.by_ref().collect();
+        it.set_k(5);
+        let hashes_k5: Vec<u64> = it.by_ref().collect();
+        it.set_k(7);
+        let hashes_k7: Vec<u64> = it.by_ref().collect();
+        assert_eq!(hashes_k3, ref_hashes(seq, 3, true), "k=3 hashes wrong");
+        assert_eq!(hashes_k5, ref_hashes(seq, 5, true), "k=5 hashes wrong after set_k(5)");
+        assert_eq!(hashes_k7, ref_hashes(seq, 7, true), "k=7 hashes wrong after set_k(7)");
+    }
+
+    #[test]
+    fn nthash_bitpacked_matches_reference_50bp() {
+        // Use actual test sequences from distance test fixtures
+        let seq = "CTAGGGCCCTTTCCCGGATATAAACGCCAGGTTGAATCCGCATTTGGAGG";
+        for k in [3usize, 17, 31] {
+            let expected = ref_hashes(seq, k, true);
+            let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, true).collect();
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Hash count differs for k={k}: got {}, expected {}",
+                actual.len(),
+                expected.len()
+            );
+            assert_eq!(actual, expected, "Hashes differ for k={k}");
+        }
+    }
+
+    #[test]
     fn nthash_bitpacked_matches_reference_no_n() {
         let seq = "ACGTACGTACGT";
         let k = 4;
@@ -603,6 +653,20 @@ mod tests {
         assert!(!expected.is_empty());
         let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, false).collect();
         assert_eq!(actual, expected, "k={k} forward hashes differ");
+    }
+
+    #[test]
+    /// N within the last k-1 positions of a segment must not emit a spurious zero hash.
+    fn nthash_bitpacked_no_spurious_hash_after_terminal_n() {
+        // k=4: N at position 6 is within the last 3 positions of "ACGTACG" segment.
+        // A naive impl resets fh=0 then emits it via the Equal branch.
+        let seq = "ACGTACGNACGT";
+        for k in [4usize, 5] {
+            let expected = ref_hashes(seq, k, true);
+            let actual: Vec<u64> = NtHashIterator::from_seq(seq, k, true).collect();
+            assert_eq!(actual.len(), expected.len(), "spurious hash count for k={k}");
+            assert_eq!(actual, expected, "spurious hash value for k={k}");
+        }
     }
 
     #[test]
