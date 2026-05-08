@@ -351,45 +351,6 @@ unsafe fn jaccard_packed_avx512_inner(a: &[u64], b: &[u64]) -> u32 {
     total
 }
 
-/// AVX-512 + VPOPCNTDQ packed u64: uses _mm512_popcnt_epi64 for native per-lane popcount.
-/// Eliminates the fold-to-scalar sequence entirely.
-#[cfg(target_arch = "x86_64")]
-fn jaccard_packed_avx512_vpop(a: &[u64], b: &[u64]) -> u32 {
-    if is_x86_feature_detected!("avx512f")
-        && is_x86_feature_detected!("avx512vpopcntdq")
-    {
-        unsafe { jaccard_packed_avx512_vpop_inner(a, b) }
-    } else {
-        jaccard_packed_avx512(a, b)
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512vpopcntdq")]
-unsafe fn jaccard_packed_avx512_vpop_inner(a: &[u64], b: &[u64]) -> u32 {
-    use std::arch::x86_64::*;
-    let n_chunks = a.len() / (BBITS as usize);
-    let mut vacc = _mm512_setzero_si512(); // accumulate popcnt results as u64
-    for i in 0..n_chunks {
-        let base = i * BBITS as usize;
-        let ap = a.as_ptr().add(base) as *const __m512i;
-        let bp = b.as_ptr().add(base) as *const __m512i;
-        let a0 = _mm512_loadu_si512(ap);
-        let a1 = _mm512_loadu_si512(ap.add(1));
-        let b0 = _mm512_loadu_si512(bp);
-        let b1 = _mm512_loadu_si512(bp.add(1));
-        let x0 = _mm512_xor_si512(a0, b0);
-        let x1 = _mm512_xor_si512(a1, b1);
-        let or_all = _mm512_or_si512(x0, x1);
-        // NOT via vpternlogq with imm=0x0F
-        let not_or = _mm512_ternarylogic_epi64(or_all, or_all, or_all, 0x0F);
-        // Native 8-wide 64-bit popcount: each u64 lane → popcount → u64
-        let pops = _mm512_popcnt_epi64(not_or);
-        vacc = _mm512_add_epi64(vacc, pops);
-    }
-    // Horizontal sum of 8 u64 lanes
-    _mm512_reduce_add_epi64(vacc) as u32
-}
 
 /// AVX-512 u16: 32 pairs per register (vs 16 for AVX2). u16×32 accumulator.
 #[cfg(target_arch = "x86_64")]
@@ -556,7 +517,6 @@ fn bench_jaccard(c: &mut Criterion) {
             assert_eq!(jaccard_packed_avx2(&usigs1, &usigs2), ref_count, "avx2 mismatch");
             assert_eq!(jaccard_packed_avx2_unroll2(&usigs1, &usigs2), ref_count, "avx2_unroll2 mismatch");
             assert_eq!(jaccard_packed_avx512(&usigs1, &usigs2), ref_count, "avx512 mismatch");
-            assert_eq!(jaccard_packed_avx512_vpop(&usigs1, &usigs2), ref_count, "avx512_vpop mismatch");
             assert_eq!(jaccard_u16_avx2(&signs1_u16, &signs2_u16), _u16_ref, "u16_avx2 mismatch");
             assert_eq!(jaccard_u16_avx512(&signs1_u16, &signs2_u16), _u16_ref, "u16_avx512 mismatch");
         }
@@ -619,13 +579,6 @@ fn bench_jaccard(c: &mut Criterion) {
             &sketch_size,
             |b, _| b.iter(|| jaccard_packed_avx512(black_box(&usigs1), black_box(&usigs2))),
         );
-        #[cfg(target_arch = "x86_64")]
-        group.bench_with_input(
-            BenchmarkId::new("avx512_packed_vpop", sketch_size),
-            &sketch_size,
-            |b, _| b.iter(|| jaccard_packed_avx512_vpop(black_box(&usigs1), black_box(&usigs2))),
-        );
-
         // ── AVX-512 u16 ───────────────────────────────────────────────────────
         #[cfg(target_arch = "x86_64")]
         group.bench_with_input(
