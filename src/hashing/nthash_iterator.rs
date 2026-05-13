@@ -148,6 +148,7 @@ impl NtHashIterator {
     /// Creates a new ntHash iterator, by loading DNA sequences into memory. WASM version.
     pub fn new(
         files: (&web_sys::File, Option<&web_sys::File>),
+        k: usize,
         rc: bool,
         min_qual: u8,
     ) -> Vec<Self> {
@@ -180,8 +181,11 @@ impl NtHashIterator {
             fh: 0,
             rh: None,
             index: 0,
+            front_unpacked: [0; 4],
+            back_unpacked: [0; 4],
             seq: Vec::new(),
-            seq_len: 0,
+            offsets: Vec::new(),
+            offset_idx: 0,
             acgt: [0, 0, 0, 0],
             non_acgt: 0,
             reads: is_reads,
@@ -193,7 +197,7 @@ impl NtHashIterator {
         if let Some(fileobj) = files.1 {
             hash_it.add_dna_seq(fileobj, min_qual);
         }
-        hash_it.seq_len = hash_it.seq.len() - 1;
+        hash_it.set_k(k);
         vec![hash_it]
     }
 
@@ -270,39 +274,50 @@ impl NtHashIterator {
         }
 
         let mut filetoparse = WebSysFile::new(file.clone());
+        let mut b = 0;
+        let mut i = 0;
         if !is_reads {
             let mut reader = open_fasta(&mut filetoparse);
             while let Some(seqrec) = reader.next() {
                 for base in seqrec.expect("Invalid FASTA record").seq().iter() {
-                    if valid_base(*base) {
-                        let encoded_base = encode_base(*base);
-                        self.acgt[encoded_base as usize] += 1;
-                        self.seq.push(encoded_base)
-                    } else {
-                        self.non_acgt += 1;
-                        self.seq.push(SEQSEP);
-                    }
+                    self.pack_dna_base(*base, true, &mut b, &mut i);
                 }
+                self.offsets.push(self.seq.len() * 4 + i);
             }
         } else {
             let mut reader = open_fastq(&mut filetoparse);
             while let Some(seqrec) = reader.next() {
                 let rec = seqrec.expect("Invalid FASTQ record");
                 for (base, qual) in rec.seq().iter().zip(rec.qual()) {
-                    if *qual >= min_qual {
-                        if valid_base(*base) {
-                            let encoded_base = encode_base(*base);
-                            self.acgt[encoded_base as usize] += 1;
-                            self.seq.push(encoded_base)
-                        } else {
-                            self.non_acgt += 1;
-                            self.seq.push(SEQSEP);
-                        }
-                    } else {
-                        self.seq.push(SEQSEP);
-                    }
+                    self.pack_dna_base(*base, *qual >= min_qual, &mut b, &mut i);
                 }
+                self.offsets.push(self.seq.len() * 4 + i);
             }
+        }
+
+        if i != 0 {
+            self.seq.push(b << ((3 - i) * 2));
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn pack_dna_base(&mut self, base: u8, quality_ok: bool, b: &mut u8, i: &mut usize) {
+        if quality_ok && valid_base(base) {
+            let encoded_base = encode_base(base);
+            self.acgt[encoded_base as usize] += 1;
+            *b |= encoded_base;
+            *i += 1;
+
+            if *i > 3 {
+                *i = 0;
+                self.seq.push(*b);
+                *b = 0;
+            } else {
+                *b <<= 2;
+            }
+        } else {
+            self.non_acgt += 1;
+            self.offsets.push(self.seq.len() * 4 + *i);
         }
     }
 
