@@ -357,7 +357,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Build SKI+SKQ with reordered samples via --species-names
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -373,7 +373,7 @@ mod tests {
             .success();
 
         // Build standard SKD (different sample order)
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -391,7 +391,7 @@ mod tests {
         setup_reordered_precluster(&sandbox);
 
         // Run preclustering with different SKI vs SKD orderings
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -412,7 +412,7 @@ mod tests {
         let sandbox = TestSetup::setup();
         setup_reordered_precluster(&sandbox);
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -435,7 +435,7 @@ mod tests {
         setup_reordered_precluster(&sandbox);
 
         // knn=50 >> n_samples=4, tests padding with reordered indices
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -470,7 +470,7 @@ mod tests {
                 "14412_3#82.contigs_velvet.fa.gz",
             ],
         );
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -493,7 +493,7 @@ mod tests {
                 "TIGR4.fa.gz",
             ],
         );
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -505,7 +505,7 @@ mod tests {
             .success();
 
         // Run precluster with different orderings
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -539,7 +539,7 @@ mod tests {
         );
 
         // Also build same-order SKI for comparison
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -553,7 +553,7 @@ mod tests {
             .success();
 
         // Run with reordered SKI + completeness
-        let reordered_output = Command::new(cargo_bin("sketchlib"))
+        let reordered_output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -570,7 +570,7 @@ mod tests {
             .clone();
 
         // Run with same-order SKI + completeness
-        let sameorder_output = Command::new(cargo_bin("sketchlib"))
+        let sameorder_output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -620,7 +620,7 @@ mod tests {
         ];
 
         // Run precluster
-        let output = Command::new(cargo_bin("sketchlib"))
+        let output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -663,7 +663,7 @@ mod tests {
         setup_reordered_precluster(&sandbox);
 
         // knn=3 to get all possible neighbors
-        let output = Command::new(cargo_bin("sketchlib"))
+        let output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -710,7 +710,7 @@ mod tests {
             "TIGR4.fa.gz",
         ];
 
-        let output = Command::new(cargo_bin("sketchlib"))
+        let output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -759,7 +759,7 @@ mod tests {
             "TIGR4.fa.gz",
         ];
 
-        let output = Command::new(cargo_bin("sketchlib"))
+        let output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -812,7 +812,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Build reordered SKI
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -827,7 +827,7 @@ mod tests {
             .success();
 
         // Query with match-count
-        let output = Command::new(cargo_bin("sketchlib"))
+        let output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("query")
@@ -857,7 +857,7 @@ mod tests {
         }
 
         // Query with any-bins
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("query")
@@ -870,7 +870,7 @@ mod tests {
             .success();
 
         // Query with all-bins
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("query")
