@@ -11,10 +11,11 @@ use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::hashing::HashType;
+use crate::sketch::aligned_sketch_vec;
 use crate::sketch::num_bins;
 use crate::sketch::sketch_datafile::SketchArrayReader;
 use crate::sketch::sketch_datafile::SketchArrayWriter;
-use crate::sketch::Sketch;
+use crate::sketch::{Sketch, SketchVec};
 
 use super::sketch_datafile::append_batch;
 
@@ -33,8 +34,8 @@ pub struct MultiSketch {
     // NB: another way to do this is with the ouroboros crate, which allows this to reference self
     // But this requires manual impl for ser and deser, and does the same indirection as an index anyway so not worth it
     block_reindex: Option<Vec<usize>>,
-    #[serde(skip)]
-    sketch_bins: Vec<u64>,
+    #[serde(skip, default = "aligned_sketch_vec")]
+    sketch_bins: SketchVec,
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
@@ -67,7 +68,7 @@ impl MultiSketch {
             sketch_metadata: mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins: Vec::new(),
+            sketch_bins: aligned_sketch_vec(),
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),

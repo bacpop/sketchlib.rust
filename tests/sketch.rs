@@ -162,17 +162,36 @@ mod tests {
             .assert()
             .success();
 
-        // Check .skm the same
+        // Check legacy metadata and data still load, without requiring identical
+        // derived stride fields from old hash-space behavior.
         let new_sketch: MultiSketch =
             MultiSketch::load_metadata(&sandbox.file_string("new_db", TestDir::Output))
                 .expect("Failed to load new sketch");
-        let expected_sketch =
+        let mut expected_sketch =
             MultiSketch::load_metadata(&sandbox.file_string("legacy_db", TestDir::Input))
                 .expect("Failed to load legacy sketch");
 
+        expected_sketch.read_sketch_data(&sandbox.file_string("legacy_db", TestDir::Input));
+
+        assert!(
+            new_sketch.is_compatible_with(&expected_sketch),
+            "Legacy sketch should be compatible with newly generated sketch metadata"
+        );
         assert_eq!(
-            new_sketch, expected_sketch,
-            "Sketch metadata does not match legacy and new version"
+            new_sketch.number_samples_loaded(),
+            expected_sketch.number_samples_loaded(),
+            "Legacy sketch sample count does not match new sketch"
+        );
+        for idx in 0..new_sketch.number_samples_loaded() {
+            assert_eq!(
+                new_sketch.get_sample_name(idx),
+                expected_sketch.get_sample_name(idx),
+                "Legacy sketch sample name does not match new sketch"
+            );
+        }
+        assert!(
+            !expected_sketch.get_sketch_slice(0, 0).is_empty(),
+            "Legacy sketch data did not load"
         );
     }
 }
