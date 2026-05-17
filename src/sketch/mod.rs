@@ -330,7 +330,7 @@ pub fn sketch_files(
                 .map(|(idx, (name, fastxvec))| {
                     // Read in sequence and set up rolling hash by alphabet type
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
-                        HashType::DNA => NtHashIterator::new(fastxvec, rc, min_qual)
+                        HashType::DNA => NtHashIterator::new(fastxvec, k[0], rc, min_qual)
                             .into_iter()
                             .map(|it| Box::new(it) as Box<dyn RollHash>)
                             .collect(),
