@@ -1,20 +1,20 @@
 //! The class to support .ski creation, reading and writing, containing an inverted
 //! index of multiple sketches
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use std::fmt;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::{cmp, fmt};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 extern crate needletail;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use hashbrown::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use hashbrown::{HashMap, HashSet};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use indicatif::ParallelProgressIterator;
 use indicatif::ProgressIterator;
 use rayon::prelude::*;
@@ -25,20 +25,20 @@ use super::hashing::{
     bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
 };
 use crate::distances::distance_matrix::square_to_condensed;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::io::InputFastx;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use crate::sketch::Sketch;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::sketch::{sketch_datafile::SketchArrayWriter, Sketch};
 use crate::utils::get_progress_bar;
 use anyhow::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use crate::logw;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use wasm_bindgen_file_reader::WebSysFile;
 
 type InvSketches = (Vec<Vec<u16>>, Vec<String>);
@@ -58,7 +58,7 @@ pub struct Inverted {
 }
 
 impl Inverted {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     /// Sketch files without transposing bins, and invert the index. Files
     /// may be reordered via [`crate::io::reorder_input_files`]
     ///
@@ -112,7 +112,7 @@ impl Inverted {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     /// Sketch query files in a compatible manner with the index,
     /// used when querying the index on the fly
     pub fn sketch_queries(
@@ -136,7 +136,7 @@ impl Inverted {
         )
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     /// Sketch query files in a compatible manner with the index,
     /// used when querying the index on the fly
     pub fn sketch_queries(
@@ -202,7 +202,7 @@ impl Inverted {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     /// Loads from `file_prefix.ski`, using MessagePack as the serialisation format
     // NB MessagePack rather the CBOR uses here because of
     // https://github.com/enarx/ciborium/issues/96
@@ -215,7 +215,7 @@ impl Inverted {
         Ok(ski_obj)
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     /// Loads from a web_sys file object. Designed for WebAssembly
     pub fn load(file: &web_sys::File) -> Result<Self, Error> {
         logw("Loading inverted index", Some("info"));
@@ -301,7 +301,7 @@ impl Inverted {
         // Reduction from pair_map_bin produces pair_map_all
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn sketch_files_inverted(
         input_files: &[InputFastx],
         file_order: &[usize],
@@ -417,7 +417,7 @@ impl Inverted {
         (sketch_results, sample_names)
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     fn sketch_files_inverted(
         input_files: (&web_sys::File, Option<&web_sys::File>),
         file_order: &[usize],
@@ -467,7 +467,7 @@ impl Inverted {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn build_inverted_index(
         genome_sketches: &[Vec<u16>],
         sketch_size: u64,
@@ -499,19 +499,19 @@ impl Inverted {
     }
 
     /// Get the sample names, with the same order as in the index
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     pub fn get_sample_names(&self) -> &Vec<String> {
         &self.sample_names
     }
 
     /// Get the metadata, with the same order as in the index
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     pub fn get_metadata(&self) -> &Option<Vec<String>> {
         &self.metadata
     }
 
     /// Get the sample labels, with the same order as in the index
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     pub fn get_sample_labels(&self) -> &Option<Vec<String>> {
         &self.labels
     }

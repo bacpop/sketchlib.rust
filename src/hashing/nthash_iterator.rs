@@ -1,14 +1,14 @@
 //! Functions to support `ntHash` generation over sequences
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use needletail::{parse_fastx_file, parser::Format};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use crate::fastx_wasm::{open_fasta, open_fastq};
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use seq_io::fasta::Record as FastaRecord;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use seq_io::fastq::Record as FastqRecord;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use wasm_bindgen_file_reader::WebSysFile;
 
 use std::cmp::Ordering;
@@ -89,7 +89,7 @@ impl RollHash for NtHashIterator {
 }
 
 impl NtHashIterator {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     /// Creates a new ntHash iterator, by loading DNA sequences into memory
     pub fn new(files: &[String], k: usize, rc: bool, min_qual: u8) -> Vec<Self> {
         // Check if we're working with reads, and initalise the filter if so
@@ -144,7 +144,7 @@ impl NtHashIterator {
         vec![hash_it]
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     /// Creates a new ntHash iterator, by loading DNA sequences into memory. WASM version.
     pub fn new(
         files: (&web_sys::File, Option<&web_sys::File>),
@@ -202,7 +202,7 @@ impl NtHashIterator {
         vec![hash_it]
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn add_dna_seq(
         filename: &str,
         min_qual: u8,
@@ -251,7 +251,7 @@ impl NtHashIterator {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     fn add_dna_seq(&mut self, file: &web_sys::File, min_qual: u8, proportion_reads: Option<f64>) {
         let file_name = file.name();
         let mut file_type = file_name
@@ -311,7 +311,7 @@ impl NtHashIterator {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     fn pack_dna_base(&mut self, base: u8, quality_ok: bool, b: &mut u8, i: &mut usize) {
         if quality_ok && valid_base(base) {
             let encoded_base = encode_base(base);

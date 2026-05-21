@@ -1,5 +1,5 @@
 //! Functions to support `aaHash` generation over sequences
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use needletail::parse_fastx_file;
 
 use std::cmp::Ordering;

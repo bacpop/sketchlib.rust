@@ -142,52 +142,52 @@
 #![warn(missing_docs)]
 #![allow(clippy::too_many_arguments)]
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::io::Write;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::time::Instant;
 
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
 use anyhow::Error;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use indicatif::ParallelProgressIterator;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use rayon::prelude::*;
 
 pub mod cli;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::cli::*;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use crate::cli::InvertedQueryType;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::hashing::HashType;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use hashbrown::{HashMap, HashSet};
 
 pub mod sketch;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::sketch::multisketch::MultiSketch;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::sketch::sketch_datafile::SketchArrayReader;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::sketch::{num_bins, sketch_files};
 
 pub mod inverted;
 use crate::inverted::Inverted;
 
 pub mod distances;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::distances::*;
 
 pub mod io;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::io::{
     get_input_list, parse_kmers, parse_metadata_info, read_completeness_file, read_subset_names,
     reorder_input_files, set_ostream,
@@ -199,32 +199,32 @@ pub mod hashing;
 
 pub mod utils;
 use crate::utils::get_progress_bar;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::utils::strip_sketch_extension;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub mod fastx_wasm;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::fs::{File, OpenOptions};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::io::copy;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::io::BufRead;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
 /// Default k-mer size for (genome) sketching
 pub const DEFAULT_KMER: usize = 21;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use wasm_bindgen::prelude::*;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 extern crate console_error_panic_hook;
 
 #[doc(hidden)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub fn main() -> Result<(), Error> {
     let args = cli_args();
     if args.quiet {
@@ -929,27 +929,27 @@ pub fn main() -> Result<(), Error> {
 }
 
 // WASM implementation
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[doc(hidden)]
 pub fn main() {
     panic!("You've compiled sketchlib.rust for WebAssembly support, you cannot use it as a normal binary anymore!");
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 /// Function that allows to propagate panic error messages when compiling to wasm, see https://github.com/rustwasm/console_error_panic_hook
 pub fn init_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 /// Logging wrapper function for the WebAssembly version
 pub fn logw(text: &str, typ: Option<&str>) {
     if let Some(thetyp) = typ {
@@ -959,7 +959,7 @@ pub fn logw(text: &str, typ: Option<&str>) {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 /// Struct to interact with JS when working with WebAssembly
 pub struct SketchlibData {
@@ -967,7 +967,7 @@ pub struct SketchlibData {
     index: Inverted,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 #[wasm_bindgen]
 impl SketchlibData {
     /// Constructor of the SketchlibData struct

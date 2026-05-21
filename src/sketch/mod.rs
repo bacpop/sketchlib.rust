@@ -1,33 +1,33 @@
 //! Methods to sketch samples, save/load sketches
 use std::cmp::Ordering;
 use std::fmt;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::sync::mpsc;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use indicatif::ParallelProgressIterator;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::hashing::{bloom_filter::KmerFilter, RollHash};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use super::hashing::{nthash_iterator::NtHashIterator, HashType};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::hashing::aahash_iterator::AaHashIterator;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::io::InputFastx;
 #[cfg(feature = "3di")]
 use crate::structures::pdb_to_3di;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use crate::utils::get_progress_bar;
 
 pub mod multisketch;
 
 pub mod sketch_datafile;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use self::sketch_datafile::SketchArrayWriter;
 
 /// Bin bits (lowest of 64-bits to keep)
@@ -277,7 +277,7 @@ impl fmt::Display for Sketch {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 /// Main function to create sketches from a set of input files, which is parallelised
 /// over the input files
 pub fn sketch_files(
