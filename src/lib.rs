@@ -162,7 +162,7 @@ pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::cli::*;
 #[cfg(target_arch = "wasm32")]
-use crate::cli::{InvertedQueryType, DEFAULT_MINCOUNT, DEFAULT_MINQUAL};
+use crate::cli::InvertedQueryType;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::hashing::HashType;
@@ -986,17 +986,21 @@ impl SketchlibData {
     }
 
     /// Query some files against an inverted index
-    pub fn query(&mut self, file1: web_sys::File, file2: Option<web_sys::File>) {
-        // TEMPORAL BEGIN
-        let min_count = &DEFAULT_MINCOUNT;
-        let min_qual = &DEFAULT_MINQUAL;
+    pub fn query(
+        &mut self,
+        file1: web_sys::File,
+        file2: Option<web_sys::File>,
+        proportion_reads: f64,
+        min_count: u16,
+        min_qual: u8,
+    ) {
         let query_type = &InvertedQueryType::MatchCount;
-        // TEMPORAL END
+        let prop = if proportion_reads >= 1.0 { None } else { Some(proportion_reads) };
 
         // Get input files
         let (queries, _query_names) =
             self.index
-                .sketch_queries((&file1, file2.as_ref()), *min_count, *min_qual, false);
+                .sketch_queries((&file1, file2.as_ref()), min_count, min_qual, false, prop);
 
         logw(
             format!("Running query in mode: {query_type}").as_str(),

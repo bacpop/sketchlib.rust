@@ -151,6 +151,7 @@ impl NtHashIterator {
         k: usize,
         rc: bool,
         min_qual: u8,
+        proportion_reads: Option<f64>,
     ) -> Vec<Self> {
         // Check if we're working with reads, and initalise the filter if so
 
@@ -193,9 +194,9 @@ impl NtHashIterator {
 
         // Read sequence into memory (as we go through multiple times)
         log::debug!("Preprocessing sequence");
-        hash_it.add_dna_seq(files.0, min_qual);
+        hash_it.add_dna_seq(files.0, min_qual, proportion_reads);
         if let Some(fileobj) = files.1 {
-            hash_it.add_dna_seq(fileobj, min_qual);
+            hash_it.add_dna_seq(fileobj, min_qual, proportion_reads);
         }
         hash_it.set_k(k);
         vec![hash_it]
@@ -251,7 +252,7 @@ impl NtHashIterator {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn add_dna_seq(&mut self, file: &web_sys::File, min_qual: u8) {
+    fn add_dna_seq(&mut self, file: &web_sys::File, min_qual: u8, proportion_reads: Option<f64>) {
         let file_name = file.name();
         let mut file_type = file_name
             .split('.')
@@ -285,8 +286,18 @@ impl NtHashIterator {
                 self.offsets.push(self.seq.len() * 4 + i);
             }
         } else {
+            let step = proportion_reads
+                .filter(|&p| p < 1.0)
+                .map(|p| (1.0_f64 / p).round() as usize)
+                .unwrap_or(1);
+            let mut record_idx: usize = 0;
             let mut reader = open_fastq(&mut filetoparse);
             while let Some(seqrec) = reader.next() {
+                if record_idx % step != 0 {
+                    record_idx += 1;
+                    continue;
+                }
+                record_idx += 1;
                 let rec = seqrec.expect("Invalid FASTQ record");
                 for (base, qual) in rec.seq().iter().zip(rec.qual()) {
                     self.pack_dna_base(*base, *qual >= min_qual, &mut b, &mut i);
