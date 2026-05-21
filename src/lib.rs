@@ -159,10 +159,10 @@ use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
 pub mod cli;
-#[cfg(not(target_family = "wasm"))]
-use crate::cli::*;
 #[cfg(target_family = "wasm")]
 use crate::cli::InvertedQueryType;
+#[cfg(not(target_family = "wasm"))]
+use crate::cli::*;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::hashing::HashType;
@@ -963,8 +963,30 @@ pub fn logw(text: &str, typ: Option<&str>) {
 #[wasm_bindgen]
 /// Struct to interact with JS when working with WebAssembly
 pub struct SketchlibData {
-    out_probs: Vec<(f64, usize)>,
+    out_probs: Vec<(u32, usize)>,
     index: Inverted,
+}
+
+#[cfg(any(target_family = "wasm", test))]
+fn select_ranked_matches(matches: &[(u32, usize)], nouts: usize) -> Vec<(u32, usize, usize)> {
+    let mut selected = Vec::new();
+    let mut current_rank = 0_usize;
+    let mut previous_matches: Option<u32> = None;
+
+    for (match_count, index) in matches.iter().copied() {
+        if previous_matches.is_some_and(|prev| match_count != prev) {
+            current_rank += 1;
+        }
+        previous_matches = Some(match_count);
+
+        if current_rank >= nouts {
+            break;
+        }
+
+        selected.push((match_count, index, current_rank));
+    }
+
+    selected
 }
 
 #[cfg(target_family = "wasm")]
@@ -995,7 +1017,11 @@ impl SketchlibData {
         min_qual: u8,
     ) {
         let query_type = &InvertedQueryType::MatchCount;
-        let prop = if proportion_reads >= 1.0 { None } else { Some(proportion_reads) };
+        let prop = if proportion_reads >= 1.0 {
+            None
+        } else {
+            Some(proportion_reads)
+        };
 
         // Get input files
         let (queries, _query_names) =
@@ -1016,17 +1042,13 @@ impl SketchlibData {
             InvertedQueryType::AnyBins => self.index.any_shared_bins(queries[0].as_slice()),
         };
 
-        let mut outvec: Vec<(f64, usize)> = Vec::with_capacity(dist.len());
+        let mut outvec: Vec<(u32, usize)> = Vec::with_capacity(dist.len());
 
         for (i, d) in dist.iter().enumerate() {
-            outvec.push((
-                (*d as f64) / ((2 * self.index.sketch_size()) as f64 - *d as f64),
-                i,
-            ));
+            outvec.push((*d, i));
         }
 
-        outvec.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("NaN obtained!"));
-        outvec.reverse();
+        outvec.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
         self.out_probs = outvec;
     }
@@ -1044,17 +1066,27 @@ impl SketchlibData {
             Some("info"),
         );
 
+        let selected = select_ranked_matches(&self.out_probs, nouts);
+
         results["probs"] = json::JsonValue::Array(
-            self.out_probs
+            selected
                 .iter()
-                .take(nouts)
-                .map(|x| json::JsonValue::Number(x.0.into()))
+                .map(|x| {
+                    let matches = x.0 as f64;
+                    let similarity = matches / ((2 * self.index.sketch_size()) as f64 - matches);
+                    json::JsonValue::Number(similarity.into())
+                })
+                .collect(),
+        );
+        results["ranks"] = json::JsonValue::Array(
+            selected
+                .iter()
+                .map(|x| json::JsonValue::Number((x.2 + 1).into()))
                 .collect(),
         );
         results["names"] = json::JsonValue::Array(
-            self.out_probs
+            selected
                 .iter()
-                .take(nouts)
                 .map(|x| {
                     if let Some(labelsvec) = self.index.get_sample_labels() {
                         json::JsonValue::String(labelsvec[x.1].clone())
@@ -1065,9 +1097,8 @@ impl SketchlibData {
                 .collect(),
         );
         results["metadata"] = json::JsonValue::Array(
-            self.out_probs
+            selected
                 .iter()
-                .take(nouts)
                 .map(|x| {
                     if let Some(metadatavec) = self.index.get_metadata() {
                         json::JsonValue::String(metadatavec[x.1].clone())
@@ -1081,5 +1112,43 @@ impl SketchlibData {
         logw(results.dump().as_str(), Some("debug"));
 
         results.dump()
+    }
+}
+
+#[cfg(test)]
+mod wasm_result_ranking_tests {
+    use super::select_ranked_matches;
+
+    #[test]
+    fn returns_only_requested_rank_groups_without_ties() {
+        let matches = vec![(10, 0), (9, 1), (8, 2), (7, 3)];
+        assert_eq!(
+            select_ranked_matches(&matches, 3),
+            vec![(10, 0, 0), (9, 1, 1), (8, 2, 2)]
+        );
+    }
+
+    #[test]
+    fn includes_all_entries_tied_at_first_rank() {
+        let matches = vec![(10, 0), (10, 1), (9, 2), (8, 3), (7, 4)];
+        assert_eq!(
+            select_ranked_matches(&matches, 3),
+            vec![(10, 0, 0), (10, 1, 0), (9, 2, 1), (8, 3, 2)]
+        );
+    }
+
+    #[test]
+    fn includes_all_entries_tied_at_later_ranks() {
+        let matches = vec![(10, 0), (9, 1), (9, 2), (8, 3), (8, 4), (7, 5)];
+        assert_eq!(
+            select_ranked_matches(&matches, 3),
+            vec![(10, 0, 0), (9, 1, 1), (9, 2, 1), (8, 3, 2), (8, 4, 2)]
+        );
+    }
+
+    #[test]
+    fn get_probs_three_excludes_internal_rank_three() {
+        let matches = vec![(10, 0), (9, 1), (8, 2), (7, 3)];
+        assert!(!select_ranked_matches(&matches, 3).contains(&(7, 3, 3)));
     }
 }
