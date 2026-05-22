@@ -33,8 +33,6 @@ use self::sketch_datafile::SketchArrayWriter;
 
 /// Bin bits (lowest of 64-bits to keep)
 pub const BIN_BITS: usize = 16;
-#[doc(hidden)]
-pub const BBITS: usize = BIN_BITS;
 /// Byte alignment used for bit-packed sketch buffers.
 pub const SKETCH_ALIGNMENT: usize = 64;
 
@@ -226,6 +224,7 @@ impl Sketch {
 
     /// Take the (transposed) sketch, emptying it from the [`Sketch`]
     pub fn get_usigs(&mut self) -> SketchVec {
+        // Move the old aligned buffer out and install an empty one; elements are not copied.
         std::mem::replace(&mut self.usigs, aligned_sketch_vec())
     }
 
@@ -252,11 +251,20 @@ impl Sketch {
     }
 
     fn fill_usigs(usigs: &mut [u64], signs: &[u64]) {
-        for (sign_index, sign) in signs.iter().enumerate() {
-            let leftshift = sign_index % (u64::BITS as usize);
-            for i in 0..BIN_BITS {
-                let orval = Self::bit_at_pos(*sign, i as u64) << leftshift;
-                usigs[sign_index / (u64::BITS as usize) * BIN_BITS + i] |= orval;
+        debug_assert_eq!(signs.len() % (u64::BITS as usize), 0);
+        debug_assert_eq!(usigs.len(), signs.len() / (u64::BITS as usize) * BIN_BITS);
+
+        for (usig_chunk, sign_chunk) in usigs
+            .chunks_exact_mut(BIN_BITS)
+            .zip(signs.chunks_exact(u64::BITS as usize))
+        {
+            for (bit_pos, usig) in usig_chunk.iter_mut().enumerate() {
+                *usig = sign_chunk
+                    .iter()
+                    .enumerate()
+                    .fold(0, |bits, (sign_index, &sign)| {
+                        bits | (Self::bit_at_pos(sign, bit_pos as u64) << sign_index)
+                    });
             }
         }
     }

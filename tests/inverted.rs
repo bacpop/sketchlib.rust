@@ -6,9 +6,25 @@ use crate::common::*;
 #[cfg(test)]
 
 mod tests {
+    use sketchlib::sketch::{
+        multisketch::MultiSketch, sketch_datafile::SketchArrayReader, BIN_BITS,
+    };
     use snapbox::assert_data_eq;
 
     use super::*;
+
+    fn unpack_skd_bin(bit_planes: &[u64], bin_idx: usize) -> u16 {
+        let word_idx = bin_idx / (u64::BITS as usize);
+        let bit_offset = bin_idx % (u64::BITS as usize);
+        let plane_offset = word_idx * BIN_BITS;
+
+        bit_planes[plane_offset..(plane_offset + BIN_BITS)]
+            .iter()
+            .enumerate()
+            .fold(0_u16, |bin_value, (bit_pos, &plane)| {
+                bin_value | (((plane >> bit_offset) & 1) as u16) << bit_pos
+            })
+    }
 
     #[test]
     fn inverted_sketch() {
@@ -46,6 +62,76 @@ mod tests {
             .arg("-v")
             .assert()
             .stdout_eq(sandbox.snapbox_file("inverted_sketch_full_info.stdout", TestDir::Correct));
+    }
+
+    #[test]
+    fn inverted_skq_matches_standard_skd_bins() {
+        let sandbox = TestSetup::setup();
+
+        sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
+        sandbox.copy_input_file_to_wd("R6.fa.gz");
+        sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
+        sandbox.copy_input_file_to_wd("rfile.txt");
+
+        Command::new(cmd::cargo_bin!("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("inverted")
+            .arg("build")
+            .arg("-o")
+            .arg("inverted")
+            .args(["-v", "-k", "21", "-s", "64"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .arg("--write-skq")
+            .assert()
+            .success();
+
+        Command::new(cmd::cargo_bin!("sketchlib"))
+            .current_dir(sandbox.get_wd())
+            .arg("sketch")
+            .arg("-o")
+            .arg("standard")
+            .args(["-v", "--k-vals", "21", "-s", "64"])
+            .arg("-f")
+            .arg("rfile.txt")
+            .assert()
+            .success();
+
+        let mut standard_sketches =
+            MultiSketch::load_metadata(&sandbox.file_string("standard", TestDir::Output))
+                .expect("failed to load standard sketch metadata");
+        standard_sketches.read_sketch_data(&sandbox.file_string("standard", TestDir::Output));
+
+        let sketch_size = standard_sketches.sketch_size as usize;
+        assert_eq!(sketch_size, 64);
+        assert_eq!(standard_sketches.kmer_lengths(), &[21]);
+
+        let mut skq_reader = SketchArrayReader::open(
+            &sandbox.file_string("inverted.skq", TestDir::Output),
+            false,
+            1,
+            1,
+            sketch_size,
+        );
+        let skq_bins =
+            skq_reader.read_all_from_skq(sketch_size * standard_sketches.number_samples_loaded());
+        assert_eq!(
+            skq_bins.len(),
+            sketch_size * standard_sketches.number_samples_loaded()
+        );
+
+        for sample_idx in 0..standard_sketches.number_samples_loaded() {
+            let skd_bins = standard_sketches.get_sketch_slice(sample_idx, 0);
+            let skq_offset = sample_idx * sketch_size;
+            for bin_idx in 0..sketch_size {
+                assert_eq!(
+                    skq_bins[skq_offset + bin_idx],
+                    unpack_skd_bin(skd_bins, bin_idx),
+                    "sample {sample_idx} bin {bin_idx} differs between .skq and .skd"
+                );
+            }
+        }
     }
 
     #[test]

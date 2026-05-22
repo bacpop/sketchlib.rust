@@ -44,6 +44,7 @@ fn jaccard_same_bits(sketch1: &[u64], sketch2: &[u64]) -> u32 {
 }
 
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+#[inline(always)]
 pub(crate) fn jaccard_same_bits_general(sketch1: &[u64], sketch2: &[u64]) -> u32 {
     debug_assert_eq!(sketch1.len(), sketch2.len());
     debug_assert_eq!(sketch1.len() % BIN_BITS, 0);
@@ -134,10 +135,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn random_match_correction_maps_expected_random_to_zero() {
-        let expected_random = 1.0 / ((1u32 << (BIN_BITS as u32)) as f64);
+    fn random_match_correction_handles_expected_random_and_bounds() {
+        let bb = (1u32 << (BIN_BITS as u32)) as f64;
+        let expected_random = 1.0 / bb;
+        let raw_above_random = 0.25;
+        let expected_corrected = (bb * raw_above_random - 1.0) / (bb - 1.0);
+
         assert_eq!(random_match_correction(expected_random), 0.0);
+        assert_eq!(random_match_correction(expected_random / 2.0), 0.0);
         assert_eq!(random_match_correction(1.0), 1.0);
+        assert_eq!(
+            random_match_correction(raw_above_random),
+            expected_corrected
+        );
+    }
+
+    #[test]
+    fn jaccard_index_matches_expected_samebits_formula() {
+        let sketchsize64 = 1;
+        let unionsize = (u64::BITS as u64 * sketchsize64) as f64;
+        let bb = (1u32 << (BIN_BITS as u32)) as f64;
+        let expected_random_samebits = unionsize / bb;
+        let target_samebits = 42_u32;
+        let intersize = target_samebits as f64 - expected_random_samebits;
+        let previous_formula = intersize / (unionsize - expected_random_samebits);
+
+        let sketch1 = [0_u64; BIN_BITS];
+        let mut sketch2 = [0_u64; BIN_BITS];
+        sketch2[0] = (1_u64 << (u64::BITS - target_samebits)) - 1;
+
+        assert_eq!(
+            jaccard_same_bits_general(&sketch1, &sketch2),
+            target_samebits
+        );
+        let current_formula = jaccard_index(&sketch1, &sketch2, sketchsize64, None, None, 0.0);
+        assert!((current_formula - previous_formula).abs() <= f64::EPSILON);
     }
 
     #[test]

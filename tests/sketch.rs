@@ -70,6 +70,7 @@ mod tests {
             .assert()
             .stdout_eq(sandbox.snapbox_file("read_sketch_info.stdout", TestDir::Correct));
 
+        // FASTQ read length is estimated from minima normalized over the full u64 hash space.
         Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("info")
