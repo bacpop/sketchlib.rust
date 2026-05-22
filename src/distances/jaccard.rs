@@ -1,6 +1,6 @@
 //! Implementation of Jaccard, core and accessory distance calculations
 use crate::sketch::multisketch::MultiSketch;
-use crate::sketch::BBITS;
+use crate::sketch::BIN_BITS;
 
 /// Returns the Jaccard index between two samples
 pub fn jaccard_index(
@@ -12,25 +12,11 @@ pub fn jaccard_index(
     completeness_cutoff: f64,
 ) -> f64 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f64;
-    let samebits: u32 = sketch1
-        .chunks_exact(BBITS as usize)
-        .zip(sketch2.chunks_exact(BBITS as usize))
-        .map(|(chunk1, chunk2)| {
-            let mut bits: u64 = !0;
-            chunk1.iter().zip(chunk2.iter()).for_each(|(&s1, &s2)| {
-                bits &= !(s1 ^ s2);
-            });
-            bits.count_ones()
-        })
-        .sum();
-    let maxnbits = sketchsize64 as u32 * u64::BITS;
-    let expected_samebits = maxnbits >> BBITS;
+    let samebits = jaccard_same_bits(sketch1, sketch2);
+    let raw_jaccard = samebits as f64 / unionsize;
+    let mut jaccard_index = random_match_correction(raw_jaccard);
 
-    log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
-    let diff = samebits.saturating_sub(expected_samebits);
-    let intersize = (diff as f64 * maxnbits as f64) / (maxnbits - expected_samebits) as f64;
-    log::trace!("intersize:{intersize} unionsize:{unionsize}");
-    let mut jaccard_index = intersize / unionsize;
+    log::trace!("samebits:{samebits} raw_jaccard:{raw_jaccard} jaccard:{jaccard_index}");
 
     // Apply completeness correction if both completeness values are provided
     if let (Some(c1_val), Some(c2_val)) = (c1, c2) {
@@ -42,6 +28,174 @@ pub fn jaccard_index(
     }
 
     jaccard_index
+}
+
+#[inline(always)]
+fn jaccard_same_bits(sketch1: &[u64], sketch2: &[u64]) -> u32 {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        jaccard_neon_unroll2_inner(sketch1, sketch2)
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        jaccard_same_bits_general(sketch1, sketch2)
+    }
+}
+
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+#[inline(always)]
+pub(crate) fn jaccard_same_bits_general(sketch1: &[u64], sketch2: &[u64]) -> u32 {
+    debug_assert_eq!(sketch1.len(), sketch2.len());
+    debug_assert_eq!(sketch1.len() % BIN_BITS, 0);
+    sketch1
+        .chunks_exact(BIN_BITS)
+        .zip(sketch2.chunks_exact(BIN_BITS))
+        .map(|(chunk1, chunk2)| {
+            let mut bits: u64 = !0;
+            chunk1.iter().zip(chunk2.iter()).for_each(|(&s1, &s2)| {
+                bits &= !(s1 ^ s2);
+            });
+            bits.count_ones()
+        })
+        .sum()
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn jaccard_neon_unroll2_inner(a: &[u64], b: &[u64]) -> u32 {
+    use std::arch::aarch64::*;
+
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len() % BIN_BITS, 0);
+
+    let chunk = BIN_BITS;
+    let n_chunks = a.len() / chunk;
+    let n_pairs = n_chunks / 2;
+    let mut total = 0u32;
+
+    #[inline(always)]
+    unsafe fn one_chunk(ap: *const u8, bp: *const u8) -> u8 {
+        let a0 = vld1q_u8(ap);
+        let a1 = vld1q_u8(ap.add(16));
+        let a2 = vld1q_u8(ap.add(32));
+        let a3 = vld1q_u8(ap.add(48));
+        let a4 = vld1q_u8(ap.add(64));
+        let a5 = vld1q_u8(ap.add(80));
+        let a6 = vld1q_u8(ap.add(96));
+        let a7 = vld1q_u8(ap.add(112));
+        let b0 = vld1q_u8(bp);
+        let b1 = vld1q_u8(bp.add(16));
+        let b2 = vld1q_u8(bp.add(32));
+        let b3 = vld1q_u8(bp.add(48));
+        let b4 = vld1q_u8(bp.add(64));
+        let b5 = vld1q_u8(bp.add(80));
+        let b6 = vld1q_u8(bp.add(96));
+        let b7 = vld1q_u8(bp.add(112));
+        let x0 = veorq_u8(a0, b0);
+        let x1 = veorq_u8(a1, b1);
+        let x2 = veorq_u8(a2, b2);
+        let x3 = veorq_u8(a3, b3);
+        let x4 = veorq_u8(a4, b4);
+        let x5 = veorq_u8(a5, b5);
+        let x6 = veorq_u8(a6, b6);
+        let x7 = veorq_u8(a7, b7);
+        let or01 = vorrq_u8(x0, x1);
+        let or23 = vorrq_u8(x2, x3);
+        let or45 = vorrq_u8(x4, x5);
+        let or67 = vorrq_u8(x6, x7);
+        let or_all = vorrq_u8(vorrq_u8(or01, or23), vorrq_u8(or45, or67));
+        let not_or = vmvnq_u8(or_all);
+        vaddv_u8(vcnt_u8(vand_u8(vget_low_u8(not_or), vget_high_u8(not_or))))
+    }
+
+    for i in 0..n_pairs {
+        let base = i * 2 * chunk;
+        total += one_chunk(a.as_ptr().add(base) as _, b.as_ptr().add(base) as _) as u32;
+        total += one_chunk(
+            a.as_ptr().add(base + chunk) as _,
+            b.as_ptr().add(base + chunk) as _,
+        ) as u32;
+    }
+    if n_chunks % 2 != 0 {
+        let base = (n_chunks - 1) * chunk;
+        total += one_chunk(a.as_ptr().add(base) as _, b.as_ptr().add(base) as _) as u32;
+    }
+    total
+}
+
+#[inline(always)]
+fn random_match_correction(jaccard: f64) -> f64 {
+    let bb = (1u32 << (BIN_BITS as u32)) as f64;
+    ((bb * jaccard - 1.0).max(0.0)) / (bb - 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_match_correction_handles_expected_random_and_bounds() {
+        let bb = (1u32 << (BIN_BITS as u32)) as f64;
+        let expected_random = 1.0 / bb;
+        let raw_above_random = 0.25;
+        let expected_corrected = (bb * raw_above_random - 1.0) / (bb - 1.0);
+
+        assert_eq!(random_match_correction(expected_random), 0.0);
+        assert_eq!(random_match_correction(expected_random / 2.0), 0.0);
+        assert_eq!(random_match_correction(1.0), 1.0);
+        assert_eq!(
+            random_match_correction(raw_above_random),
+            expected_corrected
+        );
+    }
+
+    #[test]
+    fn jaccard_index_matches_expected_samebits_formula() {
+        let sketchsize64 = 1;
+        let unionsize = (u64::BITS as u64 * sketchsize64) as f64;
+        let bb = (1u32 << (BIN_BITS as u32)) as f64;
+        let expected_random_samebits = unionsize / bb;
+        let target_samebits = 42_u32;
+        let intersize = target_samebits as f64 - expected_random_samebits;
+        let previous_formula = intersize / (unionsize - expected_random_samebits);
+
+        let sketch1 = [0_u64; BIN_BITS];
+        let mut sketch2 = [0_u64; BIN_BITS];
+        sketch2[0] = (1_u64 << (u64::BITS - target_samebits)) - 1;
+
+        assert_eq!(
+            jaccard_same_bits_general(&sketch1, &sketch2),
+            target_samebits
+        );
+        let current_formula = jaccard_index(&sketch1, &sketch2, sketchsize64, None, None, 0.0);
+        assert!((current_formula - previous_formula).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn scalar_same_bits_counts_matching_bins() {
+        let sketch1 = [u64::MAX; BIN_BITS * 2];
+        let mut sketch2 = [u64::MAX; BIN_BITS * 2];
+        sketch2[BIN_BITS] = 0;
+
+        assert_eq!(jaccard_same_bits_general(&sketch1, &sketch1), 128);
+        assert_eq!(jaccard_same_bits_general(&sketch1, &sketch2), 64);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn neon_same_bits_matches_scalar() {
+        let mut sketch1 = [0u64; BIN_BITS * 3];
+        let mut sketch2 = [0u64; BIN_BITS * 3];
+        for i in 0..sketch1.len() {
+            sketch1[i] = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            sketch2[i] = sketch1[i] ^ ((i as u64) << (i % 17));
+        }
+
+        let scalar = jaccard_same_bits_general(&sketch1, &sketch2);
+        let neon = unsafe { jaccard_neon_unroll2_inner(&sketch1, &sketch2) };
+        assert_eq!(neon, scalar);
+    }
 }
 
 /// Converts between Jaccard distance and ANI, using a Poisson model of mutations

@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Error, Result};
 
+use super::{aligned_sketch_vec_with_capacity, SketchVec};
+
 /// Write to an .skd or .skq file
 /// This writer is not parallel safe, serial only!
 #[derive(Debug)]
@@ -29,7 +31,7 @@ pub fn append_batch(
 ) -> Result<(), Error> {
     if let Some(mmap) = input_reader.mmap_file() {
         for &sample_idx in sample_indices {
-            let mut sample_data = Vec::with_capacity(input_reader.sample_stride);
+            let mut sample_data = aligned_sketch_vec_with_capacity(input_reader.sample_stride);
             for bin_idx in 0..input_reader.sample_stride {
                 let start_byte =
                     (sample_idx * input_reader.sample_stride + bin_idx) * mem::size_of::<u64>();
@@ -156,11 +158,11 @@ impl SketchArrayReader {
     }
 
     /// Read all sketch data from an .skd into memory
-    pub fn read_all_from_skd(&mut self, total_number_bins: usize) -> Vec<u64> {
+    pub fn read_all_from_skd(&mut self, total_number_bins: usize) -> SketchVec {
         // Fixed-size buffer for u64
         let mut buffer = [0u8; std::mem::size_of::<u64>()];
         // Stream the whole file and convert to u64 vec
-        let mut flat_sketch_array: Vec<u64> = Vec::with_capacity(total_number_bins);
+        let mut flat_sketch_array = aligned_sketch_vec_with_capacity(total_number_bins);
         while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
             flat_sketch_array.push(u64::from_le_bytes(buffer));
         }
@@ -169,9 +171,9 @@ impl SketchArrayReader {
 
     /// Read selected samples from an .skd into memory, providing the selected
     /// samples with `sample_indices`
-    pub fn read_batch_from_skd(&self, sample_indices: &[usize], sample_stride: usize) -> Vec<u64> {
-        let mut flat_sketch_array: Vec<u64> =
-            Vec::with_capacity(sample_stride * sample_indices.len());
+    pub fn read_batch_from_skd(&self, sample_indices: &[usize], sample_stride: usize) -> SketchVec {
+        let mut flat_sketch_array =
+            aligned_sketch_vec_with_capacity(sample_stride * sample_indices.len());
         // TODO possible improvement would be to combine adjacent indices into ranges
         if let Some(mmap_array) = &self.mmap_file {
             for sample_idx in sample_indices {
@@ -198,5 +200,39 @@ impl SketchArrayReader {
         let file = File::open(filename)?;
         let mmap = unsafe { Mmap::map(&file)? };
         Ok(mmap)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sketch::SKETCH_ALIGNMENT;
+    use std::fs;
+
+    #[test]
+    fn skd_reads_are_64_byte_aligned() {
+        let filename = std::env::temp_dir().join(format!(
+            "sketchlib_skd_alignment_{}.skd",
+            std::process::id()
+        ));
+        let filename = filename.to_str().expect("temporary path must be UTF-8");
+
+        {
+            let mut writer = SketchArrayWriter::new(filename, 1, 4, 4);
+            writer.write_sketch(&[1_u64, 2, 3, 4]);
+            writer.flush().expect("failed to flush test sketch");
+        }
+
+        let mut reader = SketchArrayReader::open(filename, false, 1, 4, 4);
+        let all_sketches = reader.read_all_from_skd(4);
+        assert_eq!(all_sketches.as_ptr() as usize % SKETCH_ALIGNMENT, 0);
+
+        let reader = SketchArrayReader::open(filename, true, 1, 4, 4);
+        let batch_sketches = reader.read_batch_from_skd(&[0], 4);
+        assert_eq!(batch_sketches.as_ptr() as usize % SKETCH_ALIGNMENT, 0);
+
+        drop(batch_sketches);
+        drop(reader);
+        fs::remove_file(filename).expect("failed to remove test sketch");
     }
 }

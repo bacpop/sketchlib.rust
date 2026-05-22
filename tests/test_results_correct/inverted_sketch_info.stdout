@@ -7,4 +7,4 @@ rc=true
 inverted=true
 max_hashes_per_bin=2
 min_hashes_per_bin=1
-avg_hashes_per_bin=1.381
+avg_hashes_per_bin=1.413
