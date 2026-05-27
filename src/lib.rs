@@ -257,12 +257,13 @@ pub fn main() -> Result<(), Error> {
             ref_db,
             query_db,
             output,
-            mut knn,
+            knn,
             subset,
             kmer,
             ani,
             threads,
-            completeness_file,
+            ref_completeness_file,
+            query_completeness_file,
             completeness_cutoff,
         } => {
             check_and_set_threads(*threads);
@@ -283,18 +284,12 @@ pub fn main() -> Result<(), Error> {
             }
             log::info!("Read reference sketches:\n{references:?}");
             let n = references.number_samples_loaded();
-            if let Some(nn) = knn {
-                if nn >= n {
-                    log::warn!("knn={nn} is higher than number of samples={n}");
-                    knn = Some(n - 1);
-                }
-            }
-            // Read in completeness (parallel implementation)
-            let completeness_vec: Option<Vec<f64>> = if let Some(file_path) = completeness_file {
-                Some(read_completeness_file(file_path, &references)?)
-            } else {
-                None
-            };
+            let ref_completeness_vec: Option<Vec<f64>> =
+                if let Some(file_path) = ref_completeness_file {
+                    Some(read_completeness_file(file_path, &references)?)
+                } else {
+                    None
+                };
 
             let dist_type = set_k(&references, *kmer, *ani).unwrap_or_else(|e| {
                 panic!("Error setting k size: {e}");
@@ -325,15 +320,19 @@ pub fn main() -> Result<(), Error> {
                                 n,
                                 dist_type,
                                 args.quiet,
-                                completeness_vec.as_ref(),
+                                ref_completeness_vec.as_ref(),
                                 *completeness_cutoff,
                             );
                             log::info!("Writing out in long matrix form");
                             write!(output_file, "{distances}")
                                 .expect("Error writing output distances");
                         }
-                        Some(nn) => {
-                            // Self mode (sparse)
+                        Some(mut nn) => {
+                            // Self mode (sparse): a genome cannot be its own neighbour
+                            if nn >= n {
+                                log::warn!("knn={nn} is higher than number of samples={n}");
+                                nn = n - 1;
+                            }
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
                             let distances = self_dists_knn(
                                 &references,
@@ -341,7 +340,7 @@ pub fn main() -> Result<(), Error> {
                                 nn,
                                 dist_type,
                                 args.quiet,
-                                completeness_vec.as_ref(),
+                                ref_completeness_vec.as_ref(),
                                 *completeness_cutoff,
                             );
 
@@ -352,23 +351,55 @@ pub fn main() -> Result<(), Error> {
                     }
                 }
                 Some(query_db) => {
-                    // Ref v query mode
-                    log::info!("Calculating all ref vs query distances");
-
-                    let nq = query_db.number_samples_loaded();
-                    let distances = self_query_dists_all(
-                        &references,
-                        &query_db,
-                        n,
-                        nq,
-                        dist_type,
-                        args.quiet,
-                        completeness_vec.as_ref(),
-                        *completeness_cutoff,
-                    );
-
-                    log::info!("Writing out in long matrix form");
-                    write!(output_file, "{distances}").expect("Error writing output distances");
+                    let query_completeness_vec: Option<Vec<f64>> =
+                        if let Some(file_path) = query_completeness_file {
+                            Some(read_completeness_file(file_path, &query_db)?)
+                        } else {
+                            None
+                        };
+                    let n_query = query_db.number_samples_loaded();
+                    match knn {
+                        Some(mut nn) => {
+                            // Cross-query mode: query genomes never overlap ref genomes, so knn=n is valid
+                            if nn > n {
+                                log::warn!("knn={nn} is higher than number of reference samples={n}");
+                                nn = n;
+                            }
+                            // Cross-query mode (sparse kNN)
+                            log::info!("Calculating sparse ref vs query distances with {nn} nearest neighbours");
+                            let distances = cross_dists_knn(
+                                &references,
+                                &query_db,
+                                n,
+                                n_query,
+                                nn,
+                                dist_type,
+                                args.quiet,
+                                ref_completeness_vec.as_ref(),
+                                query_completeness_vec.as_ref(),
+                                *completeness_cutoff,
+                            );
+                            log::info!("Writing out in sparse matrix form");
+                            write!(output_file, "{distances}").expect("Error writing output distances");
+                        }
+                        None => {
+                            // Cross-query mode (dense, all pairs)
+                            log::info!("Calculating all ref vs query distances");
+                            let distances = cross_dists_all(
+                                &references,
+                                &query_db,
+                                n,
+                                n_query,
+                                dist_type,
+                                args.quiet,
+                                ref_completeness_vec.as_ref(),
+                                query_completeness_vec.as_ref(),
+                                *completeness_cutoff,
+                            );
+                            log::info!("Writing out in long matrix form");
+                            write!(output_file, "{distances}").expect("Error writing output distances");
+                        }
+                    }
                 }
             }
             Ok(())
@@ -552,7 +583,7 @@ pub fn main() -> Result<(), Error> {
                 mut knn,
                 ani,
                 threads,
-                completeness_file,
+                ref_completeness_file,
                 completeness_cutoff,
             } => {
                 check_and_set_threads(*threads);
@@ -613,9 +644,8 @@ pub fn main() -> Result<(), Error> {
                         panic!("K-mer size {kmer} used for .ski not found in .skd: {e}");
                     });
 
-                    // Read in completeness (parallel implementation)
-                    let completeness_vec: Option<Vec<f64>> =
-                        if let Some(file_path) = completeness_file {
+                    let ref_completeness_vec: Option<Vec<f64>> =
+                        if let Some(file_path) = ref_completeness_file {
                             Some(read_completeness_file(file_path, &references)?)
                         } else {
                             None
@@ -638,7 +668,7 @@ pub fn main() -> Result<(), Error> {
                         knn,
                         dist_type,
                         args.quiet,
-                        completeness_vec.as_ref(),
+                        ref_completeness_vec.as_ref(),
                         *completeness_cutoff,
                     );
 

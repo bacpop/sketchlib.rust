@@ -210,60 +210,72 @@ pub fn read_subset_names(subset_file: &str) -> Vec<String> {
 }
 
 /// Read completeness values from a file and create a vector for each genome in the provided sketches.
-/// If a genome is not found in the file, a default value of 1.0 is used.
+/// Completeness values must be in [0.0, 1.0] — not percentages. Genomes not in the file default to 1.0.
 pub fn read_completeness_file(
     completeness_file: &str,
     sketches: &MultiSketch,
 ) -> Result<Vec<f64>, crate::Error> {
-    // Pre-allocate vector with default values (1.0 for missing genomes)
     let mut completeness_vec = vec![1.0_f64; sketches.number_samples_loaded()];
-    let missing_genomes = Mutex::new(Vec::new());
+    let not_in_sketch = Mutex::new(Vec::new());
+    let out_of_range = Mutex::new(Vec::new());
 
-    // Open file with buffered reader for streaming
     let f = File::open(completeness_file)
         .with_context(|| format!("Failed to open completeness file: {completeness_file}"))?;
     let f = BufReader::new(f);
 
-    // Read lines and collect completeness values
     let lines: Vec<String> = f.lines().collect::<Result<Vec<_>, _>>().with_context(|| {
         format!("Failed to read lines from completeness file: {completeness_file}")
     })?;
 
-    // Parse all lines in parallel and collect completeness values
     let updates: Vec<(usize, f64)> = lines
         .par_iter()
         .filter_map(|line| {
-            if let Some((genome_id, completeness_str)) = line.split_once('\t') {
-                if let Ok(completeness) = completeness_str.parse::<f64>() {
-                    // Use MultiSketch's method to get the logical index
-                    if let Some(index) = sketches.get_sample_index(genome_id) {
-                        Some((index, completeness))
-                    } else {
-                        // Track missing genomes
-                        missing_genomes.lock().unwrap().push(genome_id.to_string());
-                        None
-                    }
-                } else {
-                    None
-                }
+            let Some((genome_id, completeness_str)) = line.split_once('\t') else {
+                return None;
+            };
+            let Ok(completeness) = completeness_str.trim().parse::<f64>() else {
+                log::warn!(
+                    "Could not parse completeness value for '{genome_id}': '{completeness_str}' — skipping"
+                );
+                return None;
+            };
+            if !(0.0..=1.0).contains(&completeness) {
+                out_of_range
+                    .lock()
+                    .unwrap()
+                    .push(format!("{genome_id}: {completeness}"));
+                return None;
+            }
+            if let Some(index) = sketches.get_sample_index(genome_id) {
+                Some((index, completeness))
             } else {
+                not_in_sketch.lock().unwrap().push(genome_id.to_string());
                 None
             }
         })
         .collect();
 
-    // Apply updates to completeness_vec (thread safe)
+    // Out-of-range values are most likely percentages (0–100) instead of fractions (0–1.0)
+    let invalid = out_of_range.into_inner().unwrap();
+    if !invalid.is_empty() {
+        anyhow::bail!(
+            "Completeness values must be in [0.0, 1.0], not percentages. \
+             Found {} out-of-range value(s) in {completeness_file}:\n  {}",
+            invalid.len(),
+            invalid.join("\n  ")
+        );
+    }
+
     for (index, completeness) in updates {
         completeness_vec[index] = completeness;
     }
 
-    // Report missing genomes
-    let missing = missing_genomes.into_inner().unwrap();
-    if !missing.is_empty() {
+    let not_found = not_in_sketch.into_inner().unwrap();
+    if !not_found.is_empty() {
         log::warn!(
-            "Found {} genomes not in completeness file, using default 1.0: {}",
-            missing.len(),
-            missing.join(", ")
+            "{} genome(s) in completeness file not found in sketch database (ignored): {}",
+            not_found.len(),
+            not_found.join(", ")
         );
     }
 

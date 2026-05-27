@@ -178,8 +178,8 @@ pub enum Commands {
         #[arg(short)]
         output: Option<String>,
 
-        /// Calculate sparse distances with k nearest-neighbours
-        #[arg(long, group = "query")]
+        /// Calculate sparse distances with k nearest-neighbours (ref-vs-ref or ref-vs-query)
+        #[arg(long)]
         knn: Option<usize>,
 
         /// Sample names to analyse
@@ -198,9 +198,14 @@ pub enum Commands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
 
-        /// File listing sample and completeness estimate 0.0-1.0 (tab separated)
+        /// File listing reference sample completeness estimates 0.0-1.0 (tab separated: genome_id<tab>completeness)
         #[arg(long)]
-        completeness_file: Option<String>,
+        ref_completeness_file: Option<String>,
+
+        /// File listing query sample completeness estimates 0.0-1.0 (tab separated: genome_id<tab>completeness).
+        /// Only used in cross-query mode (when a query database is provided).
+        #[arg(long)]
+        query_completeness_file: Option<String>,
 
         /// minimum completeness for a sample to be corrected but the completeness correction
         #[arg(long, default_value_t = 0.64)]
@@ -419,9 +424,9 @@ pub enum InvertedCommands {
         #[arg(long, value_parser = valid_cpus, default_value_t = 1)]
         threads: usize,
 
-        /// Completeness file
+        /// File listing sample completeness estimates 0.0-1.0 (tab separated: genome_id<tab>completeness)
         #[arg(long)]
-        completeness_file: Option<String>,
+        ref_completeness_file: Option<String>,
 
         /// minimum completeness for a sample to be corrected but the completeness correction
         #[arg(long, default_value_t = 0.64)]

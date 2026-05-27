@@ -274,7 +274,14 @@ pub enum DistVec {
     CoreAcc(Vec<SparseCoreAcc>),
 }
 
-/// A sparse distance matrix with a maximum of `knn` distances for each sample
+/// A sparse distance matrix with a maximum of `knn` distances for each sample.
+///
+/// In self-query mode (one database), `query_names` is `None` and `ref_names` is
+/// used for both row iteration and column index lookup.
+///
+/// In cross-query mode (two databases), `query_names` holds the query genome names
+/// (one per row) and `ref_names` holds the reference genome names (indexed by
+/// the stored neighbour index inside each distance item).
 pub struct SparseDistanceMatrix<'a> {
     /// Total number of distances
     pub n_distances: usize,
@@ -282,16 +289,17 @@ pub struct SparseDistanceMatrix<'a> {
     pub knn: usize,
     jaccard: DistType,
     distances: DistVec,
+    /// Reference genome names — used as column labels (neighbour index lookup)
     ref_names: Vec<&'a str>,
+    /// Query genome names — used as row labels in cross-query mode (`None` in self-query mode)
+    query_names: Option<Vec<&'a str>>,
 }
 
 impl<'a> SparseDistanceMatrix<'a> {
-    /// Create a new sparse distance matrix for a [`MultiSketch`] keeping the
-    /// minimum `knn` distances with distance options set by `jaccard`
+    /// Self-query constructor: one database, rows and columns are the same set.
     pub fn new(ref_sketches: &'a MultiSketch, knn: usize, jaccard: DistType) -> Self {
         let n_distances = ref_sketches.number_samples_loaded() * knn;
 
-        // Pre-allocate distances
         let distances = match jaccard {
             DistType::CoreAcc => DistVec::CoreAcc(vec![SparseCoreAcc(0, 0.0, 0.0); n_distances]),
             DistType::Jaccard(_, _, _) => {
@@ -305,6 +313,35 @@ impl<'a> SparseDistanceMatrix<'a> {
             jaccard,
             distances,
             ref_names: Self::sketch_names(ref_sketches),
+            query_names: None,
+        }
+    }
+
+    /// Cross-query constructor: two databases.
+    /// Rows are query genomes; column indices index into the reference genome list.
+    pub fn new_cross_query(
+        ref_sketches: &'a MultiSketch,
+        query_sketches: &'a MultiSketch,
+        knn: usize,
+        jaccard: DistType,
+    ) -> Self {
+        let n_query = query_sketches.number_samples_loaded();
+        let n_distances = n_query * knn;
+
+        let distances = match jaccard {
+            DistType::CoreAcc => DistVec::CoreAcc(vec![SparseCoreAcc(0, 0.0, 0.0); n_distances]),
+            DistType::Jaccard(_, _, _) => {
+                DistVec::Jaccard(vec![SparseJaccard(0, 0.0); n_distances])
+            }
+        };
+
+        Self {
+            n_distances,
+            knn,
+            jaccard,
+            distances,
+            ref_names: Self::sketch_names(ref_sketches),
+            query_names: Some(Self::sketch_names(query_sketches)),
         }
     }
 
@@ -322,24 +359,25 @@ impl<'a> Distances<'a> for SparseDistanceMatrix<'a> {
 
 impl fmt::Display for SparseDistanceMatrix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut ref_name_iter = self.ref_names.iter();
-        let mut ref_name = ref_name_iter.next().unwrap();
+        // In cross-query mode use query genome names as row labels;
+        // in self-query mode fall back to ref_names.
+        let query_names = self.query_names.as_deref().unwrap_or(&self.ref_names);
+        let mut row_name_iter = query_names.iter();
+        let mut row_name = row_name_iter.next().unwrap();
         let mut k = 0;
         match &self.distances {
             DistVec::Jaccard(dists) => {
                 for dist_item in dists {
                     k += 1;
                     if k > self.knn {
-                        ref_name = ref_name_iter.next().unwrap();
+                        row_name = row_name_iter.next().unwrap();
                         k = 1;
                     }
-                    let query_name = self.ref_names[dist_item.0];
-                    // If fewer items than knn, padded with ref=query and dist=1.0 values
-                    // which are skipped here
-                    // TODO: more rust-like way of doing this would be to have
-                    // SparseJaccard as an enum with an empty value
-                    if dist_item.1 < 1.0_f32 || query_name != *ref_name {
-                        writeln!(f, "{ref_name}\t{query_name}\t{}", dist_item.1)?;
+                    // dist_item.0 is always an index into ref_names
+                    let col_name = self.ref_names[dist_item.0];
+                    // Padding entries (dist == 1.0, col == row) are skipped
+                    if dist_item.1 < 1.0_f32 || col_name != *row_name {
+                        writeln!(f, "{row_name}\t{col_name}\t{}", dist_item.1)?;
                     }
                 }
             }
@@ -347,12 +385,12 @@ impl fmt::Display for SparseDistanceMatrix<'_> {
                 for dist_item in dists {
                     k += 1;
                     if k > self.knn {
-                        ref_name = ref_name_iter.next().unwrap();
+                        row_name = row_name_iter.next().unwrap();
                         k = 1;
                     }
                     writeln!(
                         f,
-                        "{ref_name}\t{}\t{}\t{}",
+                        "{row_name}\t{}\t{}\t{}",
                         self.ref_names[dist_item.0], dist_item.1, dist_item.2,
                     )?;
                 }
