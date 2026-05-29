@@ -230,9 +230,7 @@ pub fn read_completeness_file(
     let updates: Vec<(usize, f64)> = lines
         .par_iter()
         .filter_map(|line| {
-            let Some((genome_id, completeness_str)) = line.split_once('\t') else {
-                return None;
-            };
+            let (genome_id, completeness_str) = line.split_once('\t')?;
             let Ok(completeness) = completeness_str.trim().parse::<f64>() else {
                 log::warn!(
                     "Could not parse completeness value for '{genome_id}': '{completeness_str}' — skipping"
