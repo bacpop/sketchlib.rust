@@ -14,6 +14,7 @@ use crate::sketch::multisketch::MultiSketch;
 pub mod distance_matrix;
 use self::distance_matrix::*;
 mod jaccard;
+pub use self::jaccard::ani_pois;
 use self::jaccard::*;
 
 /// Chunk size in parallel distance calculations

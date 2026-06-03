@@ -179,6 +179,8 @@ use crate::sketch::sketch_datafile::SketchArrayReader;
 use crate::sketch::{num_bins, sketch_files};
 
 pub mod inverted;
+#[cfg(target_family = "wasm")]
+use crate::distances::ani_pois;
 use crate::inverted::Inverted;
 
 pub mod distances;
@@ -1054,7 +1056,7 @@ impl SketchlibData {
     }
 
     /// Mapping function.
-    pub fn get_probs(&self, nouts: usize) -> String {
+    pub fn get_ani(&self, nouts: usize) -> String {
         if self.out_probs.is_empty() {
             panic!("No probabilities calculated!");
         }
@@ -1068,13 +1070,13 @@ impl SketchlibData {
 
         let selected = select_ranked_matches(&self.out_probs, nouts);
 
-        results["probs"] = json::JsonValue::Array(
+        results["ani"] = json::JsonValue::Array(
             selected
                 .iter()
                 .map(|x| {
                     let matches = x.0 as f64;
-                    let similarity = matches / ((2 * self.index.sketch_size()) as f64 - matches);
-                    json::JsonValue::Number(similarity.into())
+                    let jaccard = matches / ((2 * self.index.sketch_size()) as f64 - matches);
+                    json::JsonValue::Number(ani_pois(jaccard, self.index.kmer() as f64).into())
                 })
                 .collect(),
         );
@@ -1147,7 +1149,7 @@ mod wasm_result_ranking_tests {
     }
 
     #[test]
-    fn get_probs_three_excludes_internal_rank_three() {
+    fn get_ani_three_excludes_internal_rank_three() {
         let matches = vec![(10, 0), (9, 1), (8, 2), (7, 3)];
         assert!(!select_ranked_matches(&matches, 3).contains(&(7, 3, 3)));
     }

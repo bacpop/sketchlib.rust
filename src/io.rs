@@ -260,7 +260,9 @@ pub fn read_completeness_file(
         .filter_map(|line| {
             if let Some((genome_id, completeness_str)) = line.split_once('\t') {
                 if let Ok(completeness) = completeness_str.parse::<f64>() {
-                    sketches.get_sample_index(genome_id).map(|index| (index, completeness))
+                    sketches
+                        .get_sample_index(genome_id)
+                        .map(|index| (index, completeness))
                 } else {
                     None
                 }
