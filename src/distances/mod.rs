@@ -6,6 +6,7 @@ use hashbrown::HashMap;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 
+use crate::cli::RetainUnmatched;
 use crate::get_progress_bar;
 use crate::inverted::Inverted;
 use crate::sketch::multisketch::MultiSketch;
@@ -406,23 +407,34 @@ pub fn self_dists_knn_precluster<'a>(
     quiet: bool,
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
+    retain_unmatched: &Option<RetainUnmatched>,
 ) -> SparseDistanceMatrix<'a> {
     // Check that sample sets in ski and skm are the same and create i,j lookup
     let mut skq_lookup = HashMap::with_capacity(n);
     for (skq_index, skq_sample) in inverted_index.sample_names().iter().enumerate() {
         skq_lookup.insert(skq_sample.as_str(), skq_index);
     }
+
     let mut not_found = Vec::new();
+    // Map: skd index to ski index
+    // Needed to convert i (from skd ordering) to ski ordering
     let mut skq_index_lookup = Vec::with_capacity(n);
     for skd_sample_idx in 0..sketches.number_samples_loaded() {
         let sample_name = sketches.sketch_name(skd_sample_idx);
         match skq_lookup.get(sample_name) {
-            Some(skq_index) => skq_index_lookup.push(skq_index),
+            Some(skq_index) => skq_index_lookup.push(*skq_index),
             None => not_found.push(sample_name),
         };
     }
     if !not_found.is_empty() {
         panic!("The following samples in the .skd could not be found in the .ski:\n{not_found:?}");
+    }
+
+    // Reverse map: ski index to skd index
+    // Needed to convert j (from inverted index, ski ordering) back to skd ordering
+    let mut skd_index_from_ski: Vec<usize> = vec![0; n];
+    for (skd_idx, &ski_idx) in skq_index_lookup.iter().enumerate() {
+        skd_index_from_ski[ski_idx] = skd_idx;
     }
 
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
@@ -438,7 +450,7 @@ pub fn self_dists_knn_precluster<'a>(
                 .enumerate()
                 .for_each(|(i, row_dist_slice)| {
                     // Prefilter step here
-                    let skq_offset = i * skq_stride;
+                    let skq_offset = skq_index_lookup[i] * skq_stride;
                     let flat_i_sketch = &skq_bins[skq_offset..(skq_offset + skq_stride)];
                     let prefiltered_samples = inverted_index.any_shared_bins(flat_i_sketch);
                     // Standard search
@@ -446,17 +458,18 @@ pub fn self_dists_knn_precluster<'a>(
                     let i_sketch = sketches.get_sketch_slice(i, k_idx);
                     for j in prefiltered_samples {
                         let j = j as usize;
-                        if i == j {
+                        if skq_index_lookup[i] == j {
                             continue;
                         }
+                        let skd_j = skd_index_from_ski[j];
                         // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
                         // If completeness_vec is None, the result will also be None.
                         // This uses Option::map to safely access the completeness value for each sample.
                         let c1 = completeness_vec.map(|cv| cv[i]);
-                        let c2 = completeness_vec.map(|cv| cv[j]);
+                        let c2 = completeness_vec.map(|cv| cv[skd_j]);
                         let dist = jaccard_index(
                             i_sketch,
-                            sketches.get_sketch_slice(j, k_idx),
+                            sketches.get_sketch_slice(skd_j, k_idx),
                             sketches.sketchsize64,
                             c1,
                             c2,
@@ -467,10 +480,53 @@ pub fn self_dists_knn_precluster<'a>(
                         } else {
                             (1.0_f64 - dist) as f32
                         };
-                        let dist_item = SparseJaccard(j, dist_f32);
+                        let dist_item = SparseJaccard(skd_j, dist_f32);
                         push_heap(&mut heap, dist_item, knn);
                     }
                     let mut dist_vec = heap.into_sorted_vec();
+
+                    // Handle unmatched genomes (no prefiltered matches)
+                    if dist_vec.is_empty() {
+                        match retain_unmatched {
+                            Some(RetainUnmatched::Singleton) => {
+                                let mut singleton_vec = vec![SparseJaccard(i, 0.0)];
+                                singleton_vec.append(&mut vec![
+                                    SparseJaccard(i, 1.0);
+                                    row_dist_slice.len() - 1
+                                ]);
+                                row_dist_slice.clone_from_slice(&singleton_vec);
+                                return;
+                            }
+                            Some(RetainUnmatched::Bruteforce) => {
+                                let mut bf_heap = BinaryHeap::with_capacity(knn + 1);
+                                for j in 0..n {
+                                    if i == j {
+                                        continue;
+                                    }
+                                    let c1 = completeness_vec.map(|cv| cv[i]);
+                                    let c2 = completeness_vec.map(|cv| cv[j]);
+                                    let dist = jaccard_index(
+                                        i_sketch,
+                                        sketches.get_sketch_slice(j, k_idx),
+                                        sketches.sketchsize64,
+                                        c1,
+                                        c2,
+                                        completeness_cutoff,
+                                    );
+                                    let dist_f32 = if ani {
+                                        (1.0_f64 - ani_pois(dist, k_f64)) as f32
+                                    } else {
+                                        (1.0_f64 - dist) as f32
+                                    };
+                                    let dist_item = SparseJaccard(j, dist_f32);
+                                    push_heap(&mut bf_heap, dist_item, knn);
+                                }
+                                dist_vec = bf_heap.into_sorted_vec();
+                            }
+                            None => {}
+                        }
+                    }
+
                     if ani {
                         // Undo the above transform
                         dist_vec.iter_mut().for_each(|inverse_ani| {

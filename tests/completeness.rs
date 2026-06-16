@@ -1,5 +1,5 @@
 use approx::assert_abs_diff_eq;
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 
 pub mod common;
 use crate::common::TestSetup;
@@ -7,6 +7,7 @@ use crate::common::*;
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     /// Assert function with tolerance for distance comparisons using approx crate
@@ -24,7 +25,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("R6.fa.gz");
 
         // Create sketch database with genomes in alphabetical order
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -57,7 +58,7 @@ mod tests {
         );
 
         // First, let's inspect the sketch database to understand genome ordering
-        let sketch_info_output = Command::new(cargo_bin("sketchlib"))
+        let sketch_info_output = Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("info")
@@ -77,7 +78,7 @@ mod tests {
         println!("{}", completeness_content);
 
         // Calculate distances WITHOUT completeness correction
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test_genomes")
@@ -88,7 +89,7 @@ mod tests {
             .success();
 
         // Calculate distances WITH completeness correction using default cutoff (0.64)
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test_genomes")
@@ -102,7 +103,7 @@ mod tests {
 
         // Calculate distances WITH completeness correction using high cutoff (0.8)
         // This should correct no pairs since all c1*c2 products < 0.8
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test_genomes")
@@ -249,7 +250,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("R6.fa.gz");
 
         // Create sketch database
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -274,7 +275,7 @@ mod tests {
 
         // Calculate distances with missing genome in completeness file
         // This should succeed and use default completeness of 1.0 for R6
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test_missing")
@@ -317,7 +318,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
 
         // Create sketch database with only 2 genomes
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -343,7 +344,7 @@ mod tests {
 
         // Calculate distances with extra genomes in completeness file
         // This should succeed and ignore the extra genomes
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test_extra")
@@ -387,7 +388,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("R6.fa.gz");
 
         // Create inverted index for preclustering
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("build")
@@ -401,7 +402,7 @@ mod tests {
             .success();
 
         // Create standard sketch database
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -425,7 +426,7 @@ mod tests {
         );
 
         // Run precluster with completeness correction
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
             .arg("precluster")
@@ -472,7 +473,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("14412_3#84.contigs_velvet.fa.gz");
 
         // Create sketch database
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -496,7 +497,7 @@ mod tests {
         );
 
         // Calculate distances WITHOUT completeness correction
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("formula_test")
@@ -507,7 +508,7 @@ mod tests {
             .success();
 
         // Calculate distances WITH completeness correction
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("formula_test")

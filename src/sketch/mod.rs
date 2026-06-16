@@ -1,24 +1,33 @@
 //! Methods to sketch samples, save/load sketches
 use std::cmp::Ordering;
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use indicatif::ParallelProgressIterator;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::hashing::{
-    bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
-};
+use super::hashing::{bloom_filter::KmerFilter, RollHash};
+
+#[cfg(not(target_arch = "wasm32"))]
+use super::hashing::{nthash_iterator::NtHashIterator, HashType};
+
+#[cfg(not(target_arch = "wasm32"))]
 use crate::hashing::aahash_iterator::AaHashIterator;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::io::InputFastx;
 #[cfg(feature = "3di")]
 use crate::structures::pdb_to_3di;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::utils::get_progress_bar;
 
 pub mod multisketch;
 
 pub mod sketch_datafile;
+#[cfg(not(target_arch = "wasm32"))]
 use self::sketch_datafile::SketchArrayWriter;
 
 /// Bin bits (lowest of 64-bits to keep)
@@ -143,6 +152,29 @@ impl Sketch {
         (signs, densified)
     }
 
+    /// Get the sketch bins for a sample, but do not transpose
+    pub fn get_signs_no_densify<H: RollHash + ?Sized>(
+        seq_hashes: &mut H,
+        kmer_size: usize,
+        filter: &mut Option<KmerFilter>,
+        num_bins: u64,
+    ) -> Vec<u64> {
+        // Setup storage for each k
+        let mut signs = vec![u64::MAX; num_bins as usize];
+        if let Some(read_filter) = filter {
+            read_filter.clear();
+        }
+        seq_hashes.set_k(kmer_size);
+
+        // Calculate bin minima across all sequence
+        let bin_size: u64 = SIGN_MOD.div_ceil(num_bins);
+        for hash in seq_hashes.iter() {
+            Self::bin_sign(&mut signs, hash % SIGN_MOD, bin_size, filter);
+        }
+
+        signs
+    }
+
     /// The name of the sample
     pub fn name(&self) -> &str {
         &self.name
@@ -201,7 +233,8 @@ impl Sketch {
     // TODO could use newer method
     // http://proceedings.mlr.press/v115/mai20a.html
     // https://github.com/zhaoxiaofei/bindash/blob/eb4f81e50b3c42a1fdc00901290b35d0fa9a1e8d/src/hashutils.hpp#L109
-    fn densify_bin(signs: &mut [u64]) -> bool {
+    /// Densifies an array of bins
+    pub fn densify_bin(signs: &mut [u64]) -> bool {
         let mut minval = u64::MAX;
         let mut maxval = 0;
         for sign in &mut *signs {
@@ -244,6 +277,7 @@ impl fmt::Display for Sketch {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Main function to create sketches from a set of input files, which is parallelised
 /// over the input files
 pub fn sketch_files(
@@ -293,17 +327,15 @@ pub fn sketch_files(
                 .par_iter()
                 .progress_with(progress_bar)
                 .enumerate()
-                .map(|(idx, (name, fastx1, fastx2))| {
+                .map(|(idx, (name, fastxvec))| {
                     // Read in sequence and set up rolling hash by alphabet type
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
-                        HashType::DNA => {
-                            NtHashIterator::new((fastx1, fastx2.as_ref()), rc, min_qual)
-                                .into_iter()
-                                .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                .collect()
-                        }
+                        HashType::DNA => NtHashIterator::new(fastxvec, k[0], rc, min_qual)
+                            .into_iter()
+                            .map(|it| Box::new(it) as Box<dyn RollHash>)
+                            .collect(),
                         HashType::AA(level) => {
-                            AaHashIterator::new(fastx1, level.clone(), concat_fasta)
+                            AaHashIterator::new(fastxvec, level.clone(), concat_fasta)
                                 .into_iter()
                                 .map(|it| Box::new(it) as Box<dyn RollHash>)
                                 .collect()
@@ -316,7 +348,7 @@ pub fn sketch_files(
                                     .map(|it| Box::new(it) as Box<dyn RollHash>)
                                     .collect()
                             } else {
-                                AaHashIterator::from_3di_file(fastx1)
+                                AaHashIterator::from_3di_file(fastxvec)
                                     .into_iter()
                                     .map(|it| Box::new(it) as Box<dyn RollHash>)
                                     .collect()

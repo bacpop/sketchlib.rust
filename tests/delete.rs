@@ -1,5 +1,5 @@
 use predicates::prelude::*;
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 use std::path::Path;
 
 pub mod common;
@@ -22,7 +22,7 @@ mod tests {
             "R6.fa.gz",
             "TIGR4.fa.gz",
         ]);
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -36,7 +36,7 @@ mod tests {
             "14412_3#82.contigs_velvet.fa.gz",
             "14412_3#84.contigs_velvet.fa.gz",
         ]);
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -46,7 +46,7 @@ mod tests {
             .assert()
             .success();
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("delete")
             .arg("full_db")

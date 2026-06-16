@@ -30,6 +30,24 @@ pub enum InvertedQueryType {
     AnyBins,
 }
 
+/// How to handle genomes with no shared bins in the prefilter
+#[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum)]
+pub enum RetainUnmatched {
+    /// Output unmatched genomes as self-matches (singletons)
+    Singleton,
+    /// Brute-force compare unmatched genomes against all others
+    Bruteforce,
+}
+
+impl fmt::Display for RetainUnmatched {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RetainUnmatched::Singleton => write!(f, "Retain as singletons"),
+            RetainUnmatched::Bruteforce => write!(f, "Brute-force against all"),
+        }
+    }
+}
+
 impl fmt::Display for InvertedQueryType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -329,6 +347,10 @@ pub enum InvertedCommands {
         #[arg(long)]
         species_names: Option<String>,
 
+        /// File listing species names, or clusters, for phylogenetic ordering
+        #[arg(long)]
+        metadata: Option<String>,
+
         /// Sketch size
         #[arg(short, long, default_value_t = DEFAULT_SKETCHSIZE)]
         sketch_size: u64,
@@ -431,6 +453,11 @@ pub enum InvertedCommands {
         /// minimum completeness for a sample to be corrected but the completeness correction
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
+
+        /// Retain genomes with no shared bins in the prefilter.
+        /// 'singleton' outputs them as self-matches, 'bruteforce' compares them against all others.
+        #[arg(long, value_enum)]
+        retain_unmatched: Option<RetainUnmatched>,
     },
 }
 

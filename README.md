@@ -20,17 +20,28 @@ point so sketch libraries will not need to be rebuilt.
 
 ### Citation
 
-No preprint or paper yet, but we rely on algorithms from:
+No preprint or paper yet sorry.
+
+Some description in:
+
+Lees JA, Tonkin-Hill G, Yang Z, Corander J.
+Mandrake: visualizing microbial population structure by embedding millions of
+genomes into a low-dimensional representation. *Philosophical Transactions of
+The Royal Society B*. 2022;377: 20210237.
+
+https://doi.org/10.1098/rstb.2021.0237
+
+We rely on algorithms from:
 
 *bindash* (written by XiaoFei Zhao):\
 Zhao, X. BinDash, software for fast genome distance estimation on a typical personal laptop.\
 *Bioinformatics* **35**:671–673 (2019).\
-doi:[10.1093/bioinformatics/bty651](https://dx.doi.org/10.1093/bioinformatics/bty651>)
+doi:[10.1093/bioinformatics/bty651](https://dx.doi.org/10.1093/bioinformatics/bty651)
 
 *ntHash* (written by Hamid Mohamadi):\
 Mohamadi, H., Chu, J., Vandervalk, B. P. & Birol, I. ntHash: recursive nucleotide hashing.\
 *Bioinformatics* **32**:3492–3494 (2016).\
-doi:[10.1093/bioinformatics/btw397](https://dx.doi.org/10.1093/bioinformatics/btw397>)
+doi:[10.1093/bioinformatics/btw397](https://dx.doi.org/10.1093/bioinformatics/btw397)
 
 ## Documentation
 
@@ -42,9 +53,10 @@ Choose from:
 
 1. Download a binary from the releases.
 2. Use `cargo install sketchlib` or `cargo add sketchlib`.
-3. Build from source
+3. Use conda install -c bioconda sketchlib.
+4. Build from source
 
-For 2) or 3) you must have the rust toolchain installed.
+For 2) or 4) you must have the rust toolchain installed.
 
 ### OS X users
 

@@ -2,7 +2,9 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod aahash_iterator;
+#[cfg(not(target_arch = "wasm32"))]
 mod aahash_tables;
 pub mod bloom_filter;
 pub mod nthash_iterator;

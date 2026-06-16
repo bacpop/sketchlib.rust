@@ -1,5 +1,5 @@
 use predicates::prelude::*;
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 use std::path::Path;
 
 pub mod common;
@@ -57,7 +57,7 @@ mod tests {
     fn test_merge_sketches() {
         let sandbox = TestSetup::setup();
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -68,7 +68,7 @@ mod tests {
             .assert()
             .success();
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -79,7 +79,7 @@ mod tests {
             .assert()
             .success();
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -93,7 +93,7 @@ mod tests {
             .success();
 
         // Overlapping labels fails
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("merge")
             .arg("part1")
@@ -103,7 +103,7 @@ mod tests {
             .assert()
             .failure();
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("merge")
             .arg("part1")

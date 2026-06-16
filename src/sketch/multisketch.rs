@@ -226,10 +226,10 @@ impl MultiSketch {
     }
 
     /// Checks for append compatibility with another [`MultiSketch`] object
-    pub fn append_compatibility(&self, name_vec: &[(String, String, Option<String>)]) -> bool {
+    pub fn append_compatibility(&self, name_vec: &[(String, Vec<String>)]) -> bool {
         let mut compatibility = true;
         let mut duplicate_list = Vec::new();
-        for (id, _, _) in name_vec.iter() {
+        for (id, _) in name_vec.iter() {
             if self.name_map.contains_key(id) {
                 duplicate_list.push(id);
                 compatibility = false;

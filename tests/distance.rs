@@ -1,4 +1,4 @@
-use snapbox::cmd::{cargo_bin, Command};
+use snapbox::cmd::{self, Command};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -83,7 +83,7 @@ mod tests {
         //Test 1: One short sequence vs one short seqeunce (1 SNP apart)
 
         //Test 1 begin -------------
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "3"])
@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test1_part1.skd"));
         assert_eq!(true, sandbox.file_exists("test1_part1.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "3"])
@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test1_part2.skd"));
         assert_eq!(true, sandbox.file_exists("test1_part2.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test1_part1")
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("short_sequence_dist_3"));
 
         //Test 2 begin -------------
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test2_part1.skm"));
 
         // removed second to last contigs which is 3610 bps
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "17"])
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test2_part2.skd"));
         assert_eq!(true, sandbox.file_exists("test2_part2.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test2_part1")
@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test2_rust_results"));
 
         //Test 3 begin -------------
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .args(&["--k-vals", "31"])
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(true, sandbox.file_exists("test3_part1.skd"));
         assert_eq!(true, sandbox.file_exists("test3_part1.skm"));
 
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("test3_part1")
@@ -278,7 +278,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Sketch the files
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -290,7 +290,7 @@ mod tests {
             .success();
 
         // C-a dists at knn=1
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
@@ -301,7 +301,7 @@ mod tests {
             .stdout_eq(sandbox.snapbox_file("dists_knn_ca.stdout", TestDir::Correct));
 
         // Jaccard dists at knn=1
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
@@ -314,7 +314,7 @@ mod tests {
             .stdout_eq(sandbox.snapbox_file("dists_knn_jaccard.stdout", TestDir::Correct));
 
         // ANI dists at knn=1
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")
@@ -363,21 +363,21 @@ mod tests {
         }
 
         // Disjoint reference: 14412_3#82 + 14412_3#84 only
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["sketch", "-f", "rfile_ref.txt", "--k-seq", "17,31,4", "-s", "1000", "-o", "bact_db"])
             .assert()
             .success();
 
         // Query: R6 + TIGR4
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["sketch", "-f", "qfile.txt", "--k-seq", "17,31,4", "-s", "1000", "-o", "query_db"])
             .assert()
             .success();
 
         // All 4 genomes — used for self-kNN consistency test only
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["sketch", "-f", "rfile.txt", "--k-seq", "17,31,4", "-s", "1000", "-o", "ref_db"])
             .assert()
@@ -392,7 +392,7 @@ mod tests {
         let sandbox = TestSetup::setup();
         sketch_ref_and_query(&sandbox);
 
-        let output = std::process::Command::new(cargo_bin("sketchlib"))
+        let output = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "--knn", "1", "-k", "21", "--ani"])
             .output()
@@ -413,7 +413,7 @@ mod tests {
         sketch_ref_and_query(&sandbox);
 
         // Dense: all bact_ref × query pairs (format: ref \t query \t ani)
-        let dense_out = std::process::Command::new(cargo_bin("sketchlib"))
+        let dense_out = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "-k", "21", "--ani"])
             .output()
@@ -439,7 +439,7 @@ mod tests {
         }
 
         // kNN output columns: query(0) \t ref(1) \t ani(2)
-        let knn_out = std::process::Command::new(cargo_bin("sketchlib"))
+        let knn_out = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "--knn", "1", "-k", "21", "--ani"])
             .output()
@@ -466,7 +466,7 @@ mod tests {
         let sandbox = TestSetup::setup();
         sketch_ref_and_query(&sandbox);
 
-        let output = std::process::Command::new(cargo_bin("sketchlib"))
+        let output = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "--knn", "1", "-k", "21", "--ani"])
             .output()
@@ -501,7 +501,7 @@ mod tests {
         sketch_ref_and_query(&sandbox);
 
         // Self-kNN on all 4 genomes with knn=3
-        let self_out = std::process::Command::new(cargo_bin("sketchlib"))
+        let self_out = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "ref_db", "--knn", "3", "-k", "21", "--ani"])
             .output()
@@ -510,7 +510,7 @@ mod tests {
 
         // Cross-query kNN=1: query=R6+TIGR4 against ref=14412_3#82+14412_3#84
         // kNN output columns: query(0) \t ref(1) \t ani(2)
-        let cross_out = std::process::Command::new(cargo_bin("sketchlib"))
+        let cross_out = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "--knn", "1", "-k", "21", "--ani"])
             .output()
@@ -570,7 +570,7 @@ mod tests {
         );
 
         // Both completeness flags accepted; output has correct row count and valid ANI range
-        let comp_out = std::process::Command::new(cargo_bin("sketchlib"))
+        let comp_out = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args([
                 "dist", "bact_db", "query_db",
@@ -603,7 +603,7 @@ mod tests {
                 ("14412_3#84.contigs_velvet.fa.gz", 85.0),
             ],
         );
-        let bad_out = std::process::Command::new(cargo_bin("sketchlib"))
+        let bad_out = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args([
                 "dist", "bact_db", "query_db",
@@ -632,7 +632,7 @@ mod tests {
         let sandbox = TestSetup::setup();
         sketch_ref_and_query(&sandbox);
 
-        let output = std::process::Command::new(cargo_bin("sketchlib"))
+        let output = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "--knn", "1"])
             .output()
@@ -666,7 +666,7 @@ mod tests {
         let sandbox = TestSetup::setup();
         sketch_ref_and_query(&sandbox);
 
-        let output = std::process::Command::new(cargo_bin("sketchlib"))
+        let output = std::process::Command::new(cmd::cargo_bin("sketchlib"))
             .current_dir(sandbox.get_wd())
             .args(["dist", "bact_db", "query_db", "--knn", "2", "-k", "21", "--ani"])
             .output()
@@ -698,7 +698,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("rfile.txt");
 
         // Sketch the files
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("sketch")
             .arg("-o")
@@ -710,7 +710,7 @@ mod tests {
             .success();
 
         // Subset three samples and calc dists
-        Command::new(cargo_bin("sketchlib"))
+        Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("dist")
             .arg("sketch_db")

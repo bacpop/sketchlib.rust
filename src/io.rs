@@ -13,32 +13,34 @@ use rayon::prelude::*;
 use regex::Regex;
 
 /// Wrapper type for the three fields in an rfile
-pub type InputFastx = (String, String, Option<String>);
+pub type InputFastx = (String, Vec<String>);
 
 /// Given a list of input files, parses them into triples of name, filename and
 /// [`None`] to be used as sketch input.
 pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
     let mut input_files = Vec::new();
     // matches the file name (no extension) in a full path
-    let re_path = Regex::new(r"^.+/(.+\.?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
+    let re_path =
+        Regex::new(r"^.+/(.+\.(fa|fasta|fa\.gz|fasta\.gz|fastq|fastq\.gz|fq|fq\.gz))$").unwrap();
     // matches the file name (no extension) with no path
-    let re_name = Regex::new(r"^(.+\.?i:fa|fasta|fastq|fastq\.gz)$").unwrap();
+    let re_name =
+        Regex::new(r"^(.+\.(fa|fasta|fa\.gz|fasta\.gz|fastq|fastq\.gz|fq|fq\.gz))$").unwrap();
     for file in seq_files {
         let caps = re_path.captures(file).or(re_name.captures(file));
         let name = match caps {
             Some(capture) => capture[1].to_string(),
             None => file.to_string(),
         };
-        input_files.push((name, file.to_string(), None));
+        input_files.push((name, vec![file.to_string()]));
     }
     input_files
 }
 
 /// Give a reordering for input files given some labels, putting the same labels next to each other
 pub fn reorder_input_files(
-    input_files: &Vec<(String, String, Option<String>)>,
+    input_files: &Vec<(String, Vec<String>)>,
     species_name_file: &str,
-) -> Vec<usize> {
+) -> (Vec<usize>, Option<HashMap<String, String>>) {
     // Set of names, so only these are read from the species order
     log::info!("Reordering samples using labels in {species_name_file}");
     let input_names: HashSet<String> = input_files.iter().map(|fastx| fastx.0.clone()).collect();
@@ -51,7 +53,8 @@ pub fn reorder_input_files(
     });
     let f = BufReader::new(f);
     let mut species_labels: HashMap<String, usize> = HashMap::new(); // Stores [species, species order index]
-    let mut label_order: Vec<(String, usize)> = Vec::with_capacity(input_files.len());
+    let mut map_names_labels: HashMap<String, String> = HashMap::new(); // Stores [sample name, species]
+    let mut label_order: Vec<(String, usize)> = Vec::with_capacity(input_files.len()); // Stores [species, index-to-be]
     let mut order_idx = 0;
     // Read through labels, assign each name to a cluster in increasing order
     for line in f.lines() {
@@ -66,6 +69,7 @@ pub fn reorder_input_files(
                 order_idx += 1;
             }
         }
+        map_names_labels.insert(fields[0].to_string(), fields[1].to_string());
     }
     log::info!(
         "{} samples with {} unique labels",
@@ -81,14 +85,13 @@ pub fn reorder_input_files(
         reordered_dict.insert(reordered_name, new_idx);
     }
 
-    let mut sample_order = Vec::new();
     if reordered_dict.is_empty() {
         log::warn!("Could not find any sample names in {species_name_file}");
-        sample_order = (0..input_files.len()).collect();
+        ((0..input_files.len()).collect(), None)
     } else {
         // Use lookup table to create a list of new index for each input sample
         // This deals with missing labels
-        sample_order.reserve_exact(input_files.len());
+        let mut sample_order = Vec::with_capacity(input_files.len());
         let mut new_idx = reordered_dict.len() - 1;
         for sample_name in input_files {
             let sample_idx = if let Some(order) = reordered_dict.get(&sample_name.0) {
@@ -102,12 +105,35 @@ pub fn reorder_input_files(
         log::info!(
             "Found {} of {} input samples with given labels",
             input_files
-                .len()
-                .saturating_sub(new_idx - (reordered_dict.len() - 1)),
+                .iter()
+                .filter(|name| reordered_dict.contains_key(&name.0))
+                .count(),
             input_files.len()
         );
+        (sample_order, Some(map_names_labels))
     }
-    sample_order
+}
+
+/// Parse the metadata for creating an inverted index, so that we can include them in it
+pub fn parse_metadata_info(metadata_file: &str) -> HashMap<String, String> {
+    let f = File::open(metadata_file)
+        .unwrap_or_else(|_| panic!("Unable to open species name file {metadata_file}"));
+    let f = BufReader::new(f);
+    let mut out_dict: HashMap<String, String> = HashMap::new(); // Stores [label, metadata]
+                                                                // Read through labels, saves all metadata in the dictionary
+    for line in f.lines() {
+        let line = line.expect("Unable to read line in metadata");
+        let fields: Vec<&str> = line.split_terminator("\t").collect();
+        if out_dict.contains_key(fields[0]) {
+            panic!("Some entry in metadata is duplicated");
+        } else {
+            out_dict.insert(fields[0].to_string(), fields[1].to_string());
+        }
+    }
+
+    log::info!("Got metadata for {} labels", out_dict.len(),);
+
+    out_dict
 }
 
 /// Validate and sort k-mer lists provided via the CLI
@@ -174,19 +200,19 @@ pub fn get_input_list(
             for line in f.lines() {
                 let line = line.expect("Unable to read line in file_list");
                 let fields: Vec<&str> = line.split_whitespace().collect();
-                // 1 entry: fasta with name = file
-                // 2 entries: fasta name, file
-                // 3 entries: fastq name, file1, file2
+                // 1 entry:           one fastX with name = file
+                // 2 entries:         name, fastX
+                // 3 or more entries: name, fastX1, fastX2, ...
                 let parsed_input = match fields.len() {
-                    1 => ((fields[0].to_string()), fields[0].to_string(), None),
-                    2 => ((fields[0].to_string()), fields[1].to_string(), None),
-                    3 => (
-                        (fields[0].to_string()),
-                        fields[1].to_string(),
-                        Some(fields[2].to_string()),
-                    ),
+                    0 => panic!("Unable to parse line in file_list"),
+                    1 => ((fields[0].to_string()), vec![fields[0].to_string()]),
+                    2 => ((fields[0].to_string()), vec![fields[1].to_string()]),
                     _ => {
-                        panic!("Unable to parse line in file_list")
+                        let mut tmpvec = Vec::with_capacity(fields.len() - 1);
+                        for file in fields.iter().skip(1) {
+                            tmpvec.push(file.to_string());
+                        }
+                        ((fields[0].to_string()), tmpvec)
                     }
                 };
                 input_files.push(parsed_input);
@@ -264,8 +290,10 @@ pub fn read_completeness_file(
         );
     }
 
+    let mut matched = vec![false; sketches.number_samples_loaded()];
     for (index, completeness) in updates {
         completeness_vec[index] = completeness;
+        matched[index] = true;
     }
 
     let not_found = not_in_sketch.into_inner().unwrap();
@@ -274,6 +302,21 @@ pub fn read_completeness_file(
             "{} genome(s) in completeness file not found in sketch database (ignored): {}",
             not_found.len(),
             not_found.join(", ")
+        );
+    }
+
+    // Report sketch genomes not found in completeness file
+    let missing: Vec<String> = matched
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| !m)
+        .map(|(i, _)| sketches.sketch_name(i).to_string())
+        .collect();
+    if !missing.is_empty() {
+        log::warn!(
+            "{} genome(s) not found in completeness file, using default 1.0: {}",
+            missing.len(),
+            missing.join(", ")
         );
     }
 
@@ -296,16 +339,16 @@ fn test_reorder_input_files() {
     .expect("Failed to write to temp file");
 
     let input_files = vec![
-        ("sample1".to_string(), "assembly1.fa".to_string(), None),
-        ("sample2".to_string(), "assembly2.fa".to_string(), None),
-        ("sample3".to_string(), "assembly3.fa".to_string(), None),
-        ("sample4".to_string(), "assembly4.fa".to_string(), None),
-        ("sample5".to_string(), "assembly5.fa".to_string(), None),
+        ("sample1".to_string(), vec!["assembly1.fa".to_string()]),
+        ("sample2".to_string(), vec!["assembly2.fa".to_string()]),
+        ("sample3".to_string(), vec!["assembly3.fa".to_string()]),
+        ("sample4".to_string(), vec!["assembly4.fa".to_string()]),
+        ("sample5".to_string(), vec!["assembly5.fa".to_string()]),
     ];
 
     let species_name_file = temp_file.path().to_str().unwrap();
     let reordered_indices = reorder_input_files(&input_files, species_name_file);
 
-    assert_eq!(reordered_indices.len(), input_files.len());
-    assert_eq!(reordered_indices, vec![0, 2, 1, 3, 4]) // 1(A), 3(A), 2(B), 4(C), 5(NA) (sample6 not included)
+    assert_eq!(reordered_indices.0.len(), input_files.len());
+    assert_eq!(reordered_indices.0, vec![0, 2, 1, 3, 4]) // 1(A), 3(A), 2(B), 4(C), 5(NA) (sample6 not included)
 }
