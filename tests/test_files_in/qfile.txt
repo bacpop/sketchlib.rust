@@ -1,0 +1,2 @@
+R6.fa.gz	R6.fa.gz
+TIGR4.fa.gz	TIGR4.fa.gz

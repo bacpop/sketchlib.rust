@@ -63,7 +63,8 @@ pub fn core_acc_dist(
     query_sketches: &MultiSketch,
     ref_sketch_idx: usize,
     query_sketch_idx: usize,
-    completeness_vec: Option<&Vec<f64>>,
+    ref_completeness_vec: Option<&Vec<f64>>,
+    query_completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
 ) -> (f32, f32) {
     if ref_sketches.kmer_lengths().len() < 2 {
@@ -74,8 +75,8 @@ pub fn core_acc_dist(
     let tolerance = (2.0_f64 / ((ref_sketches.sketch_size * u64::BITS as u64) as f64)).ln();
     //let tolerance = -100.0_f32;
     for (k_idx, k) in ref_sketches.kmer_lengths().iter().enumerate() {
-        let c1 = completeness_vec.map(|cv| cv[ref_sketch_idx]);
-        let c2 = completeness_vec.map(|cv| cv[query_sketch_idx]);
+        let c1 = ref_completeness_vec.map(|cv| cv[ref_sketch_idx]);
+        let c2 = query_completeness_vec.map(|cv| cv[query_sketch_idx]);
         let y = jaccard_index(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
             query_sketches.get_sketch_slice(query_sketch_idx, k_idx),

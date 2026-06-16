@@ -107,6 +107,7 @@ pub fn self_dists_all<'a>(
                         i,
                         j,
                         completeness_vec,
+                        completeness_vec,
                         completeness_cutoff,
                     );
                     dist_slice[dist_idx * 2] = dist.0;
@@ -208,6 +209,7 @@ pub fn self_dists_knn<'a>(
                             i,
                             j,
                             completeness_vec,
+                            completeness_vec,
                             completeness_cutoff,
                         );
                         let dist_item = SparseCoreAcc(j, dists.0, dists.1);
@@ -221,15 +223,16 @@ pub fn self_dists_knn<'a>(
     sp_distances
 }
 
-/// Self query mode (dense, all distances)
-pub fn self_query_dists_all<'a>(
+/// Cross-query mode (dense, all distances)
+pub fn cross_dists_all<'a>(
     ref_sketches: &'a MultiSketch,
     query_sketches: &'a MultiSketch,
     n: usize,
-    nq: usize,
+    n_query: usize,
     dist_type: DistType,
     quiet: bool,
-    completeness_vec: Option<&Vec<f64>>,
+    ref_completeness_vec: Option<&Vec<f64>>,
+    query_completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
 ) -> DistanceMatrix<'a> {
     let mut distances = DistanceMatrix::new(ref_sketches, Some(query_sketches), dist_type);
@@ -245,14 +248,11 @@ pub fn self_query_dists_all<'a>(
         .for_each(|(chunk_idx, dist_slice)| {
             // Get first i, j index for the chunk
             let start_dist_idx = chunk_idx * CHUNK_SIZE;
-            let (mut i, mut j) = calc_query_indices(start_dist_idx, nq);
+            let (mut i, mut j) = calc_query_indices(start_dist_idx, n_query);
             for dist_idx in 0..CHUNK_SIZE {
                 if let Some((k_idx, k_f64)) = k_vals {
-                    // If completeness_vec is Some, extract the value at index i (or j) from the inner vector.
-                    // If completeness_vec is None, the result will also be None.
-                    // This uses Option::map to safely access the completeness value for each sample.
-                    let c1 = completeness_vec.map(|cv| cv[i]);
-                    let c2 = completeness_vec.map(|cv| cv[j]);
+                    let c1 = ref_completeness_vec.map(|cv| cv[i]);
+                    let c2 = query_completeness_vec.map(|cv| cv[j]);
                     let j_index = jaccard_index(
                         ref_sketches.get_sketch_slice(i, k_idx),
                         query_sketches.get_sketch_slice(j, k_idx),
@@ -273,7 +273,8 @@ pub fn self_query_dists_all<'a>(
                         query_sketches,
                         i,
                         j,
-                        completeness_vec,
+                        ref_completeness_vec,
+                        query_completeness_vec,
                         completeness_cutoff,
                     );
                     dist_slice[dist_idx * 2] = dist.0;
@@ -282,7 +283,7 @@ pub fn self_query_dists_all<'a>(
 
                 // Move to next index
                 j += 1;
-                if j >= nq {
+                if j >= n_query {
                     i += 1;
                     j = 0;
                     // End of all dists reached (final chunk)
@@ -293,6 +294,104 @@ pub fn self_query_dists_all<'a>(
             }
         });
     distances
+}
+
+/// Cross-query mode with kNN filtering.
+///
+/// For each query genome, computes distances to all `n` reference genomes and
+/// retains only the `knn` nearest neighbours using a priority queue (max-heap
+/// capped at `knn`). Output has `n_query × knn` entries — one row per query genome.
+///
+/// This is the cross-database analogue of [`self_dists_knn`].
+pub fn cross_dists_knn<'a>(
+    ref_sketches: &'a MultiSketch,
+    query_sketches: &'a MultiSketch,
+    n: usize,
+    n_query: usize,
+    knn: usize,
+    dist_type: DistType,
+    quiet: bool,
+    ref_completeness_vec: Option<&Vec<f64>>,
+    query_completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+) -> SparseDistanceMatrix<'a> {
+    if n == 0 {
+        panic!("Reference database has no loaded samples");
+    }
+    if n_query == 0 {
+        panic!("Query database has no loaded samples");
+    }
+    // Can't have more neighbours than there are reference genomes
+    let knn = knn.min(n);
+    let mut sp_distances =
+        SparseDistanceMatrix::new_cross_query(ref_sketches, query_sketches, knn, dist_type);
+    let k_vals = sp_distances.k_vals();
+    let ani = sp_distances.ani();
+    let progress_bar = get_progress_bar(n_query, BAR_PERCENT, quiet);
+    match sp_distances.dists_mut() {
+        DistVec::Jaccard(distances) => {
+            let (k_idx, k_f64) = k_vals.unwrap();
+            distances
+                .par_chunks_mut(knn)
+                .progress_with(progress_bar)
+                .enumerate()
+                .for_each(|(qi, row_dist_slice)| {
+                    let mut heap = BinaryHeap::with_capacity(knn + 1);
+                    let qi_sketch = query_sketches.get_sketch_slice(qi, k_idx);
+                    for ri in 0..n {
+                        let c1 = query_completeness_vec.map(|cv| cv[qi]);
+                        let c2 = ref_completeness_vec.map(|cv| cv[ri]);
+                        let dist = jaccard_index(
+                            qi_sketch,
+                            ref_sketches.get_sketch_slice(ri, k_idx),
+                            ref_sketches.sketchsize64,
+                            c1,
+                            c2,
+                            completeness_cutoff,
+                        );
+                        let dist_f32 = if ani {
+                            (1.0_f64 - ani_pois(dist, k_f64)) as f32
+                        } else {
+                            (1.0_f64 - dist) as f32
+                        };
+                        push_heap(&mut heap, SparseJaccard(ri, dist_f32), knn);
+                    }
+                    if ani {
+                        heap.into_sorted_vec().iter().zip(row_dist_slice).for_each(
+                            |(inverse_ani, output_ani)| {
+                                *output_ani =
+                                    SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
+                            },
+                        );
+                    } else {
+                        row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
+                    }
+                });
+        }
+        DistVec::CoreAcc(distances) => {
+            distances
+                .par_chunks_mut(knn)
+                .progress_with(progress_bar)
+                .enumerate()
+                .for_each(|(qi, row_dist_slice)| {
+                    let mut heap = BinaryHeap::with_capacity(knn + 1);
+                    for ri in 0..n {
+                        let dists = core_acc_dist(
+                            ref_sketches,
+                            query_sketches,
+                            ri,
+                            qi,
+                            ref_completeness_vec,
+                            query_completeness_vec,
+                            completeness_cutoff,
+                        );
+                        push_heap(&mut heap, SparseCoreAcc(ri, dists.0, dists.1), knn);
+                    }
+                    row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
+                });
+        }
+    }
+    sp_distances
 }
 
 /// Same as [`self_dists_knn`], but also using an inverted_index to precluster
