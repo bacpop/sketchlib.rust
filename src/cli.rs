@@ -79,10 +79,13 @@ pub fn check_and_set_threads(threads: usize) {
     } else {
         log::info!("Using {threads} threads");
     }
-    rayon::ThreadPoolBuilder::new()
+    if rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build_global()
-        .unwrap();
+        .is_err()
+    {
+        log::debug!("Rayon global thread pool was already initialized");
+    }
 }
 
 /// Options that apply to all subcommands
@@ -139,11 +142,6 @@ pub enum Commands {
         // TODO: for now, could be extended to dna, but probably no need
         #[arg(long, default_value_t = false)]
         concat_fasta: bool,
-
-        /// Input files are .pdb, convert them to 3Di first
-        #[cfg(feature = "3di")]
-        #[arg(long, default_value_t = false)]
-        convert_pdb: bool,
 
         /// Output prefix
         #[arg(short)]

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "sketchlib"
+version = "0.3.0"
+description = "Python bindings for sketchlib.rust"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "John Lees", email = "jlees@ebi.ac.uk" },
+]
+
+[tool.maturin]
+manifest-path = "../Cargo.toml"
+features = ["python"]
+module-name = "sketchlib"

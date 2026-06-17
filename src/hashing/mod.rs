@@ -34,45 +34,18 @@ pub enum HashType {
     DNA,
     /// Amino acids at set [`AaLevel`]
     AA(AaLevel),
-    /// Structures using 3di embedding
-    PDB,
 }
-
-// TODO: for PDB need to use 3Di sequences. These are from an embedding
-// With foldseek, can run:
-// foldseek createdb 5uak.pdb 5Uak_DB
-// foldseek lndb 5uak_DB 5uak_DB_ss_h
-// foldseek convert2fasta 5uak_DB_ss_h 5uak.fasta
-// The Cpp code looks like a bit of a pain to build in:
-// https://github.com/steineggerlab/foldseek/blob/master/lib/3di/structureto3di.cpp
-// This python port is an alternative:
-// https://github.com/althonos/mini3di
-// (this seems to give different results to the above)
-// Seems pretty easy to run python from within rust:
-// https://pyo3.rs/v0.21.2/python-from-rust/calling-existing-code
-// Or a language model:
-// https://github.com/mheinzinger/ProstT5
 
 // NB: this is needed because ValueEnum (for clap) only works with non-unit types
 // So here set a default for the level and set it properly later (in lib.rs)
 impl clap::ValueEnum for HashType {
     fn value_variants<'a>() -> &'a [Self] {
-        &[
-            HashType::DNA,
-            HashType::AA(DEFAULT_LEVEL),
-            // HashType::AA(AaLevel::Level2),
-            // HashType::AA(AaLevel::Level3),
-            HashType::PDB,
-        ]
+        &[HashType::DNA, HashType::AA(DEFAULT_LEVEL)]
     }
     fn to_possible_value<'a>(&self) -> ::std::option::Option<clap::builder::PossibleValue> {
         match self {
             Self::DNA => Some(clap::builder::PossibleValue::new("dna")),
             Self::AA(_) => Some(clap::builder::PossibleValue::new("aa")),
-            // Self::AA(AaLevel::Level1) => Some(clap::builder::PossibleValue::new("aa_1")),
-            // Self::AA(AaLevel::Level2) => Some(clap::builder::PossibleValue::new("aa_2")),
-            // Self::AA(AaLevel::Level3) => Some(clap::builder::PossibleValue::new("aa_3")),
-            Self::PDB => Some(clap::builder::PossibleValue::new("pdb")),
         }
     }
 }
