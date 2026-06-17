@@ -19,8 +19,6 @@ use super::hashing::{nthash_iterator::NtHashIterator, HashType};
 use crate::hashing::aahash_iterator::AaHashIterator;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::io::InputFastx;
-#[cfg(feature = "3di")]
-use crate::structures::pdb_to_3di;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::get_progress_bar;
 
@@ -284,7 +282,6 @@ pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
     concat_fasta: bool,
-    #[cfg(feature = "3di")] convert_pdb: bool,
     k: &[usize],
     sketch_size: u64,
     seq_type: &HashType,
@@ -296,18 +293,6 @@ pub fn sketch_files(
     let bin_stride = 1;
     let kmer_stride = (sketch_size * BBITS) as usize;
     let sample_stride = kmer_stride * k.len();
-
-    #[cfg(feature = "3di")]
-    let struct_strings = if convert_pdb {
-        log::info!("Converting PDB files into 3Di representations");
-        Some(pdb_to_3di(input_files).expect("Error converting to 3Di"))
-    } else {
-        None
-    };
-    #[cfg(not(feature = "3di"))]
-    let struct_strings: Option<Vec<String>> = None;
-
-    log::trace!("{struct_strings:?}");
 
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
@@ -326,8 +311,7 @@ pub fn sketch_files(
             input_files
                 .par_iter()
                 .progress_with(progress_bar)
-                .enumerate()
-                .map(|(idx, (name, fastxvec))| {
+                .map(|(name, fastxvec)| {
                     // Read in sequence and set up rolling hash by alphabet type
                     let mut hash_its: Vec<Box<dyn RollHash>> = match seq_type {
                         HashType::DNA => NtHashIterator::new(fastxvec, k[0], rc, min_qual)
@@ -339,20 +323,6 @@ pub fn sketch_files(
                                 .into_iter()
                                 .map(|it| Box::new(it) as Box<dyn RollHash>)
                                 .collect()
-                        }
-                        HashType::PDB => {
-                            if let Some(di) = &struct_strings {
-                                log::trace!("Length of string: {}", di.len());
-                                AaHashIterator::from_3di_string(di[idx].clone()) // TODO: clone is not ideal
-                                    .into_iter()
-                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                    .collect()
-                            } else {
-                                AaHashIterator::from_3di_file(fastxvec)
-                                    .into_iter()
-                                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                                    .collect()
-                            }
                         }
                     };
 

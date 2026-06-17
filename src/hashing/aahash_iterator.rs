@@ -123,18 +123,6 @@ impl AaHashIterator {
         hash_vec
     }
 
-    /// Create a new iterator from a 3di embedding file of a structure
-    pub fn from_3di_file(files: &[String]) -> Vec<Self> {
-        Self::new(files, AaLevel::Level1, false)
-    }
-
-    /// Create a new iterator from a 3di embedding string of a structure
-    pub fn from_3di_string(sequence: String) -> Vec<Self> {
-        let mut hash_it = Self::default(AaLevel::Level1);
-        hash_it.seq = sequence.into_bytes();
-        vec![hash_it]
-    }
-
     fn new_iterator(
         mut start: usize,
         level: &AaLevel,

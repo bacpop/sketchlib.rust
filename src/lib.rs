@@ -1,5 +1,5 @@
-//! Fast distance calculations between biological sequences (DNA, AA or structures
-//! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
+//! Fast distance calculations between biological sequences (DNA or AA).
+//! Distances are based on bindash approximations of the Jaccard
 //! distance, with the [PopPUNK method](https://poppunk.bacpop.org/index.html) to calculate core and accessory distances. nthash/aahash
 //! are used for hash functions to create the sketches.
 //!
@@ -42,8 +42,6 @@
 //!   resolution and 100000-1000000 for SNP level resolution.
 //! - To sketch amino acid sequences use `--seq-type aa --concat-fasta` if you have the typical case
 //!   of each fasta file being a multifasta with many aa sequences. Each one will then be its own sample.
-//! - You can also sketch structures with .pdb input, see 'Enabling PDB->3Di' below. This is experimental.
-//!
 //! ### Distances
 //!
 //! To compute internal all-vs-all core and accessory distances use:
@@ -128,24 +126,9 @@
 //! - `append` sketches new input samples, and adds them to an existing database.
 //! - `delete` removes samples from a sketch database.
 //!
-//! ## Enabling PDB->3Di
-//! conda doesn't work, so make sure it is deactivated
-//! ```bash
-//! export PYO3_PYTHON=python3
-//! python3 -m venv 3di_venv
-//! source 3di_venv/bin/activate
-//! python3 -m pip install numpy biopython mini3di
-//! cargo run -F 3di
-//! export PYTHONPATH=${PYTHONPATH}:$(realpath ./)/3di_venv/lib/python3.12/site-packages
-//! ```
-
 #![warn(missing_docs)]
 #![allow(clippy::too_many_arguments)]
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -154,11 +137,10 @@ extern crate arrayref;
 extern crate num_cpus;
 use anyhow::Error;
 #[cfg(not(target_arch = "wasm32"))]
-use indicatif::ParallelProgressIterator;
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
-
+pub mod api;
 pub mod cli;
+#[cfg(all(not(target_arch = "wasm32"), feature = "python"))]
+pub mod python;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::cli::*;
 #[cfg(target_arch = "wasm32")]
@@ -167,38 +149,26 @@ use crate::cli::{InvertedQueryType, DEFAULT_MINCOUNT, DEFAULT_MINQUAL};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::hashing::HashType;
 
-#[cfg(not(target_arch = "wasm32"))]
-use hashbrown::{HashMap, HashSet};
-
 pub mod sketch;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sketch::multisketch::MultiSketch;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::sketch::sketch_datafile::SketchArrayReader;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::sketch::{num_bins, sketch_files};
+use crate::sketch::sketch_files;
 
 pub mod inverted;
 use crate::inverted::Inverted;
 
 pub mod distances;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::distances::*;
 
 pub mod io;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::io::{
-    get_input_list, parse_kmers, parse_metadata_info, read_completeness_file, read_subset_names,
-    reorder_input_files, set_ostream,
-};
-
-pub mod structures;
+use crate::io::{get_input_list, parse_kmers};
 
 pub mod hashing;
 
 pub mod utils;
-use crate::utils::get_progress_bar;
+pub use crate::utils::get_progress_bar;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::strip_sketch_extension;
 
@@ -243,8 +213,6 @@ pub fn main() -> Result<(), Error> {
             seq_files,
             file_list,
             concat_fasta,
-            #[cfg(feature = "3di")]
-            convert_pdb,
             output,
             kmers,
             sketch_size,
@@ -255,49 +223,21 @@ pub fn main() -> Result<(), Error> {
             min_qual,
             threads,
         } => {
-            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
-                panic!("--concat-fasta currently only supported with --seq-type aa");
-            }
-
-            // An extra thread is needed for the writer. This doesn't 'overuse' CPU
-            check_and_set_threads(*threads + 1);
-
-            // Read input
-            log::info!("Getting input files");
-            let input_files = get_input_list(file_list, seq_files);
-            log::info!("Parsed {} samples in input list", input_files.len());
-            let kmers = parse_kmers(kmers);
-            // Build, merge
-            let rc = !*single_strand;
-            // Set aa level
-            let seq_type = if let HashType::AA(_) = seq_type {
-                HashType::AA(level.clone())
-            } else {
-                seq_type.clone()
-            };
-
-            let (_, sketch_bins, _) = num_bins(*sketch_size);
-            log::info!(
-                "Running sketching: k:{kmers:?}; sketch_size:{sketch_bins}; seq:{seq_type:?}; threads:{threads}"
-            );
-            let mut sketches = sketch_files(
-                output,
-                &input_files,
-                *concat_fasta,
-                #[cfg(feature = "3di")]
-                *convert_pdb,
-                &kmers,
-                sketch_bins,
-                &seq_type,
-                rc,
-                *min_count,
-                *min_qual,
-                args.quiet,
-            );
-            let sketch_vec = MultiSketch::new(&mut sketches, sketch_bins, &kmers, seq_type);
-            sketch_vec
-                .save_metadata(output)
-                .expect("Error saving metadata");
+            api::sketch(api::SketchOptions {
+                seq_files: seq_files.clone(),
+                file_list: file_list.clone(),
+                output: output.clone(),
+                kmers: parse_kmers(kmers),
+                sketch_size: *sketch_size,
+                seq_type: seq_type.clone(),
+                level: level.clone(),
+                concat_fasta: *concat_fasta,
+                single_strand: *single_strand,
+                min_count: *min_count,
+                min_qual: *min_qual,
+                threads: *threads,
+                quiet: args.quiet,
+            })?;
             Ok(())
         }
         Commands::Dist {
@@ -313,142 +253,20 @@ pub fn main() -> Result<(), Error> {
             query_completeness_file,
             completeness_cutoff,
         } => {
-            check_and_set_threads(*threads);
-
-            let mut output_file = set_ostream(output);
-
-            let ref_db_name = utils::strip_sketch_extension(ref_db);
-
-            let mut references = MultiSketch::load_metadata(ref_db_name)
-                .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
-
-            log::info!("Loading sketch data from {ref_db_name}.skd");
-            if let Some(subset_file) = subset {
-                let subset_names = read_subset_names(subset_file);
-                references.read_sketch_data_block(ref_db_name, &subset_names);
-            } else {
-                references.read_sketch_data(ref_db_name);
-            }
-            log::info!("Read reference sketches:\n{references:?}");
-            let n = references.number_samples_loaded();
-            let ref_completeness_vec: Option<Vec<f64>> =
-                if let Some(file_path) = ref_completeness_file {
-                    Some(read_completeness_file(file_path, &references)?)
-                } else {
-                    None
-                };
-
-            let dist_type = set_k(&references, *kmer, *ani).unwrap_or_else(|e| {
-                panic!("Error setting k size: {e}");
-            });
-
-            // Read queries if supplied. Note no subsetting here
-            let queries = if let Some(query_db_name) = query_db {
-                let mut queries = MultiSketch::load_metadata(query_db_name).unwrap_or_else(|_| {
-                    panic!("Could not read sketch metadata from {query_db_name}.skm")
-                });
-                log::info!("Loading query sketch data from {query_db_name}.skd");
-                queries.read_sketch_data(query_db_name);
-                log::info!("Read query sketches:\n{queries:?}");
-                Some(queries)
-            } else {
-                None
-            };
-
-            match queries {
-                None => {
-                    // Ref v ref functions
-                    match knn {
-                        None => {
-                            // Self mode (dense)
-                            log::info!("Calculating all ref vs ref distances");
-                            let distances = self_dists_all(
-                                &references,
-                                n,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                            );
-                            log::info!("Writing out in long matrix form");
-                            write!(output_file, "{distances}")
-                                .expect("Error writing output distances");
-                        }
-                        Some(mut nn) => {
-                            // Self mode (sparse): a genome cannot be its own neighbour
-                            if nn >= n {
-                                log::warn!("knn={nn} is higher than number of samples={n}");
-                                nn = n - 1;
-                            }
-                            log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-                            let distances = self_dists_knn(
-                                &references,
-                                n,
-                                nn,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                            );
-
-                            log::info!("Writing out in sparse matrix form");
-                            write!(output_file, "{distances}")
-                                .expect("Error writing output distances");
-                        }
-                    }
-                }
-                Some(query_db) => {
-                    let query_completeness_vec: Option<Vec<f64>> =
-                        if let Some(file_path) = query_completeness_file {
-                            Some(read_completeness_file(file_path, &query_db)?)
-                        } else {
-                            None
-                        };
-                    let n_query = query_db.number_samples_loaded();
-                    match knn {
-                        Some(mut nn) => {
-                            // Cross-query mode: query genomes never overlap ref genomes, so knn=n is valid
-                            if nn > n {
-                                log::warn!("knn={nn} is higher than number of reference samples={n}");
-                                nn = n;
-                            }
-                            // Cross-query mode (sparse kNN)
-                            log::info!("Calculating sparse ref vs query distances with {nn} nearest neighbours");
-                            let distances = cross_dists_knn(
-                                &references,
-                                &query_db,
-                                n,
-                                n_query,
-                                nn,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                query_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                            );
-                            log::info!("Writing out in sparse matrix form");
-                            write!(output_file, "{distances}").expect("Error writing output distances");
-                        }
-                        None => {
-                            // Cross-query mode (dense, all pairs)
-                            log::info!("Calculating all ref vs query distances");
-                            let distances = cross_dists_all(
-                                &references,
-                                &query_db,
-                                n,
-                                n_query,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                query_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                            );
-                            log::info!("Writing out in long matrix form");
-                            write!(output_file, "{distances}").expect("Error writing output distances");
-                        }
-                    }
-                }
-            }
+            api::dist(api::DistOptions {
+                ref_db: ref_db.clone(),
+                query_db: query_db.clone(),
+                output: output.clone(),
+                knn: *knn,
+                subset: subset.clone(),
+                kmer: *kmer,
+                ani: *ani,
+                threads: *threads,
+                ref_completeness_file: ref_completeness_file.clone(),
+                query_completeness_file: query_completeness_file.clone(),
+                completeness_cutoff: *completeness_cutoff,
+                quiet: args.quiet,
+            })?;
             Ok(())
         }
         Commands::Merge { db1, db2, output } => {
@@ -496,101 +314,21 @@ pub fn main() -> Result<(), Error> {
                 sketch_size,
                 kmer_length,
             } => {
-                // An extra thread is needed for the writer
-                check_and_set_threads(*threads + 1);
-
-                // Get input files
-                log::info!("Getting input files");
-                let input_files: Vec<(String, Vec<String>)> = get_input_list(file_list, seq_files);
-                log::info!("Parsed {} samples in input list", input_files.len());
-
-                let mut differentsamples: HashSet<String> = HashSet::new();
-
-                for i in input_files.iter() {
-                    differentsamples.insert(i.0.clone());
-                }
-
-                // Reordering by species, or default
-                let (file_order, map_names_labels) = if let Some(species_name_file) = species_names
-                {
-                    reorder_input_files(&input_files, species_name_file)
-                } else {
-                    // Check first if there are repeated samples
-
-                    let tmpnamesset = input_files
-                        .iter()
-                        .map(|x| x.0.clone())
-                        .collect::<HashSet<String>>();
-                    if tmpnamesset.len() == input_files.len() {
-                        ((0..input_files.len()).collect(), None)
-                    } else {
-                        let mut tmpoutvec: Vec<usize> = vec![0; input_files.len()];
-                        let mut tmpmap: HashMap<String, usize> = HashMap::new();
-
-                        for (i, name) in tmpnamesset.iter().enumerate() {
-                            tmpmap.insert(name.clone(), i);
-                        }
-                        for i in 0..tmpoutvec.len() {
-                            tmpoutvec[i] = tmpmap[&input_files[i].0];
-                        }
-
-                        (tmpoutvec, None)
-                    }
-                };
-
-                // If species labels were provided, create the list of them
-                let species_labels_vec = if let Some(themaplabels) = map_names_labels {
-                    let mut tmpvec: Vec<String> = vec!["".to_string(); differentsamples.len()];
-                    file_order
-                        .iter()
-                        .zip(&input_files)
-                        .for_each(|(idx, (name, _))| {
-                            // log::info!("{:?} {:?}", name, idx);
-                            tmpvec[*idx] = themaplabels.get(name).unwrap_or(&"".to_owned()).clone();
-                        });
-                    Some(tmpvec)
-                } else {
-                    None
-                };
-
-                // Parse metadata, if any
-                let metadata_vec;
-                if let Some(metadata_file) = metadata {
-                    let tmpdict = parse_metadata_info(metadata_file);
-                    let mut tmpvec: Vec<String> = vec!["".to_string(); differentsamples.len()];
-                    file_order
-                        .iter()
-                        .zip(&input_files)
-                        .for_each(|(idx, (name, _))| tmpvec[*idx] = tmpdict[name].clone());
-                    metadata_vec = Some(tmpvec);
-                } else {
-                    metadata_vec = None;
-                };
-
-                let skq_file = if *write_skq {
-                    Some(format!("{output}.skq"))
-                } else {
-                    None
-                };
-
-                let rc = !*single_strand;
-                let seq_type = &HashType::DNA;
-                let inverted = Inverted::new(
-                    &input_files,
-                    skq_file,
-                    &file_order,
-                    *kmer_length,
-                    *sketch_size, // unconstrained, equals the number of bins here, doesn't need to be a multiple of 64
-                    seq_type,
-                    rc,
-                    *min_count,
-                    *min_qual,
-                    args.quiet,
-                    &metadata_vec,
-                    &species_labels_vec,
-                );
-                inverted.save(output)?;
-                log::info!("Index info:\n{inverted:?}");
+                api::inverted_build(api::InvertedBuildOptions {
+                    seq_files: seq_files.clone(),
+                    file_list: file_list.clone(),
+                    output: output.clone(),
+                    write_skq: *write_skq,
+                    species_names: species_names.clone(),
+                    metadata: metadata.clone(),
+                    sketch_size: *sketch_size,
+                    kmer_length: *kmer_length,
+                    single_strand: *single_strand,
+                    min_count: *min_count,
+                    min_qual: *min_qual,
+                    threads: *threads,
+                    quiet: args.quiet,
+                })?;
                 Ok(())
             }
             InvertedCommands::Query {
@@ -603,80 +341,10 @@ pub fn main() -> Result<(), Error> {
                 min_qual,
                 threads,
             } => {
-                let mut output_file = set_ostream(output);
-                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
-                log::info!("Read inverted index:\n{inverted_index:?}");
-
-                // Get input files
-                log::info!("Getting input queries");
-                let input_files: Vec<(String, Vec<String>)> = get_input_list(file_list, seq_files);
-                log::info!("Parsed {} samples in input query list", input_files.len());
-
-                log::info!("Sketching input queries");
-                check_and_set_threads(*threads + 1); // Writer thread
-                let (queries, query_names) =
-                    inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
-
-                log::info!("Running queries in mode: {query_type}");
-                // Header
-                write!(output_file, "Query")?;
-                if *query_type == InvertedQueryType::MatchCount {
-                    for name in inverted_index.sample_names() {
-                        write!(output_file, "\t{name}")?;
-                    }
-                    writeln!(output_file)?;
-                } else {
-                    writeln!(output_file, "\tMatches")?;
-                }
-
-                // Query loop (parallelised)
-                let (tx, rx) = mpsc::channel();
-                let percent = false;
-                let progress_bar = get_progress_bar(queries.len(), percent, args.quiet);
-                rayon::scope(|s| {
-                    s.spawn(|_| {
-                        queries
-                            .par_iter()
-                            .progress_with(progress_bar)
-                            .zip(query_names)
-                            .map(|(q, q_name)| match query_type {
-                                InvertedQueryType::MatchCount => {
-                                    (q_name, inverted_index.query_against_inverted_index(q))
-                                }
-                                InvertedQueryType::AllBins => {
-                                    (q_name, inverted_index.all_shared_bins(q))
-                                }
-                                InvertedQueryType::AnyBins => {
-                                    (q_name, inverted_index.any_shared_bins(q))
-                                }
-                            })
-                            .for_each_with(tx, |tx, dists| {
-                                let _ = tx.send(dists);
-                            });
-                    });
-                });
-                for (q_name, dist) in rx {
-                    write!(output_file, "{q_name}")?;
-                    if *query_type == InvertedQueryType::MatchCount {
-                        for distance in dist {
-                            write!(output_file, "\t{distance}")?;
-                        }
-                    } else if !dist.is_empty() {
-                        write!(
-                            output_file,
-                            "\t{}",
-                            inverted_index.sample_at(dist[0] as usize)
-                        )?;
-                        for r_name in dist
-                            .iter()
-                            .skip(1)
-                            .map(|idx| inverted_index.sample_at(*idx as usize))
-                        {
-                            write!(output_file, ",{r_name}")?;
-                        }
-                    }
-                    writeln!(output_file)?;
-                }
+                api::inverted_query(
+                    ski, seq_files, file_list, output, query_type, *min_count, *min_qual, *threads,
+                    args.quiet,
+                )?;
                 Ok(())
             }
             InvertedCommands::Precluster {
@@ -684,15 +352,13 @@ pub fn main() -> Result<(), Error> {
                 skd,
                 count,
                 output,
-                mut knn,
+                knn,
                 ani,
                 threads,
                 ref_completeness_file,
                 completeness_cutoff,
                 retain_unmatched,
             } => {
-                check_and_set_threads(*threads);
-
                 // Load the inverted index
                 let input_prefix = strip_sketch_extension(ski);
                 let inverted_index = Inverted::load(input_prefix)?;
@@ -710,80 +376,18 @@ pub fn main() -> Result<(), Error> {
                             / 2
                     );
                 } else if let Some(ref_db_input) = skd {
-                    let mut output_file = set_ostream(output);
-
-                    // Open the .skq
-                    let skq_filename = &format!("{input_prefix}.skq");
-                    log::info!("Loading queries from {skq_filename}");
-                    let (mmap, bin_stride, kmer_stride, sample_stride) =
-                        (false, 1, 1, inverted_index.sketch_size());
-                    let mut skq_reader = SketchArrayReader::open(
-                        skq_filename,
-                        mmap,
-                        bin_stride,
-                        kmer_stride,
-                        sample_stride,
-                    );
-                    let skq_bins =
-                        skq_reader.read_all_from_skq(sample_stride * inverted_index.sketch_size());
-
-                    // Load the .skd/.skm
-                    let ref_db_name = utils::strip_sketch_extension(ref_db_input);
-                    let mut references =
-                        MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
-                            panic!("Could not read sketch metadata from {ref_db_name}.skm")
-                        });
-                    log::info!("Loading sketch data from {ref_db_name}.skd");
-                    references.read_sketch_data(ref_db_name);
-                    log::info!("Read reference sketches:\n{references:?}");
-                    let n = references.number_samples_loaded();
-                    if knn >= n {
-                        log::warn!("knn={knn} is higher than number of samples={n}");
-                        knn = n - 1;
-                    }
-
-                    // Check that k-mer exists in the .skd, and find its index
-                    let kmer = inverted_index.kmer();
-                    // This panics if k not found. Maybe more graceful error if this happens
-                    let dist_type = set_k(&references, Some(kmer), *ani).unwrap_or_else(|e| {
-                        panic!("K-mer size {kmer} used for .ski not found in .skd: {e}");
-                    });
-
-                    let ref_completeness_vec: Option<Vec<f64>> =
-                        if let Some(file_path) = ref_completeness_file {
-                            Some(read_completeness_file(file_path, &references)?)
-                        } else {
-                            None
-                        };
-                    // Run the distances with both indexes
-                    log::info!(
-                        "Calculating sparse ref vs ref distances with {knn} nearest neighbours"
-                    );
-                    log::info!(
-                        "Preclustering with k={} and s={}",
-                        kmer,
-                        inverted_index.sketch_size()
-                    );
-                    if let Some(ref mode) = retain_unmatched {
-                        log::info!("Retain unmatched mode: {mode}");
-                    }
-                    let distances = self_dists_knn_precluster(
-                        &references,
-                        &inverted_index,
-                        &skq_bins,
-                        skq_reader.sample_stride,
-                        n,
-                        knn,
-                        dist_type,
-                        args.quiet,
-                        ref_completeness_vec.as_ref(),
-                        *completeness_cutoff,
-                        retain_unmatched,
-                    );
-
-                    // Write the results
-                    log::info!("Writing out in sparse matrix form");
-                    write!(output_file, "{distances}").expect("Error writing output distances");
+                    api::inverted_precluster(api::InvertedPreclusterOptions {
+                        ski: ski.clone(),
+                        skd: ref_db_input.clone(),
+                        output: output.clone(),
+                        knn: *knn,
+                        ani: *ani,
+                        threads: *threads,
+                        ref_completeness_file: ref_completeness_file.clone(),
+                        completeness_cutoff: *completeness_cutoff,
+                        retain_unmatched: retain_unmatched.clone(),
+                        quiet: args.quiet,
+                    })?;
                 }
 
                 Ok(())
@@ -822,7 +426,7 @@ pub fn main() -> Result<(), Error> {
             let rc = !*single_strand;
             let sketch_size = db_metadata.sketch_size;
             let seq_type = db_metadata.get_hash_type();
-            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
+            if *concat_fasta && matches!(*seq_type, HashType::DNA) {
                 panic!("--concat-fasta currently only supported with --seq-type aa");
             }
 
@@ -844,8 +448,6 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
-                #[cfg(feature = "3di")]
-                false,
                 kmers,
                 sketch_size,
                 &seq_type,
@@ -911,37 +513,7 @@ pub fn main() -> Result<(), Error> {
             skm_file,
             sample_info,
         } => {
-            if skm_file.ends_with(".ski") {
-                let ski_file = &skm_file[0..skm_file.len() - 4];
-                let index = Inverted::load(ski_file).unwrap_or_else(|err| {
-                    println!("Read error: {err}");
-                    panic!("Could not read inverted index from {ski_file}.ski")
-                });
-                if *sample_info {
-                    log::info!("Printing sample info");
-                    println!("{index}");
-                } else {
-                    log::info!("Printing inverted index info");
-                    println!("{index:?}");
-                }
-            } else {
-                let ref_db_name = if skm_file.ends_with(".skm") || skm_file.ends_with(".skd") {
-                    &skm_file[0..skm_file.len() - 4]
-                } else {
-                    skm_file.as_str()
-                };
-                let sketches = MultiSketch::load_metadata(ref_db_name).unwrap_or_else(|_| {
-                    panic!("Could not read sketch metadata from {ref_db_name}.skm")
-                });
-                if *sample_info {
-                    log::info!("Printing sample info");
-                    println!("{sketches}");
-                } else {
-                    log::info!("Printing database info");
-                    println!("{sketches:?}");
-                }
-            }
-
+            println!("{}", api::db_info(skm_file, *sample_info)?);
             print_success = false; // Turn the final message off
             Ok(())
         }
