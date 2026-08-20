@@ -30,16 +30,15 @@ pub struct AaHashIterator {
 }
 
 impl RollHash for AaHashIterator {
-    fn set_k(&mut self, k: usize) {
+    fn set_k(&mut self, k: usize) -> anyhow::Result<()> {
         self.k = k;
         if let Some(new_it) = Self::new_iterator(0, &self.level, &self.seq, k) {
             self.fh = new_it.0;
             self.index = new_it.1;
+            Ok(())
         } else {
-            panic!(
-                "K-mer larger than smallest valid sequence, which is:\n{}",
-                std::str::from_utf8(&self.seq).unwrap()
-            );
+            let seq_str = std::str::from_utf8(&self.seq).unwrap_or("<not a valid UTF-8 string>");
+            Err(anyhow::anyhow!("K-mer size {} larger than smallest valid sequence {}", k, seq_str))
         }
     }
 

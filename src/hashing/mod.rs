@@ -114,7 +114,7 @@ fn swapbits3263(v: u64) -> u64 {
 /// Rolling functions supported by both ntHash and aaHash
 pub trait RollHash: Iterator<Item = u64> {
     /// Set the k-mer size
-    fn set_k(&mut self, k: usize);
+    fn set_k(&mut self, k: usize) -> anyhow::Result<()>;
     /// Get the current hash
     fn curr_hash(&self) -> u64;
     /// The type of sequence being hashed

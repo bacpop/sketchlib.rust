@@ -379,7 +379,7 @@ impl Inverted {
                                 crate::io::NeedletailIterator::new(reader)
                             }).collect::<Vec<crate::io::NeedletailIterator>>();
 
-                                NtHashIterator::new(&mut records_readers, k, rc, min_qual, reads)
+                                NtHashIterator::new(&mut records_readers, k, rc, min_qual, reads).unwrap()
                                 .into_iter()
                                 .map(|it| Box::new(it) as Box<dyn RollHash>)
                                 .collect()
@@ -428,18 +428,18 @@ impl Inverted {
                 // Not yet written!
                 if !multientrysamples.contains(name) {
                     // Densifying now!
-                    Sketch::densify_bin(&mut sketch);
+                    Sketch::densify_bin(sketch.as_mut().unwrap());
                 } else {
                     // We'll need to densify afterwards, let's save the index
                     indexes.insert(genome_idx);
                 }
-                sketch_results[genome_idx] = sketch.iter().map(|h| *h as u16).collect();
+                sketch_results[genome_idx] = sketch.as_ref().unwrap().iter().map(|h| *h as u16).collect();
                 differentsamples.remove(name);
             } else {
                 // already written! We have to merge
                 for bin in 0..sketch_size {
                     let saved_sketch = &mut sketch_results[genome_idx][bin as usize];
-                    *saved_sketch = cmp::min(*saved_sketch, sketch[bin as usize] as u16);
+                    *saved_sketch = cmp::min(*saved_sketch, sketch.as_ref().unwrap()[bin as usize] as u16);
                 }
             }
         }
@@ -496,7 +496,7 @@ impl Inverted {
             };
 
             let (signs, densified) =
-                Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size);
+                Sketch::get_signs(&mut **hash_it, k, &mut read_filter, sketch_size).unwrap();
             if densified {
                 logw("The query was densified", Some("trace"));
             }

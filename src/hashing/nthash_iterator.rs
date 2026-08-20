@@ -46,14 +46,16 @@ pub struct NtHashIterator {
 }
 
 impl RollHash for NtHashIterator {
-    fn set_k(&mut self, k: usize) {
+    fn set_k(&mut self, k: usize) -> anyhow::Result<()> {
         if k != self.k {
             self.k = k;
             self.offset_idx = 0; // rewind: offsets must be re-traversed for each k
             if self.next_iterator(0).is_none() {
-                panic!("K-mer larger than smallest valid sequence");
+                let seq_str = std::str::from_utf8(&self.seq).unwrap_or("<not a valid UTF-8 string>");
+                return Err(anyhow::anyhow!("K-mer size {} larger than smallest valid sequence {}", k, seq_str))
             }
         }
+        Ok(())
     }
 
     /// Retrieve the current hash (minimum of forward and reverse complement hashes)
@@ -95,7 +97,7 @@ impl NtHashIterator {
         rc: bool,
         min_qual: u8,
         reads: bool,
-    ) -> Vec<Self> {
+    ) -> anyhow::Result<Vec<Self>> {
         let mut seq = Vec::new();
         let mut offsets = Vec::new();
         let mut acgt = [0, 0, 0, 0];
@@ -129,8 +131,8 @@ impl NtHashIterator {
             non_acgt,
             reads,
         };
-        hash_it.set_k(k);
-        vec![hash_it]
+        hash_it.set_k(k)?;
+        Ok(vec![hash_it])
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -448,7 +450,7 @@ impl NtHashIterator {
             non_acgt,
             reads: false,
         };
-        hash_it.set_k(k);
+        hash_it.set_k(k).unwrap();
         hash_it
     }
 }
@@ -633,9 +635,9 @@ mod tests {
         // Simulate the sketch command: one iterator, multiple set_k calls in sequence.
         let mut it = NtHashIterator::from_seq(seq, 3, true);
         let hashes_k3: Vec<u64> = it.by_ref().collect();
-        it.set_k(5);
+        it.set_k(5).unwrap();
         let hashes_k5: Vec<u64> = it.by_ref().collect();
-        it.set_k(7);
+        it.set_k(7).unwrap();
         let hashes_k7: Vec<u64> = it.by_ref().collect();
         assert_eq!(hashes_k3, ref_hashes(seq, 3, true), "k=3 hashes wrong");
         assert_eq!(

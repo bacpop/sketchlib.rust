@@ -171,7 +171,7 @@ impl Sketch {
         sketch_size: u64,
         rc: bool,
         min_count: u16,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let (_sketchsize64, num_bins, usigs_size) = num_bins(sketch_size);
         let flattened_size_u64 = usigs_size as usize * kmer_lengths.len();
         let mut usigs = aligned_sketch_vec_with_capacity(flattened_size_u64);
@@ -189,7 +189,7 @@ impl Sketch {
         let mut densified = false;
         for k in kmer_lengths {
             log::debug!("Running sketching at k={k}");
-            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, num_bins);
+            let (signs, k_densified) = Self::get_signs(seq_hashes, *k, &mut read_filter, num_bins)?;
             densified |= k_densified;
             minhash_sum += (signs[0] as f64) / (u64::MAX as f64);
 
@@ -208,7 +208,7 @@ impl Sketch {
             seq_hashes.seq_len()
         };
 
-        Self {
+        Ok(Self {
             usigs,
             name: name.to_string(),
             index: None,
@@ -218,7 +218,7 @@ impl Sketch {
             densified,
             acgt,
             non_acgt,
-        }
+        })
     }
 
     /// Get the sketch bins for a sample, but do not transpose
@@ -227,13 +227,13 @@ impl Sketch {
         kmer_size: usize,
         filter: &mut Option<KmerFilter>,
         num_bins: u64,
-    ) -> (Vec<u64>, bool) {
+    ) -> anyhow::Result<(Vec<u64>, bool)> {
         // Setup storage for each k
         let mut signs = vec![u64::MAX; num_bins as usize];
         if let Some(read_filter) = filter {
             read_filter.clear();
         }
-        seq_hashes.set_k(kmer_size);
+        seq_hashes.set_k(kmer_size)?;
 
         // Calculate bin minima across all sequence
         for hash in seq_hashes.iter() {
@@ -241,7 +241,7 @@ impl Sketch {
         }
         // Densify
         let densified = Self::densify_bin(&mut signs);
-        (signs, densified)
+        Ok((signs, densified))
     }
 
     /// Get the sketch bins for a sample, but do not transpose
@@ -250,20 +250,20 @@ impl Sketch {
         kmer_size: usize,
         filter: &mut Option<KmerFilter>,
         num_bins: u64,
-    ) -> Vec<u64> {
+    ) -> anyhow::Result<Vec<u64>> {
         // Setup storage for each k
         let mut signs = vec![u64::MAX; num_bins as usize];
         if let Some(read_filter) = filter {
             read_filter.clear();
         }
-        seq_hashes.set_k(kmer_size);
+        seq_hashes.set_k(kmer_size)?;
 
         // Calculate bin minima across all sequence
         for hash in seq_hashes.iter() {
             Self::bin_sign(&mut signs, hash, num_bins, filter);
         }
 
-        signs
+        Ok(signs)
     }
 
     /// The name of the sample
@@ -467,7 +467,7 @@ impl fmt::Display for Sketch {
 ///     let reader = needletail::parse_fastx_file(fastx_path).unwrap();
 ///     let mut filtered_iters = vec![NeedletailFilterIterator::new(reader, want_ids)];
 ///
-///     sketch_data(&mut filtered_iters, opts)
+///     sketch_data(&mut filtered_iters, opts).unwrap()
 /// }
 ///
 /// let fastq_path_str = "tests/test_files_in/14412_3#82.contigs_velvet.fa.gz";
@@ -490,7 +490,7 @@ pub fn sketch_data<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
     opts: SketchingOpts,
     #[cfg(feature = "3di")] convert_pdb: bool,
     #[cfg(feature = "3di")] struct_string: Option<String>,
-) -> Vec<Sketch> {
+) -> anyhow::Result<Vec<Sketch>> {
     // Read in sequence and set up rolling hash by alphabet type
     let mut hash_its: Vec<Box<dyn RollHash>> = match opts.seq_type {
         HashType::DNA => NtHashIterator::new(
@@ -499,7 +499,7 @@ pub fn sketch_data<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
             opts.add_rc,
             opts.min_qual,
             opts.is_reads,
-        )
+        )?
         .into_iter()
         .map(|it| Box::new(it) as Box<dyn RollHash>)
         .collect(),
@@ -533,29 +533,28 @@ pub fn sketch_data<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
         }
     };
 
-    hash_its
-        .iter_mut()
-        .enumerate()
-        .map(|(idx, hash_it)| {
-            let sample_name = if opts.concat_fasta {
-                format!("{}_{}", opts.name, idx + 1)
-            } else {
-                opts.name.to_string()
-            };
-            if hash_it.seq_len() == 0 {
-                panic!("{sample_name} has no valid sequence");
-            }
-            // Run the sketching
-            Sketch::new(
-                &mut **hash_it,
-                &sample_name,
-                &opts.k_vals,
-                opts.sketch_size,
-                opts.add_rc,
-                opts.min_count,
-            )
-        })
-        .collect::<Vec<Sketch>>()
+    let mut sketches: Vec<Sketch> = Vec::with_capacity(hash_its.len());
+    for(idx, hash_it) in hash_its.iter_mut().enumerate() {
+        let sample_name = if opts.concat_fasta {
+            format!("{}_{}", opts.name, idx + 1)
+        } else {
+            opts.name.to_string()
+        };
+        if hash_it.seq_len() == 0 {
+            return Err(anyhow::anyhow!("{sample_name} has no valid sequence"))
+        }
+        // Run the sketching
+        let sketch = Sketch::new(
+            &mut **hash_it,
+            &sample_name,
+            &opts.k_vals,
+            opts.sketch_size,
+            opts.add_rc,
+            opts.min_count,
+        )?;
+        sketches.push(sketch);
+    }
+    Ok(sketches)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -656,7 +655,7 @@ pub fn sketch_files(
                         convert_pdb,
                         #[cfg(feature = "3di")]
                         di,
-                    )
+                    ).unwrap()
                 })
                 .for_each_with(tx, |tx, sketch| {
                     // Emit the sketch results to the writer thread
