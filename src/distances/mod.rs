@@ -10,6 +10,7 @@ use crate::cli::RetainUnmatched;
 use crate::get_progress_bar;
 use crate::inverted::Inverted;
 use crate::sketch::multisketch::MultiSketch;
+use crate::sketch::BBITS;
 
 pub mod distance_matrix;
 use self::distance_matrix::*;
@@ -139,6 +140,31 @@ pub fn self_dists_knn<'a>(
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
 ) -> SparseDistanceMatrix<'a> {
+    self_dists_knn_generic::<BBITS>(
+        sketches,
+        n,
+        knn,
+        dist_type,
+        quiet,
+        completeness_vec,
+        completeness_cutoff,
+    )
+}
+
+/// Self kNN distances using a fixed sketch bin width.
+///
+/// Mandrake calls this with [`crate::sketch::CURRENT_BBITS`] for current
+/// databases; legacy 14-bit databases are intentionally outside the browser
+/// contract.
+pub fn self_dists_knn_generic<'a, const BITS: u64>(
+    sketches: &'a MultiSketch,
+    n: usize,
+    knn: usize,
+    dist_type: DistType,
+    quiet: bool,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+) -> SparseDistanceMatrix<'a> {
     let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
     let k_vals = sp_distances.k_vals();
     let ani = sp_distances.ani();
@@ -162,7 +188,7 @@ pub fn self_dists_knn<'a>(
                         // This uses Option::map to safely access the completeness value for each sample.
                         let c1 = completeness_vec.map(|cv| cv[i]);
                         let c2 = completeness_vec.map(|cv| cv[j]);
-                        let dist = jaccard_index(
+                        let dist = jaccard_index_generic::<BITS>(
                             i_sketch,
                             sketches.get_sketch_slice(j, k_idx),
                             sketches.sketchsize64,
@@ -203,7 +229,7 @@ pub fn self_dists_knn<'a>(
                         if i == j {
                             continue;
                         }
-                        let dists = core_acc_dist(
+                        let dists = core_acc_dist_generic::<BITS>(
                             sketches,
                             sketches,
                             i,

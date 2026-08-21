@@ -30,8 +30,13 @@ pub mod sketch_datafile;
 #[cfg(not(target_family = "wasm"))]
 use self::sketch_datafile::SketchArrayWriter;
 
-/// Bin bits (lowest of 64-bits to keep)
+/// Bin bits (lowest of 64-bits to keep) used by the legacy sketch API.
+///
+/// Current databases use [`CURRENT_BBITS`]; the generic distance functions
+/// take the bin width explicitly so both formats can be read by the library.
 pub const BBITS: u64 = 14;
+/// Bin width used by current (version 0.4+) sketch databases.
+pub const CURRENT_BBITS: u64 = 16;
 /// Total width of all bins (used as sign % sign_mod)
 pub const SIGN_MOD: u64 = (1 << 61) - 1;
 

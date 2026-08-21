@@ -11,10 +11,22 @@ pub fn jaccard_index(
     c2: Option<f64>,
     completeness_cutoff: f64,
 ) -> f64 {
+    jaccard_index_generic::<BBITS>(sketch1, sketch2, sketchsize64, c1, c2, completeness_cutoff)
+}
+
+/// Returns the Jaccard index using the selected sketch bin width.
+pub fn jaccard_index_generic<const BITS: u64>(
+    sketch1: &[u64],
+    sketch2: &[u64],
+    sketchsize64: u64,
+    c1: Option<f64>,
+    c2: Option<f64>,
+    completeness_cutoff: f64,
+) -> f64 {
     let unionsize = (u64::BITS as u64 * sketchsize64) as f64;
     let samebits: u32 = sketch1
-        .chunks_exact(BBITS as usize)
-        .zip(sketch2.chunks_exact(BBITS as usize))
+        .chunks_exact(BITS as usize)
+        .zip(sketch2.chunks_exact(BITS as usize))
         .map(|(chunk1, chunk2)| {
             let mut bits: u64 = !0;
             chunk1.iter().zip(chunk2.iter()).for_each(|(&s1, &s2)| {
@@ -24,7 +36,7 @@ pub fn jaccard_index(
         })
         .sum();
     let maxnbits = sketchsize64 as u32 * u64::BITS;
-    let expected_samebits = maxnbits >> BBITS;
+    let expected_samebits = maxnbits >> BITS;
 
     log::trace!("samebits:{samebits} expected_samebits:{expected_samebits} maxnbits:{maxnbits}");
     let diff = samebits.saturating_sub(expected_samebits);
@@ -66,6 +78,25 @@ pub fn core_acc_dist(
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
 ) -> (f32, f32) {
+    core_acc_dist_generic::<BBITS>(
+        ref_sketches,
+        query_sketches,
+        ref_sketch_idx,
+        query_sketch_idx,
+        completeness_vec,
+        completeness_cutoff,
+    )
+}
+
+/// Calculates core/accessory distances using the selected sketch bin width.
+pub fn core_acc_dist_generic<const BITS: u64>(
+    ref_sketches: &MultiSketch,
+    query_sketches: &MultiSketch,
+    ref_sketch_idx: usize,
+    query_sketch_idx: usize,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+) -> (f32, f32) {
     if ref_sketches.kmer_lengths().len() < 2 {
         panic!("Need at least two k-mer lengths to calculate core/accessory distances");
     }
@@ -76,7 +107,7 @@ pub fn core_acc_dist(
     for (k_idx, k) in ref_sketches.kmer_lengths().iter().enumerate() {
         let c1 = completeness_vec.map(|cv| cv[ref_sketch_idx]);
         let c2 = completeness_vec.map(|cv| cv[query_sketch_idx]);
-        let y = jaccard_index(
+        let y = jaccard_index_generic::<BITS>(
             ref_sketches.get_sketch_slice(ref_sketch_idx, k_idx),
             query_sketches.get_sketch_slice(query_sketch_idx, k_idx),
             ref_sketches.sketchsize64,
