@@ -4,7 +4,7 @@ use anyhow::{bail, Error, Result};
 use core::panic;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Cursor};
 use std::mem;
 
 use hashbrown::{HashMap, HashSet};
@@ -15,6 +15,7 @@ use crate::sketch::num_bins;
 use crate::sketch::sketch_datafile::SketchArrayReader;
 use crate::sketch::sketch_datafile::SketchArrayWriter;
 use crate::sketch::Sketch;
+use crate::sketch::CURRENT_BBITS;
 
 use super::sketch_datafile::append_batch;
 
@@ -102,6 +103,40 @@ impl MultiSketch {
         Ok(skm_obj)
     }
 
+    /// Loads metadata from an already materialised `.skm` file.
+    pub fn load_metadata_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let skm_file = BufReader::new(Cursor::new(bytes));
+        let decompress_reader = snap::read::FrameDecoder::new(skm_file);
+        let mut skm_obj: Self = ciborium::de::from_reader(decompress_reader)?;
+        if skm_obj.sketchsize64 == 0 {
+            skm_obj.sketchsize64 = skm_obj.sketch_size;
+            skm_obj.sketch_size *= 64;
+        }
+        Ok(skm_obj)
+    }
+
+    /// Loads a paired `.skm`/`.skd` database from bytes.
+    pub fn load_bytes(metadata: &[u8], data: &[u8]) -> Result<Self, Error> {
+        let mut sketches = Self::load_metadata_bytes(metadata)?;
+        sketches.read_sketch_data_bytes(data)?;
+        Ok(sketches)
+    }
+
+    /// Returns whether this database predates the 16-bit current format.
+    pub fn is_legacy_format(&self) -> bool {
+        let mut version = self.sketch_version.split('.');
+        let major = version.next().and_then(|part| part.parse::<u64>().ok());
+        let minor = version.next().and_then(|part| part.parse::<u64>().ok());
+        let current_version =
+            matches!((major, minor), (Some(major), Some(minor)) if major > 0 || minor >= 4);
+        let current_stride = self
+            .sketchsize64
+            .checked_mul(CURRENT_BBITS)
+            .map(|stride| stride as usize)
+            .is_some_and(|stride| self.kmer_stride == stride);
+        !(current_version && current_stride)
+    }
+
     /// Number of samples loaded from the .skm/.skd
     pub fn number_samples_loaded(&self) -> usize {
         match &self.block_reindex {
@@ -181,6 +216,30 @@ impl MultiSketch {
         );
         self.sketch_bins =
             sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len());
+    }
+
+    /// Reads all sketch bins from an already materialised `.skd` file.
+    pub fn read_sketch_data_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if !bytes.len().is_multiple_of(std::mem::size_of::<u64>()) {
+            bail!("sketch data length is not a multiple of eight bytes");
+        }
+        let expected = self
+            .sample_stride
+            .checked_mul(self.sketch_metadata.len())
+            .ok_or_else(|| anyhow::anyhow!("sketch data size overflows memory limits"))?;
+        let values = bytes
+            .chunks_exact(8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+            .collect::<Vec<_>>();
+        if values.len() != expected {
+            bail!(
+                "sketch data contains {} bins but metadata requires {}",
+                values.len(),
+                expected
+            );
+        }
+        self.sketch_bins = values;
+        Ok(())
     }
 
     /// Read a subset of the bins from an .skd file, in a memory efficient manner

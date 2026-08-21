@@ -312,6 +312,11 @@ impl<'a> SparseDistanceMatrix<'a> {
     pub fn dists_mut(&mut self) -> &mut DistVec {
         &mut self.distances
     }
+
+    /// Reference to the completed sparse distance entries.
+    pub fn dists_as_ref(&self) -> &DistVec {
+        &self.distances
+    }
 }
 
 impl<'a> Distances<'a> for SparseDistanceMatrix<'a> {
