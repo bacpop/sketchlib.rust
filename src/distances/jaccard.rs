@@ -431,8 +431,6 @@ fn simple_linear_regression(
     let (mut core, mut acc) = (0.0_f64, 0.0_f64);
     if beta < 0.0 {
         core = 1.0 - beta.exp();
-    } else if r > 0.0 {
-        core = 1.0;
     }
     if alpha < 0.0 {
         acc = 1.0 - alpha.exp();
