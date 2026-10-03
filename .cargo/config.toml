@@ -1,0 +1,4 @@
+# Statically link the MSVC C runtime so the Windows binary doesn't need the
+# Visual C++ redistributable installed
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

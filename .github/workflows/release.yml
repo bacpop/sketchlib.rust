@@ -22,6 +22,7 @@ jobs:
         config:
           - {os: macOS-latest,   toolchain: 'stable'}
           - {os: ubuntu-latest,  toolchain: 'stable'}
+          - {os: windows-latest, toolchain: 'stable'}
 
     steps:
       - uses: actions/checkout@v3
@@ -34,18 +35,28 @@ jobs:
       # NB see https://github.com/actions-rs/cargo if we ever want to try cross
       # e.g. for Mac M1/arm64
       - name: Build and package binary
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           cargo install --path .
           cp $HOME/.cargo/bin/sketchlib .
           tar czvf sketchlib-${{ github.ref_name }}-${{ matrix.config.os }}-${{ matrix.config.toolchain }}.tar.gz sketchlib LICENSE NOTICE README.md
 
+      # Static CRT is set in .cargo/config.toml, so the .exe needs no extra DLLs
+      - name: Build and package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release
+          cp target/release/sketchlib.exe .
+          7z a sketchlib-${{ github.ref_name }}-${{ matrix.config.os }}-${{ matrix.config.toolchain }}.zip sketchlib.exe LICENSE NOTICE README.md
+
       - name: Upload package
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: sketchlib-${{ github.ref_name }}-${{ matrix.config.os }}-${{ matrix.config.toolchain }}
-          path: sketchlib-${{ github.ref_name }}-${{ matrix.config.os }}-${{ matrix.config.toolchain }}.tar.gz
+          path: sketchlib-${{ github.ref_name }}-${{ matrix.config.os }}-${{ matrix.config.toolchain }}.*
 
   create-release:
     runs-on: ubuntu-latest
@@ -64,6 +75,7 @@ jobs:
         run: |
           cp build/sketchlib-${{ github.ref_name }}-macOS-latest-stable/sketchlib-${{ github.ref_name }}-macOS-latest-stable.tar.gz .
           cp build/sketchlib-${{ github.ref_name }}-ubuntu-latest-stable/sketchlib-${{ github.ref_name }}-ubuntu-latest-stable.tar.gz .
+          cp build/sketchlib-${{ github.ref_name }}-windows-latest-stable/sketchlib-${{ github.ref_name }}-windows-latest-stable.zip .
 
       - name: Create release
         id: create_release
@@ -76,6 +88,7 @@ jobs:
           generate_release_notes: true
           files: |
             sketchlib-*.tar.gz
+            sketchlib-*.zip
 
   push_crate:
     runs-on: ubuntu-latest
