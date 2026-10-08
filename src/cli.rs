@@ -240,6 +240,9 @@ pub enum Commands {
         /// minimum completeness for a sample to be corrected but the completeness correction
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
+
+        #[arg(long)]
+        gpu: Option<usize>,
     },
 
     /// Building and querying with inverted indices (.ski)

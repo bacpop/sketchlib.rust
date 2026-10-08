@@ -27,7 +27,7 @@ fn mismatched_generation_message(ref_legacy: bool, query_legacy: bool) -> String
 
 pub mod distance_matrix;
 use self::distance_matrix::*;
-mod jaccard;
+pub mod jaccard;
 use self::jaccard::*;
 
 /// Chunk size in parallel distance calculations

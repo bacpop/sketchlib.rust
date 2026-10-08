@@ -30,8 +30,10 @@ categories = ["command-line-utilities", "science"]
 crate-type = ["cdylib", "lib"]
 
 [features]
+# TODO remove default gpu
+default = ["gpu"]
 3di = ["dep:pyo3", "dep:pyo3-build-config"]
-
+gpu = ["dep:cuda-device", "dep:cuda-host", "dep:cuda-core"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # data structures
@@ -63,6 +65,19 @@ anyhow = "1.0"
 # parallelisation
 rayon = "1.8"
 num_cpus = "1.0"
+
+cuda-device = {
+    git = "https://github.com/NVlabs/cuda-oxide.git",
+    optional = true
+}
+cuda-host = {
+    git = "https://github.com/NVlabs/cuda-oxide.git",
+    optional = true
+}
+cuda-core = {
+    git = "https://github.com/NVlabs/cuda-oxide.git",
+    optional = true
+}
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # data structures
@@ -125,6 +140,6 @@ tempfile = "3.19"
 
 
 [profile.release]
-lto = true
+lto = false
 strip = false # could be changed in future
 codegen-units = 1

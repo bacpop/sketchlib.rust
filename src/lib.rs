@@ -199,6 +199,9 @@ pub mod structures;
 pub mod hashing;
 
 pub mod utils;
+
+pub mod gpu;
+
 use crate::utils::get_progress_bar;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::strip_sketch_extension;
@@ -313,6 +316,7 @@ pub fn main() -> Result<(), Error> {
             ref_completeness_file,
             query_completeness_file,
             completeness_cutoff,
+            gpu,
         } => {
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
@@ -374,18 +378,35 @@ pub fn main() -> Result<(), Error> {
                     match knn {
                         None => {
                             // Self mode (dense)
-                            log::info!("Calculating all ref vs ref distances");
-                            log::info!("Streaming out in long matrix form");
-                            self_dists_all_stream(
-                                &mut output_file,
-                                &references,
-                                n,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                                *threads,
-                            )?;
+                            log::info!("Calculating all ref vs ref distances (GPU)");
+
+                            if let Some(gpu_device_id) = *gpu {
+                                let distances = gpu::self_dists_all_stream(
+                                    &mut output_file,
+                                    &references,
+                                    n,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                    gpu_device_id,
+                                )?;
+
+                                log::info!("Writing out in long matrix form");
+                                write!(output_file, "{distances}")
+                                    .expect("Error writing output distances");
+                            } else {
+                                self_dists_all_stream(
+                                    &mut output_file,
+                                    &references,
+                                    n,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                    *threads,
+                                )?;
+                            }
                         }
                         Some(mut nn) => {
                             // Self mode (sparse): a genome cannot be its own neighbour

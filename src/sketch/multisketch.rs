@@ -314,6 +314,11 @@ impl MultiSketch {
         s1_slice
     }
 
+    /// Get the bins for a all sketches. For GPU
+    pub fn get_sketch_all(&self) -> &[u64] {
+        &self.sketch_bins[..]
+    }
+
     /// Checks for query compatibility with another [`MultiSketch`] object
     pub fn is_compatible_with(&self, sketch2: &Self) -> bool {
         self.kmer_lengths() == sketch2.kmer_lengths()
@@ -454,6 +459,15 @@ impl MultiSketch {
         );
 
         append_batch(&sketch_reader, &mut sketch_writer, &indices_to_keep)
+    }
+
+
+    pub fn get_strides(&self) -> (usize, usize, usize) {
+        (
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        )
     }
 }
 
