@@ -51,7 +51,7 @@ pub fn calc_row_idx(k: usize, n: usize) -> usize {
 }
 
 /// Types of distance, single k-mer (Jaccard) or multi-k (core/accessory)
-#[derive(PartialEq, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, PartialOrd)]
 pub enum DistType {
     /// Jaccard distance (k-mer index, k-mer size, ANI on/off)
     Jaccard(usize, f64, bool),
@@ -124,7 +124,7 @@ pub trait Distances<'a> {
 /// A dense distance matrix in long form, which can represent ref vs ref
 /// or ref vs query depending on whether `query_names` is set
 pub struct DistanceMatrix<'a> {
-    n_distances: usize,
+    pub n_distances: usize,
     jaccard: DistType,
     distances: Vec<f32>,
     ref_names: Vec<&'a str>,
