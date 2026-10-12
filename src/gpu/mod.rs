@@ -48,6 +48,7 @@ mod kernels {
     //#[launch_contract(domain = 1, block = (256, 1, 1))]
     pub fn dists(
         sketches: &[u64],
+        n_samples: usize,
         sketch_strides: (usize, usize, usize), // (sample, k-mer, bin)
         sketchsize64: u64,
         kmers: &[usize],
@@ -59,27 +60,8 @@ mod kernels {
         let idx = thread::index_1d();
         let idx_raw = idx.get();
 
-        // let i = calc_row_idx(idx_raw, dist.len());
-
-        let n = dist.len();
-
-        let k_i64 = idx_raw as i64;
-        let n_i64 = n as i64;
-
-        let square = (-8 * k_i64 + 4 * n_i64 * (n_i64 - 1) - 7) as f64;
-        let sqrt_square = (square).sqrt();
-        let sqrt_square_floor = sqrt_square / 2.0 - 0.5;
-
-        let i = n - 2 - (sqrt_square_floor).floor() as usize;
-
-
-        let j = calc_col_idx(idx_raw, i, dist.len());
-
-        gpu_printf!("{}, {}, {}, {}\n", square, sqrt_square, sqrt_square_floor, i);
-
-        //if idx_raw == 0 {
-            //gpu_printf!("{}\n", dist.len());
-        //}
+        let i = calc_row_idx(idx_raw, n_samples);
+        let j = calc_col_idx(idx_raw, i, n_samples);
 
         if let Some((k_idx, k_f64)) = k_vals {
             let i_idx = i * sketch_strides.0 + k_idx * sketch_strides.1;
@@ -128,18 +110,19 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     // kernels module above.
     let module = unsafe { kernels::load(&ctx)? };
 
-    //let prepared = module.prepare_dists(
-        //LaunchConfig1D::new((n_distances as u32).div_ceil(256), 256, 0)
-    //)?;
+    let prepared = module.prepare_dists(
+        LaunchConfig1D::new((n_distances as u32).div_ceil(256), 256, 0)
+    )?;
 
-    let launch_config = LaunchConfig::for_num_elems(n_distances as u32);
+    // let launch_config = LaunchConfig::for_num_elems(n_distances as u32);
 
     unsafe {
         module.dists(
             &stream,
-            //&prepared,
+            &prepared,
             launch_config,
             &sketch_dev,
+            sketches.number_samples_loaded(),
             sketches.get_strides(),
             sketches.sketchsize64,
             &kmers_dev,
