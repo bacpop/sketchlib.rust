@@ -113,25 +113,21 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     let prepared = module.prepare_dists(
         LaunchConfig1D::new((n_distances as u32).div_ceil(256), 256, 0)
     )?;
-
     // let launch_config = LaunchConfig::for_num_elems(n_distances as u32);
 
-    unsafe {
-        module.dists(
-            &stream,
-            &prepared,
-            launch_config,
-            &sketch_dev,
-            sketches.number_samples_loaded(),
-            sketches.get_strides(),
-            sketches.sketchsize64,
-            &kmers_dev,
-            dist_type,
-            k_vals,
-            ani,
-            &mut dist_dev,
-        )?;
-    }
+    module.dists(
+        &stream,
+        &prepared,
+        &sketch_dev,
+        sketches.number_samples_loaded(),
+        sketches.get_strides(),
+        sketches.sketchsize64,
+        &kmers_dev,
+        dist_type,
+        k_vals,
+        ani,
+        &mut dist_dev,
+    )?;
 
     let dist_mut = distances.dists_mut();
     *dist_mut = dist_dev.to_host_vec(&stream)?;
