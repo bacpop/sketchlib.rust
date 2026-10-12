@@ -44,8 +44,8 @@ mod kernels {
     use super::*;
 
     #[kernel]
-    //#[launch_bounds(256)]
-    //#[launch_contract(domain = 1, block = (256, 1, 1))]
+    #[launch_bounds(256)]
+    #[launch_contract(domain = 1, block = (256, 1, 1))]
     pub fn dists(
         sketches: &[u64],
         n_samples: usize,
