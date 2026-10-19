@@ -241,6 +241,7 @@ pub enum Commands {
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
 
+        /// The GPU to use. Uses CPU only if unspecified
         #[arg(long)]
         gpu: Option<usize>,
     },

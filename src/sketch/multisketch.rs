@@ -461,6 +461,7 @@ impl MultiSketch {
         append_batch(&sketch_reader, &mut sketch_writer, &indices_to_keep)
     }
 
+    /// Get the (bin, kmer, sample) strides
     pub fn get_strides(&self) -> (usize, usize, usize) {
         (
             self.bin_stride,

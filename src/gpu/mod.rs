@@ -51,8 +51,8 @@ mod kernels {
         n_samples: usize,
         sketch_strides: (usize, usize, usize), // (bin, k-mer, sample)
         sketchsize64: u64,
-        kmers: &[usize],
-        dist_type: DistType,
+        _kmers: &[usize],
+        _dist_type: DistType,
         k_vals: Option<(usize, f64)>,
         ani: bool,
         mut dist: DisjointSlice<f32>
@@ -82,8 +82,9 @@ mod kernels {
     }
 }
 
+/// GPU version of distances::self_dists_all_stream()
 pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
-    writer: &mut W,
+    output_file: &mut W,
     sketches: &'a MultiSketch,
     n: usize,
     dist_type: DistType,
@@ -91,7 +92,7 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
     gpu_device_id: usize,
-) -> Result<DistanceMatrix<'a>, Error> {
+) -> Result<(), Error> {
     let ctx = CudaContext::new(gpu_device_id)?;
     let stream = ctx.default_stream();
 
@@ -130,5 +131,9 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     let dist_mut = distances.dists_mut();
     *dist_mut = dist_dev.to_host_vec(&stream)?;
 
-    Ok(distances)
+    // TODO convert writing to streaming
+    log::info!("Writing out in long matrix form");
+    write!(output_file, "{distances}")?;
+
+    Ok(())
 }

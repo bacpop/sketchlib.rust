@@ -380,7 +380,7 @@ pub fn main() -> Result<(), Error> {
                             // Self mode (dense)
                             if let Some(gpu_device_id) = *gpu {
                                 log::info!("Calculating all ref vs ref distances (GPU)");
-                                let distances = gpu::self_dists_all_stream(
+                                gpu::self_dists_all_stream(
                                     &mut output_file,
                                     &references,
                                     n,
@@ -390,10 +390,6 @@ pub fn main() -> Result<(), Error> {
                                     *completeness_cutoff,
                                     gpu_device_id,
                                 )?;
-
-                                log::info!("Writing out in long matrix form");
-                                write!(output_file, "{distances}")
-                                    .expect("Error writing output distances");
                             } else {
                                 log::info!("Calculating all ref vs ref distances");
                                 self_dists_all_stream(
