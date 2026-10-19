@@ -373,9 +373,8 @@ pub fn main() -> Result<(), Error> {
                     match knn {
                         None => {
                             // Self mode (dense)
-                            log::info!("Calculating all ref vs ref distances (GPU)");
-
                             if let Some(gpu_device_id) = *gpu {
+                                log::info!("Calculating all ref vs ref distances (GPU)");
                                 let distances = gpu::self_dists_all_stream(
                                     &mut output_file,
                                     &references,
@@ -391,6 +390,7 @@ pub fn main() -> Result<(), Error> {
                                 write!(output_file, "{distances}")
                                     .expect("Error writing output distances");
                             } else {
+                                log::info!("Calculating all ref vs ref distances");
                                 self_dists_all_stream(
                                     &mut output_file,
                                     &references,
