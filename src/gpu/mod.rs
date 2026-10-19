@@ -1,11 +1,11 @@
-use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
 
 use anyhow::Error;
 
-use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig1D, simt::LaunchConfig};
-use cuda_device::{DisjointSlice, kernel, launch_bounds, launch_contract, thread, device, gpu_printf};
+use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig1D};
+use cuda_device::{DisjointSlice, kernel, launch_bounds, launch_contract, thread, device};
 use cuda_host::cuda_module;
+use cuda_async::simt::device_context::init_device_contexts;
 
 use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BIN_BITS;
@@ -114,6 +114,8 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
         LaunchConfig1D::new((n_distances as u32).div_ceil(256), 256, 0)
     )?;
 
+    // TODO interleaving sketches
+
     module.dists(
         &stream,
         &prepared,
@@ -136,4 +138,224 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     write!(output_file, "{distances}")?;
 
     Ok(())
+}
+
+pub fn self_dists_knn_generic<'a, const BB: usize>(
+    sketches: &'a MultiSketch,
+    n: usize,
+    knn: usize,
+    dist_type: DistType,
+    quiet: bool,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+    gpu_device_id: usize,
+) -> SparseDistanceMatrix<'a> {
+    init_device_contexts(gpu_device_id, 1)?;
+    let module = unsafe { kernels::load_async(0)? };
+
+    let mut sp_distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
+    let k_vals = sp_distances.k_vals();
+    let ani = sp_distances.ani();
+
+    let (_, _, n_sketch_bins) = sketches.get_strides();
+
+    let kmers_dev = DeviceBuffer::from_host(&stream, sketches.kmer_lengths())?;
+
+    ///////////////
+
+    // TODO 100k sketches per batch
+    let num_linear_blocks = 4;
+    let num_batches = num_linear_blocks * (num_linear_blocks + 1) / 2;
+
+    let samples_per_block = sketches.number_samples_loaded() / num_linear_blocks;
+    let final_block_size = sketches.number_samples_loaded() % num_linear_blocks;
+
+    let mut handles = vec![];
+
+    for batch_idx in 0..num_batches {
+        let module = module.clone();
+
+        // TODO doesn't currently work for diagonal blocks
+        let block_i = calc_row_idx(batch_idx, num_linear_blocks);
+        let block_j = calc_col_idx(batch_idx, block_i, num_linear_blocks);
+
+        let start_i = block_i * samples_per_block;
+        let start_j = block_j * samples_per_block;
+
+        let end_i = if block_i < num_linear_blocks - 1 {
+            start_i + samples_per_block - 1
+        } else {
+            start_i + final_block_size - 1
+        };
+
+        let end_j = if block_j < num_linear_blocks - 1 {
+            start_j + samples_per_block - 1
+        } else {
+            start_j + final_block_size - 1
+        };
+
+        let n_dists_in_block = if block_i == num_linear_blocks - 1 && block_j == num_linear_blocks - 1 {
+            final_block_size * (final_block_size - 1) / 2
+        } else if block_i == block_j {
+            samples_per_block * (samples_per_block - 1) / 2
+        //} else if block_j == num_linear_blocks - 1 {
+            //0
+        } else {
+            (end_i - start_i + 1) * (end_j - start_j + 1)
+        };
+
+        let interleave_query_cfg = LaunchConfig::for_num_elems((end_i - start_i) * n_sketch_bins);
+        let interleave_ref_cfg = LaunchConfig::for_num_elems((end_j - start_j) * n_sketch_bins);
+        let distance_cfg = LaunchConfig::for_num_elems(n_dists_in_block);
+
+        // TODO pipeline steps:
+        // 1) H2D ref sketch
+        // 2) Interleave ref sketch kernel
+        // 3) H2D query sketch
+        // 4) Interleave query sketch kernel
+        // 5) Calculate distance kernel
+        // 6) D2H results
+
+        let pipeline = zip!(h2d(batch_data), zeros(DIM * DIM), zeros(DIM))
+            // ── Stage 1: GEMM  hidden = input @ W0 ──────────────────────
+            .and_then(
+                move |(input, hidden, output): (
+                    DeviceBox<[f32]>,
+                    DeviceBox<[f32]>,
+                    DeviceBox<[f32]>,
+                )| {
+                    // SAFETY: the 2D grid and block match `sgemm_naive`'s
+                    // indexing, and all matrices are DIM x DIM allocations.
+                    let launch = unsafe {
+                        module.sgemm_naive_async_owned(
+                            gemm_cfg,
+                            DIM as u32,
+                            DIM as u32,
+                            DIM as u32,
+                            1.0f32,
+                            input,
+                            w0,
+                            0.0f32,
+                            // C's row width, bound to the buffer for this launch.
+                            cuda_host::RowWidthOwned::new(hidden, DIM as u32),
+                        )
+                    }
+                    .expect("Failed to build sgemm_naive launch");
+                    launch.and_then(move |(_input, _w0, hidden)| {
+                        value((hidden.into_buffer(), output, w1, module))
+                    })
+                },
+            )
+            // ── Stage 2: MatVec  output = hidden @ W1 ───────────────────
+            .and_then(
+                move |(hidden, output, w1, module): (
+                    DeviceBox<[f32]>,
+                    DeviceBox<[f32]>,
+                    Arc<DeviceBox<[f32]>>,
+                    kernels::LoadedModule,
+                )| {
+                    // SAFETY: this is a 1D launch of DIM guarded threads over
+                    // DIM-sized vectors and a DIM x DIM matrix.
+                    let launch = unsafe {
+                        module.matvec_naive_async_owned(
+                            matvec_cfg, DIM as u32, DIM as u32, hidden, w1, output,
+                        )
+                    }
+                    .expect("Failed to build matvec_naive launch");
+                    launch.and_then(move |(_hidden, _w1, output)| value((output, module)))
+                },
+            )
+            // ── Stage 3: ReLU  result = max(0, output) ──────────────────
+            .and_then(
+                move |(output, module): (DeviceBox<[f32]>, kernels::LoadedModule)| {
+                    // SAFETY: this is a 1D launch and the ReLU kernel guards
+                    // accesses using the owned output's DIM-element length.
+                    unsafe { module.relu_async_owned(relu_cfg, output) }
+                        .expect("Failed to build relu launch")
+                },
+            )
+            // ── Stage 4: D2H  copy result back to host ──────────────────
+            .and_then(d2h);
+
+        // Spawn the pipeline as a Tokio task. The DeviceOperation is
+        // converted to a Future via IntoFuture and polled by the runtime.
+        handles.push(tokio::spawn(pipeline.into_future()));
+    }
+
+    // TODO consumer:
+    // Create Vec<BinaryHeap> of size n_samples
+    // In consumer push to heaps for (i, j) and (j, i)
+
+    // 4. Await all batches and verify results.
+    println!(
+        "Launched {} batches concurrently, awaiting results...\n",
+        num_batches
+    );
+    for (i, handle) in handles.into_iter().enumerate() {
+        let result: Vec<f32> = handle.await.expect("Tokio task panicked")?;
+        let all_non_negative = result.iter().all(|&v| v >= 0.0);
+        println!(
+            "Batch {}: {} elements, first 8 = {:?}{}",
+            i,
+            result.len(),
+            &result[..8.min(result.len())],
+            if all_non_negative {
+                " [ReLU OK]"
+            } else {
+                " [ReLU FAILED: negative values found]"
+            }
+        );
+    }
+
+    todo!()
+}
+
+fn h2d(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>> {
+    device_operation::with_context(move |ctx| {
+        let stream = ctx.get_cuda_stream();
+        let n = host_data.len();
+        let num_bytes = n * mem::size_of::<u64>();
+        unsafe {
+            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
+            memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
+            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+        }
+    })
+}
+
+/// Allocates zero-initialized device memory.
+/// `ctx` is provided by the scheduler at execution time.
+fn zeros(n: usize) -> impl DeviceOperation<Output = DeviceBox<[f32]>> {
+    device_operation::with_context(move |ctx| {
+        let stream = ctx.get_cuda_stream();
+        let num_bytes = n * mem::size_of::<f32>();
+        unsafe {
+            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
+            memset_d8_async(dptr, 0, num_bytes, stream.cu_stream()).unwrap();
+            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+        }
+    })
+}
+
+/// Copies device memory back to host (D2H).
+/// `ctx` is provided by the scheduler at execution time.
+fn d2h(dev: DeviceBox<[f32]>) -> impl DeviceOperation<Output = Vec<f32>> {
+    device_operation::with_context(move |ctx| {
+        let stream = ctx.get_cuda_stream();
+        let n = dev.len();
+        let num_bytes = n * mem::size_of::<f32>();
+        let mut host = vec![0.0f32; n];
+        unsafe {
+            memcpy_dtoh_async(
+                host.as_mut_ptr(),
+                dev.cu_deviceptr(),
+                num_bytes,
+                stream.cu_stream(),
+            )
+            .unwrap();
+        }
+        // dev is kept alive in this closure until the stream synchronizes
+        let _ = &dev;
+        value(host)
+    })
 }
