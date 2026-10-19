@@ -260,6 +260,7 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
                         if let Some((k_idx, k_f64)) = k_vals {
                             let c1 = completeness_vec.map(|cv| cv[i]);
                             let c2 = completeness_vec.map(|cv| cv[j]);
+
                             let j_index = jaccard_index_generic::<BB>(
                                 sketches.get_sketch_slice(i, k_idx),
                                 sketches.get_sketch_slice(j, k_idx),
