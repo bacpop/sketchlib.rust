@@ -33,7 +33,13 @@ crate-type = ["cdylib", "lib"]
 # TODO remove default gpu
 default = ["gpu"]
 3di = ["dep:pyo3", "dep:pyo3-build-config"]
-gpu = ["dep:cuda-device", "dep:cuda-host", "dep:cuda-core"]
+gpu = [
+    "dep:cuda-device",
+    "dep:cuda-host",
+    "dep:cuda-core",
+    "dep:cuda-async",
+    "dep:tokio",
+]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # data structures
@@ -72,10 +78,19 @@ cuda-device = {
 }
 cuda-host = {
     git = "https://github.com/NVlabs/cuda-oxide.git",
-    optional = true
+    optional = true,
+    features = ["async"],
 }
 cuda-core = {
     git = "https://github.com/NVlabs/cuda-oxide.git",
+    optional = true
+}
+cuda-async = {
+    git = "https://github.com/NVlabs/cuda-oxide.git",
+    optional = true
+}
+tokio = {
+    version = "1", features = ["rt", "rt-multi-thread", "macros"],
     optional = true
 }
 

@@ -411,15 +411,30 @@ pub fn main() -> Result<(), Error> {
                                 nn = n - 1;
                             }
                             log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-                            let distances = self_dists_knn(
-                                &references,
-                                n,
-                                nn,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                            );
+
+                            if let Some(gpu_device_id) = *gpu {
+                                // TODO
+                                let distances = gpu::self_dists_knn(
+                                    &references,
+                                    n,
+                                    nn,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                    gpu_device_id,
+                                );
+                            } else {
+                                let distances = self_dists_knn(
+                                    &references,
+                                    n,
+                                    nn,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                );
+                            }
 
                             log::info!("Writing out in sparse matrix form");
                             write!(output_file, "{distances}")
