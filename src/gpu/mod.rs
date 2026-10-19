@@ -15,7 +15,7 @@ use crate::distances::jaccard::ani_pois;
 const BBITS: u64 = BIN_BITS as u64;
 
 #[device]
-fn jaccard_index(
+fn calc_jaccard_index(
     sketch1: &[u64],
     sketch2: &[u64],
     sketch1_stride: u64,
@@ -49,7 +49,7 @@ mod kernels {
     pub fn dists(
         sketches: &[u64],
         n_samples: usize,
-        sketch_strides: (usize, usize, usize), // (sample, k-mer, bin)
+        sketch_strides: (usize, usize, usize), // (bin, k-mer, sample)
         sketchsize64: u64,
         kmers: &[usize],
         dist_type: DistType,
@@ -60,26 +60,25 @@ mod kernels {
         let idx = thread::index_1d();
         let idx_raw = idx.get();
 
-        let i = calc_row_idx(idx_raw, n_samples);
-        let j = calc_col_idx(idx_raw, i, n_samples);
+        if let Some(dist_elem) = dist.get_mut(idx) {
+            let i = calc_row_idx(idx_raw, n_samples);
+            let j = calc_col_idx(idx_raw, i, n_samples);
 
-        if let Some((k_idx, k_f64)) = k_vals {
-            let i_idx = i * sketch_strides.0 + k_idx * sketch_strides.1;
-            let j_idx = j * sketch_strides.0 + k_idx * sketch_strides.1;
+            if let Some((k_idx, k_f64)) = k_vals {
+                let i_idx = i * sketch_strides.2 + k_idx * sketch_strides.1;
+                let j_idx = j * sketch_strides.2 + k_idx * sketch_strides.1;
 
-            let j_index = jaccard_index(&sketches[i_idx..], &sketches[j_idx..], sketch_strides.2 as u64, sketch_strides.2 as u64, sketchsize64);
+                let jaccard_index = calc_jaccard_index(&sketches[i_idx..], &sketches[j_idx..], sketch_strides.0 as u64, sketch_strides.0 as u64, sketchsize64);
 
-            if let Some(dist_elem) = dist.get_mut(idx) {
                 *dist_elem = if ani {
-                    ani_pois(j_index, k_f64) as f32
+                    ani_pois(jaccard_index, k_f64) as f32
                 } else {
-                    (1.0_f64 - j_index) as f32
+                    (1.0_f64 - jaccard_index) as f32
                 };
+            } else {
+                todo!("path iterating over k-mers and doing regression")
             }
-        } else {
-            unimplemented!("path iterating over k-mers and doing regression")
         }
-
     }
 }
 
@@ -113,7 +112,6 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     let prepared = module.prepare_dists(
         LaunchConfig1D::new((n_distances as u32).div_ceil(256), 256, 0)
     )?;
-    // let launch_config = LaunchConfig::for_num_elems(n_distances as u32);
 
     module.dists(
         &stream,
