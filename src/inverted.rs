@@ -292,7 +292,7 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
-    /// Get the pairwise comparison list used by prefiler
+    /// Get the pairwise comparison list used by prefilter
     pub fn any_shared_bin_list(&self, quiet: bool) -> RoaringTreemap {
         let percent = false;
         let progress_bar = get_progress_bar(self.index.len(), percent, quiet);

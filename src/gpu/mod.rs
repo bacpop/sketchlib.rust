@@ -14,6 +14,24 @@ use crate::distances::jaccard::ani_pois;
 
 const BBITS: u64 = BIN_BITS as u64;
 
+// TODO pass async calls through this function
+#[cfg(feature = "gpu")]
+fn run_gpu_batches() -> Result<(), Error> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let batches = prepare_batches();
+
+        let results = process_batches(batches).await?;
+
+        consume_results(results);
+
+        Ok(())
+    })
+}
+
 #[device]
 fn calc_jaccard_index(
     sketch1: &[u64],
@@ -61,6 +79,8 @@ mod kernels {
         let idx_raw = idx.get();
 
         if let Some(dist_elem) = dist.get_mut(idx) {
+            // TODO: correct for self comparisons
+            // TODO: add a non self mode for rectangular query-ref comparisons
             let i = calc_row_idx(idx_raw, n_samples);
             let j = calc_col_idx(idx_raw, i, n_samples);
 
@@ -78,6 +98,35 @@ mod kernels {
             } else {
                 todo!("path iterating over k-mers and doing regression")
             }
+        }
+    }
+
+    #[kernel]
+    #[launch_bounds(256)]
+    #[launch_contract(domain = 1, block = (256, 1, 1))]
+    // Interleaves 3D array bin, kmer, sample to sample, bin, k-mer (in order of fastest moving index)
+    // i.e. [1, n_bins, n_bins * n_kmers] to [n_samples, n_samples * n_bins , 1]
+    // TODO check this logic
+    pub fn interleave_sketches(
+        sketch_slice: &[u64],
+        n_samples: usize,
+        n_kmers: usize,
+        n_bins: usize,
+        mut interleaved: DisjointSlice<u64>
+    ) {
+        let idx = thread::index_1d();
+        let idx_raw = idx.get();
+
+        // In the output, k-mer outer index, then bin, then sample
+        if let Some(interleaved_elem) = interleaved.get_mut(idx) {
+            let kmer_idx_out = idx_raw / n_kmers;
+            let bin_idx_out = (idx_raw % n_kmers) / n_samples;
+            let sample_idx_out = idx_raw % n_bins;
+
+            let sample_stride_in = n_bins * n_kmers;
+            let kmer_stride_in = n_bins;
+            let bin_stride_in = 1;
+            interleaved_elem = sketch_slice[sample_idx_out * sample_stride_in + kmer_idx_out * kmer_stride_in + bin_idx_out * bin_stride_in];
         }
     }
 }
@@ -204,77 +253,74 @@ pub fn self_dists_knn_generic<'a, const BB: usize>(
             (end_i - start_i + 1) * (end_j - start_j + 1)
         };
 
-        let interleave_query_cfg = LaunchConfig::for_num_elems((end_i - start_i) * n_sketch_bins);
-        let interleave_ref_cfg = LaunchConfig::for_num_elems((end_j - start_j) * n_sketch_bins);
+        let ref_sketch_slice = sketches.get_sketch_all()[start_i * n_sketch_bins..end_i * n_sketch_bins];
+        let query_sketch_slice = sketches.get_sketch_all()[start_j * n_sketch_bins..end_j * n_sketch_bins];
+
+        let interleave_query_cfg = LaunchConfig::for_num_elems(ref_sketch_slice.len());
+        let interleave_ref_cfg = LaunchConfig::for_num_elems(query_sketch_slice.len());
         let distance_cfg = LaunchConfig::for_num_elems(n_dists_in_block);
 
-        // TODO pipeline steps:
-        // 1) H2D ref sketch
-        // 2) Interleave ref sketch kernel
-        // 3) H2D query sketch
-        // 4) Interleave query sketch kernel
-        // 5) Calculate distance kernel
-        // 6) D2H results
+        // Example code for the pipeline:
+        // https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html
+        // TODO: do we need PinnedHostBuffer<T> for the sketch strides we will copy?
 
-        let pipeline = zip!(h2d(batch_data), zeros(DIM * DIM), zeros(DIM))
-            // ── Stage 1: GEMM  hidden = input @ W0 ──────────────────────
+        // TODO pipeline steps:
+        let pipeline =
+            // 1) H2D ref sketch
+            zip!(h2d(&ref_sketch_slice), zeros(ref_sketch_slice.len()))
+            // 2) Interleave ref sketches
             .and_then(
-                move |(input, hidden, output): (
-                    DeviceBox<[f32]>,
-                    DeviceBox<[f32]>,
-                    DeviceBox<[f32]>,
+                move |(input, interleaved): (
+                    DeviceBox<[u64]>,
+                    DeviceBox<[u64]>,
                 )| {
-                    // SAFETY: the 2D grid and block match `sgemm_naive`'s
-                    // indexing, and all matrices are DIM x DIM allocations.
                     let launch = unsafe {
-                        module.sgemm_naive_async_owned(
-                            gemm_cfg,
-                            DIM as u32,
-                            DIM as u32,
-                            DIM as u32,
-                            1.0f32,
+                        module.interleave_sketches_async_owned(
                             input,
-                            w0,
-                            0.0f32,
-                            // C's row width, bound to the buffer for this launch.
-                            cuda_host::RowWidthOwned::new(hidden, DIM as u32),
+                            end_i - start_i + 1,
+                            sketches.kmer_lengths(),
+                            1,
+                            interleaved,
                         )
                     }
-                    .expect("Failed to build sgemm_naive launch");
+                    .expect("Failed to build interleaved launch");
+
+                    // TODO: unsure how to pass interleaved onto next fn
                     launch.and_then(move |(_input, _w0, hidden)| {
                         value((hidden.into_buffer(), output, w1, module))
                     })
                 },
             )
-            // ── Stage 2: MatVec  output = hidden @ W1 ───────────────────
+            // 3) H2D query sketch
+            .and_then(zip!(h2d(&query_sketch_slice), zeros(query_sketch_slice.len())))
+            // 4) Interleave query sketches
             .and_then(
-                move |(hidden, output, w1, module): (
-                    DeviceBox<[f32]>,
-                    DeviceBox<[f32]>,
-                    Arc<DeviceBox<[f32]>>,
-                    kernels::LoadedModule,
+                move |(input, interleaved): (
+                    DeviceBox<[u64]>,
+                    DeviceBox<[u64]>,
                 )| {
-                    // SAFETY: this is a 1D launch of DIM guarded threads over
-                    // DIM-sized vectors and a DIM x DIM matrix.
                     let launch = unsafe {
-                        module.matvec_naive_async_owned(
-                            matvec_cfg, DIM as u32, DIM as u32, hidden, w1, output,
+                        module.interleave_sketches_async_owned(
+                            input,
+                            end_j - start_j + 1,
+                            sketches.kmer_lengths(),
+                            1,
+                            interleaved,
                         )
                     }
-                    .expect("Failed to build matvec_naive launch");
-                    launch.and_then(move |(_hidden, _w1, output)| value((output, module)))
+                    .expect("Failed to build interleaved launch");
+
+                    // TODO: unsure how to pass interleaved onto next fn
+                    launch.and_then(move |(_input, _w0, hidden)| {
+                        value((hidden.into_buffer(), output, w1, module))
+                    })
                 },
             )
-            // ── Stage 3: ReLU  result = max(0, output) ──────────────────
+            // 5) Calculate distance kernel
             .and_then(
-                move |(output, module): (DeviceBox<[f32]>, kernels::LoadedModule)| {
-                    // SAFETY: this is a 1D launch and the ReLU kernel guards
-                    // accesses using the owned output's DIM-element length.
-                    unsafe { module.relu_async_owned(relu_cfg, output) }
-                        .expect("Failed to build relu launch")
-                },
+                // TODO call dists, with correct strides, and correct
             )
-            // ── Stage 4: D2H  copy result back to host ──────────────────
+            // 6) Copy distances back to the host
             .and_then(d2h);
 
         // Spawn the pipeline as a Tokio task. The DeviceOperation is
@@ -282,31 +328,23 @@ pub fn self_dists_knn_generic<'a, const BB: usize>(
         handles.push(tokio::spawn(pipeline.into_future()));
     }
 
-    // TODO consumer:
-    // Create Vec<BinaryHeap> of size n_samples
-    // In consumer push to heaps for (i, j) and (j, i)
 
-    // 4. Await all batches and verify results.
-    println!(
+
+    // Await all batches and verify results.
+    let knn_heaps = vec![BinaryHeap::with_capacity(knn + 1); sketches.number_samples_loaded()];
+    log::info!(
         "Launched {} batches concurrently, awaiting results...\n",
         num_batches
     );
-    for (i, handle) in handles.into_iter().enumerate() {
+    for (block_idx, handle) in handles.into_iter().enumerate() {
         let result: Vec<f32> = handle.await.expect("Tokio task panicked")?;
-        let all_non_negative = result.iter().all(|&v| v >= 0.0);
-        println!(
-            "Batch {}: {} elements, first 8 = {:?}{}",
-            i,
-            result.len(),
-            &result[..8.min(result.len())],
-            if all_non_negative {
-                " [ReLU OK]"
-            } else {
-                " [ReLU FAILED: negative values found]"
-            }
-        );
+        // TODO In consumer push to heaps for (i, j) and (j, i)
+        // - calculate the i and j, given block_idx, and index within the block
+        // - call push_heap() twice, for heap[i] idx j, and heap[j] idx i
     }
-
+    // TODO call l398-407 from distances/mod.rs (self_dists_knn_generic()) to move
+    // heaps into sparse matrix output
+    // (move this code into a function called here, and in the original place)
     todo!()
 }
 
