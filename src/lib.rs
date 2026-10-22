@@ -207,6 +207,9 @@ pub use utils::save_sketch_data;
 #[cfg(target_arch = "wasm32")]
 pub mod fastx_wasm;
 
+#[cfg(feature = "wgpu")]
+pub mod gpu;
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::{File, OpenOptions};
 #[cfg(not(target_arch = "wasm32"))]

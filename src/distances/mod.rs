@@ -29,6 +29,10 @@ pub mod distance_matrix;
 use self::distance_matrix::*;
 mod jaccard;
 use self::jaccard::*;
+#[cfg(feature = "wgpu")]
+use crate::gpu::dists_wgpu::get_distances_wgpu;
+/// FOr devs
+use std::process::exit;
 
 /// Chunk size in parallel distance calculations
 const CHUNK_SIZE: usize = 1000;
@@ -228,6 +232,21 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
     completeness_cutoff: f64,
     threads: usize,
 ) -> Result<(), Error> {
+    #[cfg(feature = "wgpu")]
+    {
+        if matches!(dist_type, DistType::Jaccard(..)) {
+            return self_dists_all_stream_wgpu::<BB, W>(
+                writer,
+                sketches,
+                n,
+                &dist_type,
+                completeness_vec,
+                completeness_cutoff,
+            );
+        }
+        log::warn!("The wgpu backend does not support core/accessory distances yet; using the CPU");
+    }
+
     let ani = matches!(dist_type, DistType::Jaccard(_, _, true));
     let k_vals = match dist_type {
         DistType::Jaccard(k_idx, k_val, _) => Some((k_idx, k_val)),
@@ -309,6 +328,37 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
         }
         Ok(())
     })
+}
+
+
+/// GPU (wgpu) variant of [`self_dists_all_stream`] for Jaccard distances and ANI.
+/// Same line format; pairs come out in condensed upper-triangle order.
+#[cfg(feature = "wgpu")]
+fn self_dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
+    writer: &mut W,
+    sketches: &MultiSketch,
+    n: usize,
+    dist_type: &DistType,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+) -> Result<(), Error> {
+    let dists = pollster::block_on(get_distances_wgpu(
+        sketches,
+        n,
+        dist_type,
+        completeness_vec,
+        completeness_cutoff,
+        BB,
+    ))?;
+    let ref_names = <DistanceMatrix as Distances>::sketch_names(sketches);
+
+    // Same pair order as the kernel's dist_idx
+    let pairs = (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j)));
+    for ((i, j), dist) in pairs.zip(dists) {
+        writeln!(writer, "{}\t{}\t{dist}", ref_names[i], ref_names[j])
+            .context("Error writing streamed distance output")?;
+    }
+    Ok(())
 }
 
 /// Self query mode (dense, all distances)
