@@ -17,6 +17,8 @@ pub const DEFAULT_MINQUAL: u8 = 20;
 pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 /// Default nearest neighbours
 pub const DEFAULT_KNN: usize = 50;
+/// Maximum sketches per GPU distance block
+pub const DEFAULT_MAX_SKETCH_BATCH: usize = 10_000;
 
 /// Query types supported by bitvec operations
 #[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum, Default)]
@@ -244,6 +246,10 @@ pub enum Commands {
         /// The GPU to use. Uses CPU only if unspecified
         #[arg(long)]
         gpu: Option<usize>,
+
+        /// Maximum sketches per block for GPU self-distance kNN calculation
+        #[arg(long, default_value_t = DEFAULT_MAX_SKETCH_BATCH, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        max_sketch_batch: usize,
     },
 
     /// Building and querying with inverted indices (.ski)

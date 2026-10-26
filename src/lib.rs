@@ -317,6 +317,7 @@ pub fn main() -> Result<(), Error> {
             query_completeness_file,
             completeness_cutoff,
             gpu,
+            max_sketch_batch,
         } => {
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
@@ -422,6 +423,7 @@ pub fn main() -> Result<(), Error> {
                                     ref_completeness_vec.as_ref(),
                                     *completeness_cutoff,
                                     gpu_device_id,
+                                    *max_sketch_batch,
                                 )?
                             } else {
                                 self_dists_knn(

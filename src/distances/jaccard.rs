@@ -300,6 +300,7 @@ mod tests {
 
 /// Converts between Jaccard distance and ANI, using a Poisson model of mutations
 #[inline(always)]
+#[cfg_attr(feature = "gpu", cuda_device::device)]
 pub fn ani_pois(jaccard: f64, k: f64) -> f64 {
     0.0_f64.max(1.0 + 1.0 / k * (((2.0 * jaccard) / (1.0 + jaccard)).ln()))
 }
