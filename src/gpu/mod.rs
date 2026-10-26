@@ -66,29 +66,38 @@ mod kernels {
     #[launch_contract(domain = 1, block = (256, 1, 1))]
     pub fn dists(
         sketches: &[u64],
-        n_samples: usize,
-        sketch_strides: (usize, usize, usize), // (bin, k-mer, sample)
+        n_ref_samples: usize,
+        n_query_samples: usize,
+        ref_strides: (usize, usize, usize), // (bin, k-mer, sample)
+        query_strides: (usize, usize, usize), // (bin, k-mer, sample)
         sketchsize64: u64,
         _kmers: &[usize],
         _dist_type: DistType,
         k_vals: Option<(usize, f64)>,
         ani: bool,
+        diagonal: bool,
         mut dist: DisjointSlice<f32>
     ) {
         let idx = thread::index_1d();
         let idx_raw = idx.get();
 
         if let Some(dist_elem) = dist.get_mut(idx) {
-            // TODO: correct for self comparisons
-            // TODO: add a non self mode for rectangular query-ref comparisons
-            let i = calc_row_idx(idx_raw, n_samples);
-            let j = calc_col_idx(idx_raw, i, n_samples);
+            let (i, j) = if diagonal {
+                (calc_row_idx(idx_raw, n_samples), calc_col_idx(idx_raw, i, n_samples))
+            } else {
+                calc_query_indices(idx_raw, n_query_samples)
+            };
 
             if let Some((k_idx, k_f64)) = k_vals {
-                let i_idx = i * sketch_strides.2 + k_idx * sketch_strides.1;
-                let j_idx = j * sketch_strides.2 + k_idx * sketch_strides.1;
+                let i_idx = i * ref_strides.2 + k_idx * ref_strides.1;
+                let j_idx = j * query_strides.2 + k_idx * query_strides.1;
 
-                let jaccard_index = calc_jaccard_index(&sketches[i_idx..], &sketches[j_idx..], sketch_strides.0 as u64, sketch_strides.0 as u64, sketchsize64);
+                let jaccard_index = calc_jaccard_index(
+                                            &sketches[i_idx..],
+                                            &sketches[j_idx..],
+                                            ref_strides.0 as u64,
+                                            query_strides.0 as u64,
+                                            sketchsize64);
 
                 *dist_elem = if ani {
                     ani_pois(jaccard_index, k_f64) as f32
@@ -119,14 +128,14 @@ mod kernels {
 
         // In the output, k-mer outer index, then bin, then sample
         if let Some(interleaved_elem) = interleaved.get_mut(idx) {
-            let kmer_idx_out = idx_raw / n_kmers;
-            let bin_idx_out = (idx_raw % n_kmers) / n_samples;
-            let sample_idx_out = idx_raw % n_bins;
+            let sample_idx = idx_raw % n_samples;
+            let bin_idx = (idx_raw / n_samples) % n_bins;
+            let kmer_idx = idx_raw / (n_samples * n_bins);
 
             let sample_stride_in = n_bins * n_kmers;
             let kmer_stride_in = n_bins;
-            let bin_stride_in = 1;
-            interleaved_elem = sketch_slice[sample_idx_out * sample_stride_in + kmer_idx_out * kmer_stride_in + bin_idx_out * bin_stride_in];
+            *interleaved_elem = sketch_slice
+                [sample_idx * sample_stride_in + kmer_idx * kmer_stride_in + bin_idx];
         }
     }
 }
@@ -142,6 +151,20 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     completeness_cutoff: f64,
     gpu_device_id: usize,
 ) -> Result<(), Error> {
+    if sketches.is_legacy_format() {
+        return Err(anyhow!(
+            "GPU dists supports only new-format sketches with BIN_BITS={BIN_BITS}"
+        ));
+    }
+
+    assert_eq!(n, sketches.number_samples_loaded());
+    if n < 256 {
+        return Err(anyhow!("GPU kNN requires at least 256 samples"));
+    }
+    if knn >= n {
+        return Err(anyhow!("GPU kNN requires knn to be smaller than n"));
+    }
+
     let ctx = CudaContext::new(gpu_device_id)?;
     let stream = ctx.default_stream();
 
@@ -169,13 +192,16 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
         &stream,
         &prepared,
         &sketch_dev,
-        sketches.number_samples_loaded(),
+        n,
+        n,
+        sketches.get_strides(),
         sketches.get_strides(),
         sketches.sketchsize64,
         &kmers_dev,
         dist_type,
         k_vals,
         ani,
+        true,
         &mut dist_dev,
     )?;
 
@@ -189,7 +215,7 @@ pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
     Ok(())
 }
 
-pub fn self_dists_knn_generic<'a, const BB: usize>(
+pub fn self_dists_knn<'a>(
     sketches: &'a MultiSketch,
     n: usize,
     knn: usize,
@@ -198,7 +224,21 @@ pub fn self_dists_knn_generic<'a, const BB: usize>(
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
     gpu_device_id: usize,
-) -> SparseDistanceMatrix<'a> {
+) -> Result<SparseDistanceMatrix<'a>, Error> {
+    if sketches.is_legacy_format() {
+        return Err(anyhow!(
+            "GPU dists supports only new-format sketches with BIN_BITS={BIN_BITS}"
+        ));
+    }
+
+    assert_eq!(n, sketches.number_samples_loaded());
+    if n < 256 {
+        return Err(anyhow!("GPU kNN requires at least 256 samples"));
+    }
+    if knn >= n {
+        return Err(anyhow!("GPU kNN requires knn to be smaller than n"));
+    }
+
     init_device_contexts(gpu_device_id, 1)?;
     let module = unsafe { kernels::load_async(0)? };
 
