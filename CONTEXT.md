@@ -26,3 +26,19 @@ The unordered sample pairs within one sketch block. Self-pairs are excluded.
 **Off-diagonal tile**:
 All sample pairs formed by taking one sample from each of two different
 sketch blocks.
+
+**Dense self-distances**:
+Distances for every unordered pair of distinct samples in one sketch collection.
+Each pair appears once; the ordering of pairs is not part of the result.
+
+**Completeness**:
+The estimated fraction of a sample's genome represented by its sequence data,
+expressed from zero to one.
+
+**Completeness cutoff**:
+The minimum product of two samples' completeness estimates at which their
+Jaccard similarity receives completeness correction.
+
+**Completeness correction**:
+An adjustment to a pair's Jaccard similarity to account for missing genome
+sequence, capped at a similarity of one.

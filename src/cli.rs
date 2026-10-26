@@ -247,7 +247,7 @@ pub enum Commands {
         #[arg(long)]
         gpu: Option<usize>,
 
-        /// Maximum sketches per block for GPU self-distance kNN calculation
+        /// Maximum sketches per block for dense or kNN GPU self-distances
         #[arg(long, default_value_t = DEFAULT_MAX_SKETCH_BATCH, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         max_sketch_batch: usize,
     },

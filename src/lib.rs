@@ -376,22 +376,31 @@ pub fn main() -> Result<(), Error> {
             match queries {
                 None => {
                     // Ref v ref functions
-                    match knn {
-                        None => {
-                            // Self mode (dense)
-                            if let Some(gpu_device_id) = *gpu {
-                                log::info!("Calculating all ref vs ref distances (GPU)");
-                                gpu::self_dists_all_stream(
-                                    &mut output_file,
-                                    &references,
-                                    n,
-                                    dist_type,
-                                    args.quiet,
-                                    ref_completeness_vec.as_ref(),
-                                    *completeness_cutoff,
-                                    gpu_device_id,
-                                )?;
-                            } else {
+                    let knn = knn.map(|nn| {
+                        // Self mode: a genome cannot be its own neighbour.
+                        if nn >= n {
+                            log::warn!("knn={nn} is higher than number of samples={n}");
+                            n - 1
+                        } else {
+                            nn
+                        }
+                    });
+                    if let Some(gpu_device_id) = *gpu {
+                        gpu::self_dists_stream(
+                            &mut output_file,
+                            &references,
+                            n,
+                            knn,
+                            dist_type,
+                            args.quiet,
+                            ref_completeness_vec.as_ref(),
+                            *completeness_cutoff,
+                            gpu_device_id,
+                            *max_sketch_batch,
+                        )?;
+                    } else {
+                        match knn {
+                            None => {
                                 log::info!("Calculating all ref vs ref distances");
                                 self_dists_all_stream(
                                     &mut output_file,
@@ -404,41 +413,21 @@ pub fn main() -> Result<(), Error> {
                                     *threads,
                                 )?;
                             }
-                        }
-                        Some(mut nn) => {
-                            // Self mode (sparse): a genome cannot be its own neighbour
-                            if nn >= n {
-                                log::warn!("knn={nn} is higher than number of samples={n}");
-                                nn = n - 1;
+                            Some(nn) => {
+                                log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
+                                let distances = self_dists_knn(
+                                    &references,
+                                    n,
+                                    nn,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                );
+
+                                log::info!("Writing out in sparse matrix form");
+                                write!(output_file, "{distances}")?
                             }
-                            log::info!("Calculating sparse ref vs ref distances with {nn} nearest neighbours");
-
-                            let distances = if let Some(gpu_device_id) = *gpu {
-                                gpu::self_dists_knn(
-                                    &references,
-                                    n,
-                                    nn,
-                                    dist_type,
-                                    args.quiet,
-                                    ref_completeness_vec.as_ref(),
-                                    *completeness_cutoff,
-                                    gpu_device_id,
-                                    *max_sketch_batch,
-                                )?
-                            } else {
-                                self_dists_knn(
-                                    &references,
-                                    n,
-                                    nn,
-                                    dist_type,
-                                    args.quiet,
-                                    ref_completeness_vec.as_ref(),
-                                    *completeness_cutoff,
-                                )
-                            };
-
-                            log::info!("Writing out in sparse matrix form");
-                            write!(output_file, "{distances}")?
                         }
                     }
                 }

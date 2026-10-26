@@ -1,4 +1,210 @@
-# CUDA self-distance kNN tiling
+# CUDA self-distance planning
+
+## Current round: shared dense/kNN path and completeness
+
+Status: initial implementation, remote release build, smoke test, and agreed
+integration validation complete. The follow-up removal of redundant dense text
+batching is implemented locally, with remote verification pending.
+The user authorised this round with "Yes, implement it".
+Remote commands were approved individually and run sequentially as `jlees`.
+The completed tiling phase and its validation remain recorded below.
+
+Requested scope:
+
+- Use a common synchronous GPU tile pipeline for dense self-distances and kNN,
+  selecting the consumer with `knn: Option<usize>`. Dense output goes to a writer;
+  kNN continues to populate heaps.
+- Upload completeness values once, using f32 on the device, and apply completeness
+  correction consistently across dense and kNN modes.
+- Retain the current user-controlled block-size default of 10000 and the GPU
+  minimum dataset size of 256. No automatic GPU-memory sizing is requested.
+- Keep execution synchronous. Concurrent tiles, Tokio scheduling, pinned sketch
+  buffers, parallel consumers, prefiltering, shared-memory query caching, and
+  reference/query cross-comparisons remain deferred. Core/accessory regression
+  remains deferred from the previous phase.
+- Preserve canonical transfer/allocation helpers unless a necessary change is
+  separately approved; type-only variants are permitted. Avoid unnecessary
+  validation and extra wrapper abstractions.
+- Run compilation and runtime tests only on the remote machine, as `jlees`.
+  Ask before every remote command and run one command at a time. A reviewable
+  Python runner may group sequential smoke and CPU/GPU integration tests into
+  one approved remote invocation; do not add tests to the Cargo harness.
+
+Resolved decisions for this round:
+
+- Dense GPU output adopts the CPU streaming contract: the same tab-separated
+  line format, each unordered sample pair exactly once, and no guaranteed global
+  record ordering. The user explicitly accepted tile-by-tile streaming to keep
+  memory bounded; do not assemble or reorder a complete dense matrix.
+- Replace the two GPU entry points with one writer-based function,
+  `self_dists_stream(writer, ..., knn: Option<usize>, ...) -> Result<()>`.
+  `None` streams dense output; `Some(k)` retains the existing heap selection and
+  sparse output format. Construct the sparse matrix and perform its final write
+  inside this function. The user accepted the slightly less tidy caller in
+  exchange for avoiding additional optional arguments. CPU entry points remain
+  unchanged.
+- Preserve the CPU completeness rule on the GPU: after random-match correction,
+  apply correction when `c_i * c_j >= completeness_cutoff`, cap the corrected
+  Jaccard index at 1, and then derive distance or ANI. Use f32 completeness
+  values, cutoff, and correction arithmetic; retain the existing arithmetic for
+  uncorrected Jaccard and ANI. Upload completeness once for all tiles and use
+  each tile's global sample offsets to select values from it.
+- Document that f32 rounding can choose a different correction branch from CPU
+  f64 for inputs extremely close to the cutoff. The user explicitly excluded
+  testing that precision boundary; do not add a boundary test for it.
+- Defer progress reporting entirely until the asynchronous tile-launch phase,
+  as explicitly requested by the user. Do not add a polling thread, managed
+  counter, device atomic updates, capability checks, or progress/quiet tests in
+  this round. The proposed polling-thread design was not accepted; future work
+  should reconsider progress alongside asynchronous scheduling.
+
+Findings used for this round:
+
+- Before this round, GPU dense calculation allocated all distances, while the
+  kNN route already had the bounded synchronous tile pipeline now shared by
+  both output modes.
+- CPU completeness correction runs after random-match correction. Its gate is
+  `c_i * c_j >= completeness_cutoff` (default 0.64), rather than an individual
+  threshold on each sample. The corrected Jaccard index is capped at 1 before
+  conversion to Jaccard distance or ANI. Missing file entries are already filled
+  with completeness 1 by the existing reader.
+- Dense ANI needs the existing kernel's raw-ANI mode. kNN must retain its current
+  inverse-ANI ranking and sparse finalisation, avoiding an additional float
+  conversion through inverse ANI for dense output.
+- Dense formatting reuses the tile's pair decoder and global offsets and writes
+  each record directly to the supplied writer. `set_ostream()` already wraps
+  file and stdout destinations in `std::io::BufWriter`; do not add a second
+  text batching layer in `consume()`. Writer errors propagate through the
+  unified entry point.
+
+Agreed remote validation for this round:
+
+- Compile using `CUDA_HOME=/usr/local/cuda-13.4 cargo oxide build` and run the
+  supplied 1000-sample GPU kNN smoke command against the resulting executable.
+- Use a 256-sample subset for the integration matrix: dense and kNN output,
+  Jaccard and ANI, with no completeness file and with a synthetic mixed
+  completeness file. Choose values comfortably above/below the default product
+  cutoff, exercising both corrected and uncorrected pairs without testing the
+  excluded precision boundary.
+- Compare CPU results with both single-tile and forced-multiple-tile GPU output.
+  Check dense unordered-pair coverage, exact pair count, no duplicates or
+  self-pairs, finite values, and absolute distance tolerance 1e-6. Keep the
+  previously agreed sparse structural checks and CPU-verified cutoff-tie rule;
+  dense CPU output also supplies distances for verifying alternative neighbours.
+- Include a singleton remainder in a dense tiled run to exercise the newly
+  shared consumer and skipped empty diagonal tile. Verify that mixed
+  completeness actually changes results for some eligible pairs.
+- Keep the runner outside the Cargo test harness and execute its subprocesses
+  sequentially in one approved remote invocation. Request separate approval for
+  code copies and compilation as needed; never run a remote command silently.
+
+Completed implementation sequence:
+
+1. Replace the standalone GPU dense implementation and GPU kNN entry point with
+   `self_dists_stream()`. Keep the existing `DistTile` lifecycle:
+   construct, build pipeline, `.sync()`, consume, then start the next tile.
+   Initialise sparse storage/heaps only for `Some(k)`; dense mode must not
+   construct a `DistanceMatrix` or retain previous tiles' results.
+2. Adapt `DistTile::consume()` to the two output modes while retaining the shared
+   kernel/host pair decoder. Dense mode writes each record to the supplied
+   buffered writer before moving to the next tile. kNN still adds each unordered pair to
+   both heaps and uses the existing shared finalisation before writing.
+   Select raw ANI in dense mode and inverse ANI for sparse ranking.
+3. Convert the existing optional host completeness values to f32 once, upload
+   them once using a permitted type-only `h2d_f32()` variant, and share the
+   device buffer across tile operations. Retain all buffer owners through
+   `.sync()`, as in the validated pipeline. Without a completeness file, retain
+   the existing uncorrected arithmetic. Add only the kernel arguments and
+   correction logic needed for the agreed gate/formula, using global sample
+   offsets. Preserve the canonical `h2d()`, `d2h()`, and `zeros()` functions.
+4. Update CLI self-distance GPU dispatch to call the unified writer-based entry
+   point and pass the block limit in both modes. Preserve CPU routes and
+   existing CLI kNN clamping. Update block-limit help text to cover dense and
+   sparse GPU self-distances. Keep the default 10000, dataset minimum 256,
+   current-format restriction, and deferred core/accessory regression.
+5. Format and inspect the local diff without local compilation or tests.
+   Prepare the one-off sequential remote runner, request approval for every
+   remote command, then compile and run the agreed validation. Resolve failures
+   in scope and record actual outcomes and any remaining limits in this plan.
+
+No new wrapper hierarchy or generic consumer framework was introduced. Changes
+are confined to the GPU implementation, required dispatch/help updates,
+planning/glossary documentation, and the one-off remote validation script. No
+ADR was needed for these readily reversible interface and execution choices.
+
+Implementation and validation record for this round:
+
+- `gpu::self_dists_stream()` is the single writer-based entry point. Dense and
+  sparse calculations use the same `DistTile` pipeline and shared pair decoder.
+  The sparse matrix is constructed and written inside this function. CPU
+  calculation functions are unchanged; the caller retains its kNN clamping.
+- Dense mode does not allocate a `DistanceMatrix` or heaps. It writes records
+  directly with `writeln!(writer, ...)`, relying on the existing `BufWriter`.
+  The user requested removal of the initial redundant 64 KiB `String` batching
+  layer, including its manual flush logic and unused formatting-trait import.
+  Dense ANI is calculated directly, while sparse ANI retains inverse-ANI
+  ranking and the existing shared heap finalisation.
+- Completeness is converted to f32 and uploaded once with `h2d_f32()`, a
+  type-only variant of the canonical transfer helper. Tiles share this buffer
+  with Arc and use global sample offsets for lookup. When correction is absent,
+  a single unused placeholder value supplies a valid typed launch buffer and
+  the uncorrected arithmetic remains unchanged.
+- The correction gate, formula, and cap match the agreed CPU semantics using
+  f32 arithmetic. The public entry-point documentation and kernel comment
+  describe possible cutoff-branch differences from f64. No precision-boundary
+  test was added or run, as requested.
+- The canonical `h2d()`, `d2h()`, and `zeros()` functions are unchanged. Device
+  buffers remain retained through `.sync()`. Progress reporting and every other
+  deferred feature remain unimplemented.
+- Local Rust formatting and `git diff --check` passed. No local compilation or
+  runtime tests ran, and no tests were added to the Cargo harness.
+
+The approved remote build used:
+
+```sh
+CUDA_HOME=/usr/local/cuda-13.4 /home/jlees/.cargo/bin/cargo oxide build
+```
+
+It completed successfully in 19.15s with the release profile. The remote
+toolchain remains `1.99.1`; no manifest, toolchain, or cuda-oxide revision pinning
+changes were needed in this round. Runtime validation used that newly built
+`target/release/sketchlib` executable on GPU 0.
+
+The GPU kNN smoke run on `1k_subset` passed. The integration runner selected
+256 names spread through the collection and reversed their order to exercise
+logical sample indices independently of metadata order. Mixed completeness
+cycled through 0.95, 0.85, 0.50, and 1.0, away from the default cutoff boundary.
+
+| Completeness | Metric | Dense maximum absolute error | kNN maximum absolute error | Verified cutoff substitutions per kNN run |
+| --- | --- | ---: | ---: | ---: |
+| Absent | Jaccard | 0 | 0 | 0 |
+| Absent | ANI | 0 | 0 | 0 |
+| Mixed | Jaccard | 1.4e-7 | 1.3e-7 | 1 |
+| Mixed | ANI | 1e-7 | 1e-7 | 1 |
+
+Every table row passed for both the default single tile and two 128-sample
+blocks. An additional mixed-completeness dense Jaccard run with block limit 255
+passed with maximum error 1.4e-7, exercising the singleton remainder and skipped
+empty diagonal tile. In total, all **17 CPU/GPU comparisons passed** at the
+agreed absolute tolerance 1e-6.
+
+Each dense run contained exactly 32640 distinct unordered pairs, with no
+self-pairs and finite values. Each kNN run contained 256 rows with ten distinct
+non-self neighbours in the correct order; alternative cutoff neighbours were
+verified against dense CPU distances. The runner also confirmed that mixed
+completeness changes eligible pairs and leaves below-cutoff pairs uncorrected.
+
+The one-off runner is `/private/tmp/sketchlib-cuda-phase2.py` locally. The
+successful invocation supplied it to remote `python3 -` over SSH standard input;
+an earlier launch found no runner at the requested remote file path and ran no
+tests. No Cargo test harness was used. All successful runtime outputs, per-run
+logs, the subset/completeness fixtures, and `report.json` remain remotely in
+`/tmp/sketchlib-cuda-phase2-sqre1woq/`.
+
+Local logs are `/private/tmp/sketchlib-cuda-phase2-build.log` and
+`/private/tmp/sketchlib-cuda-phase2-validation.log`.
+
+## Completed round: CUDA self-distance kNN tiling
 
 Status: implementation, remote build, and planned remote validation complete.
 The user confirmed shared understanding and explicitly authorised implementation.

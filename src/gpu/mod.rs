@@ -4,7 +4,7 @@ use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Context, Error};
 
 use cuda_async::simt::device_box::DeviceBox;
 use cuda_async::simt::device_context::init_device_contexts;
@@ -13,7 +13,7 @@ use cuda_async::zip;
 use cuda_core::simt::memory::{
     malloc_async, memcpy_dtoh_async, memcpy_htod_async, memset_d8_async,
 };
-use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig1D};
+use cuda_core::LaunchConfig1D;
 use cuda_device::{device, kernel, launch_bounds, launch_contract, thread, DisjointSlice};
 use cuda_host::cuda_module;
 
@@ -94,6 +94,10 @@ mod kernels {
         ani: bool,
         inverse_ani: bool,
         diagonal: bool,
+        completeness: &[f32],
+        correct_completeness: bool,
+        completeness_cutoff: f32,
+        sample_offsets: (usize, usize),
         mut dist: DisjointSlice<f32>,
     ) {
         let idx = thread::index_1d();
@@ -106,13 +110,25 @@ mod kernels {
                 let i_idx = i * ref_strides.2 + k_idx * ref_strides.1;
                 let j_idx = j * query_strides.2 + k_idx * query_strides.1;
 
-                let jaccard_index = calc_jaccard_index(
+                let mut jaccard_index = calc_jaccard_index(
                     &ref_sketches[i_idx..],
                     &query_sketches[j_idx..],
                     ref_strides.0 as u64,
                     query_strides.0 as u64,
                     sketchsize64,
                 );
+
+                if correct_completeness {
+                    let c1 = completeness[sample_offsets.0 + i];
+                    let c2 = completeness[sample_offsets.1 + j];
+                    let product = c1 * c2;
+                    // Use the CPU pair-product rule, with f32 correction arithmetic.
+                    // Rounding near the cutoff can select a different branch from f64.
+                    if product >= completeness_cutoff {
+                        jaccard_index = ((jaccard_index as f32 / (product / (c1 + c2 - product)))
+                            .min(1.0)) as f64;
+                    }
+                }
 
                 *dist_elem = if ani {
                     let similarity = ani_pois(jaccard_index, k_f64);
@@ -158,81 +174,6 @@ mod kernels {
                 sketch_slice[sample_idx * sample_stride_in + kmer_idx * kmer_stride_in + bin_idx];
         }
     }
-}
-
-/// GPU version of distances::self_dists_all_stream()
-pub fn self_dists_all_stream<'a, W: IoWrite + Send>(
-    output_file: &mut W,
-    sketches: &'a MultiSketch,
-    n: usize,
-    dist_type: DistType,
-    quiet: bool,
-    completeness_vec: Option<&Vec<f64>>,
-    completeness_cutoff: f64,
-    gpu_device_id: usize,
-) -> Result<(), Error> {
-    if sketches.is_legacy_format() {
-        return Err(anyhow!(
-            "GPU dists supports only new-format sketches with BIN_BITS={BIN_BITS}"
-        ));
-    }
-
-    assert_eq!(n, sketches.number_samples_loaded());
-    if n < 256 {
-        return Err(anyhow!("GPU kNN requires at least 256 samples"));
-    }
-    let ctx = CudaContext::new(gpu_device_id)?;
-    let stream = ctx.default_stream();
-
-    let mut distances = DistanceMatrix::new(sketches, None, dist_type);
-    let k_vals = distances.k_vals();
-    let ani = distances.ani();
-    let n_distances = distances.n_distances;
-
-    let sketch_dev = DeviceBuffer::from_host(&stream, sketches.get_sketch_all())?;
-    let kmers_dev = DeviceBuffer::from_host(&stream, sketches.kmer_lengths())?;
-
-    let mut dist_dev = DeviceBuffer::<f32>::zeroed(&stream, n_distances)?;
-
-    // SAFETY: this package owns the embedded device bundle produced for the
-    // kernels module above.
-    let module = unsafe { kernels::load(&ctx)? };
-
-    let prepared = module.prepare_dists(LaunchConfig1D::new(
-        (n_distances as u32).div_ceil(256),
-        256,
-        0,
-    ))?;
-
-    // TODO interleaving sketches
-
-    module.dists(
-        &stream,
-        &prepared,
-        &sketch_dev,
-        &sketch_dev,
-        n,
-        n,
-        sketches.get_strides(),
-        sketches.get_strides(),
-        sketches.sketchsize64,
-        &kmers_dev,
-        dist_type,
-        k_vals,
-        ani,
-        false,
-        true,
-        &mut dist_dev,
-    )?;
-
-    let dist_mut = distances.dists_mut();
-    *dist_mut = dist_dev.to_host_vec(&stream)?;
-
-    // TODO convert writing to streaming
-    log::info!("Writing out in long matrix form");
-    write!(output_file, "{distances}")?;
-
-    Ok(())
 }
 
 /// One pair of sketch blocks, with launch ranges and shared host ownership.
@@ -304,6 +245,10 @@ impl DistTile {
         dist_type: DistType,
         k_vals: Option<(usize, f64)>,
         ani: bool,
+        inverse_ani: bool,
+        completeness: Arc<DeviceBox<[f32]>>,
+        correct_completeness: bool,
+        completeness_cutoff: f32,
     ) -> Result<impl DeviceOperation<Output = (Vec<f32>, impl Send)> + '_, Error> {
         // Prepare contracts before any device work is submitted, so failures
         // propagate normally rather than panicking inside a pipeline closure.
@@ -317,6 +262,7 @@ impl DistTile {
         let sketchsize64 = self.sketchsize64;
         let diagonal = self.diagonal;
         let n_distances = self.n_distances;
+        let sample_offsets = (self.ref_samples.start, self.query_samples.start);
         let query_slice = &self.sketches[self.query_bins.clone()];
 
         // https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html
@@ -377,35 +323,53 @@ impl DistTile {
                             dist_type,
                             k_vals,
                             ani,
-                            true,
+                            inverse_ani,
                             diagonal,
+                            completeness,
+                            correct_completeness,
+                            completeness_cutoff,
+                            sample_offsets,
                             output,
                         )
-                        .and_then(move |(ref_interleaved, query_interleaved, kmers, output)| {
-                            d2h(output).and_then(move |(host, output)| {
-                                // DeviceBox frees on a separate stream. Retain every
-                                // allocation in the result until the caller's sync.
-                                value((
-                                    host,
-                                    (
-                                        ref_input,
-                                        ref_interleaved,
-                                        query_input,
-                                        query_interleaved,
-                                        kmers,
-                                        output,
-                                    ),
-                                ))
-                            })
-                        })
+                        .and_then(
+                            move |(
+                                ref_interleaved,
+                                query_interleaved,
+                                kmers,
+                                completeness,
+                                output,
+                            )| {
+                                d2h(output).and_then(move |(host, output)| {
+                                    // DeviceBox frees on a separate stream. Retain every
+                                    // allocation in the result until the caller's sync.
+                                    value((
+                                        host,
+                                        (
+                                            ref_input,
+                                            ref_interleaved,
+                                            query_input,
+                                            query_interleaved,
+                                            kmers,
+                                            completeness,
+                                            output,
+                                        ),
+                                    ))
+                                })
+                            },
+                        )
                 })
             },
         ))
     }
 
-    fn consume(&self, distances: Vec<f32>, heaps: &mut [BinaryHeap<SparseJaccard>], knn: usize) {
-        // This tile-to-global pair decoding can also feed a future dense-distance
-        // streaming writer instead of updating kNN heaps.
+    fn consume<W: IoWrite>(
+        &self,
+        distances: Vec<f32>,
+        knn: Option<usize>,
+        heaps: &mut [BinaryHeap<SparseJaccard>],
+        names: &[&str],
+        writer: &mut W,
+    ) -> Result<(), Error> {
         for (idx, distance) in distances.into_iter().enumerate() {
             let (i, j) = dist_pair_indices(
                 idx,
@@ -415,23 +379,34 @@ impl DistTile {
             );
             let i = self.ref_samples.start + i;
             let j = self.query_samples.start + j;
-            push_heap(&mut heaps[i], SparseJaccard(j, distance), knn);
-            push_heap(&mut heaps[j], SparseJaccard(i, distance), knn);
+            if let Some(knn) = knn {
+                push_heap(&mut heaps[i], SparseJaccard(j, distance), knn);
+                push_heap(&mut heaps[j], SparseJaccard(i, distance), knn);
+            } else {
+                writeln!(writer, "{}\t{}\t{distance}", names[i], names[j])
+                    .context("Error writing streamed GPU distance output")?;
+            }
         }
+        Ok(())
     }
 }
 
-pub fn self_dists_knn<'a>(
-    sketches: &'a MultiSketch,
+/// Write GPU self-distances using synchronous tiles. `None` streams every
+/// unordered pair without a global ordering guarantee; `Some(k)` selects kNN.
+/// Completeness correction uses f32, including its pair-product cutoff test;
+/// values very close to the cutoff can take a different branch from CPU f64.
+pub fn self_dists_stream<W: IoWrite + Send>(
+    writer: &mut W,
+    sketches: &MultiSketch,
     n: usize,
-    knn: usize,
+    knn: Option<usize>,
     dist_type: DistType,
     _quiet: bool,
-    _completeness_vec: Option<&Vec<f64>>,
-    _completeness_cutoff: f64,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
     gpu_device_id: usize,
     max_sketch_batch: usize,
-) -> Result<SparseDistanceMatrix<'a>, Error> {
+) -> Result<(), Error> {
     if sketches.is_legacy_format() {
         return Err(anyhow!(
             "GPU dists supports only new-format sketches with BIN_BITS={BIN_BITS}"
@@ -440,24 +415,37 @@ pub fn self_dists_knn<'a>(
 
     assert_eq!(n, sketches.number_samples_loaded());
     if n < 256 {
-        return Err(anyhow!("GPU kNN requires at least 256 samples"));
+        return Err(anyhow!("GPU self-distances require at least 256 samples"));
     }
-    if knn >= n {
+    if knn.is_some_and(|knn| knn >= n) {
         return Err(anyhow!("GPU kNN requires knn to be smaller than n"));
     }
-    if matches!(dist_type, DistType::CoreAcc) {
-        todo!("GPU core/accessory regression is deferred");
-    }
+    let (k_vals, ani) = match dist_type {
+        DistType::Jaccard(k_idx, k_val, ani) => (Some((k_idx, k_val)), ani),
+        DistType::CoreAcc => todo!("GPU core/accessory regression is deferred"),
+    };
 
     init_device_contexts(gpu_device_id, 1)?;
     // SAFETY: this crate owns the embedded bundle for the kernels above.
     let module = unsafe { kernels::load_async(gpu_device_id)? };
     let kmers_dev = h2d_usize(sketches.kmer_lengths()).arc().sync()?;
 
-    let mut distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
-    let k_vals = distances.k_vals();
-    let ani = distances.ani();
-    let mut heaps = vec![BinaryHeap::with_capacity(knn + 1); n];
+    // A disabled correction still passes a valid buffer to the typed launch;
+    // its single placeholder value is never indexed by the kernel.
+    let completeness: Vec<f32> = completeness_vec.map_or_else(
+        || vec![1.0],
+        |values| values.iter().map(|&value| value as f32).collect(),
+    );
+    let completeness_dev = h2d_f32(&completeness).arc().sync()?;
+    let correct_completeness = completeness_vec.is_some();
+    let mut heaps = if let Some(knn) = knn {
+        log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours (GPU)");
+        vec![BinaryHeap::with_capacity(knn + 1); n]
+    } else {
+        log::info!("Calculating all ref vs ref distances (GPU)");
+        Vec::new()
+    };
+    let names = <DistanceMatrix as Distances>::sketch_names(sketches);
     let n_blocks = n.div_ceil(max_sketch_batch);
     let n_tiles = n_blocks * (n_blocks + 1) / 2;
 
@@ -473,17 +461,26 @@ pub fn self_dists_knn<'a>(
                 dist_type,
                 k_vals,
                 ani,
+                knn.is_some(),
+                Arc::clone(&completeness_dev),
+                correct_completeness,
+                completeness_cutoff as f32,
             )?
             .sync()?;
-        tile.consume(result, &mut heaps, knn);
+        tile.consume(result, knn, &mut heaps, &names, writer)?;
     }
 
-    if let DistVec::Jaccard(rows) = distances.dists_mut() {
-        for (heap, row) in heaps.into_iter().zip(rows.chunks_mut(knn)) {
-            write_jaccard_heap(heap, row, ani);
+    if let Some(knn) = knn {
+        let mut distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
+        if let DistVec::Jaccard(rows) = distances.dists_mut() {
+            for (heap, row) in heaps.into_iter().zip(rows.chunks_mut(knn)) {
+                write_jaccard_heap(heap, row, ani);
+            }
         }
+        log::info!("Writing out in sparse matrix form");
+        write!(writer, "{distances}")?;
     }
-    Ok(distances)
+    Ok(())
 }
 
 fn h2d(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>> + '_ {
@@ -504,6 +501,20 @@ fn h2d_usize(host_data: &[usize]) -> impl DeviceOperation<Output = DeviceBox<[us
         let stream = ctx.get_cuda_stream();
         let n = host_data.len();
         let num_bytes = n * mem::size_of::<usize>();
+        unsafe {
+            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
+            memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
+            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+        }
+    })
+}
+
+/// Type-only variant of `h2d()` for the shared completeness values.
+fn h2d_f32(host_data: &[f32]) -> impl DeviceOperation<Output = DeviceBox<[f32]>> + '_ {
+    device_operation::with_context(move |ctx| {
+        let stream = ctx.get_cuda_stream();
+        let n = host_data.len();
+        let num_bytes = n * mem::size_of::<f32>();
         unsafe {
             let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
             memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
