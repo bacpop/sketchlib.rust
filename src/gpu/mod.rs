@@ -265,8 +265,8 @@ pub fn self_dists_knn<'a>(
         let module = module.clone();
 
         // TODO doesn't currently work for diagonal blocks
-        let block_i = calc_row_idx(batch_idx, num_linear_blocks);
-        let block_j = calc_col_idx(batch_idx, block_i, num_linear_blocks);
+        let block_i = calc_row_idx_diag(batch_idx, num_linear_blocks);
+        let block_j = calc_col_idx_diag(batch_idx, block_i, num_linear_blocks);
 
         let start_i = block_i * samples_per_block;
         let start_j = block_j * samples_per_block;

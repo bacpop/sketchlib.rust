@@ -50,6 +50,46 @@ pub fn calc_row_idx(k: usize, n: usize) -> usize {
         - (((-8 * k_i64 + 4 * n_i64 * (n_i64 - 1) - 7) as f64).sqrt() / 2.0 - 0.5).floor() as usize
 }
 
+// Equivalents k -> i,j when including the diagonal
+#[inline(always)]
+fn triangular_n_diag(x: usize) -> usize {
+    x * (x + 1) / 2
+}
+
+#[inline(always)]
+fn row_start_inclusive(i: usize, n: usize) -> usize {
+    triangular_n_diag(n) - triangular_n_diag(n - i)
+}
+
+/// Row i for upper-triangle row-major indexing, including the diagonal.
+#[inline(always)]
+pub fn calc_row_idx_diag(k: usize, n: usize) -> usize {
+    debug_assert!(k < n);
+    let n64 = n as i64;
+    let total = triangular_n_diag(n);
+
+    let a = 2 * n64 + 1;
+    let d = a * a - 8 * (k as i64);
+
+    // The quadratic root uses ceil(sqrt(d)) before integer division.
+    let sqrt_floor = d.isqrt();
+    let sqrt_ceil = sqrt_floor + (sqrt_floor * sqrt_floor != d);
+
+    ((a - sqrt_ceil) / 2) as usize
+}
+
+/// Column j for row i, given k, for upper-triangle indexing including the diagonal.
+#[inline(always)]
+pub fn calc_col_idx_diag(k: usize, i: usize, n: usize) -> usize {
+    debug_assert!(i < n);
+
+    let start = row_start_inclusive(i, n);
+    let end = row_start_inclusive(i + 1, n);
+    debug_assert!(start <= k && k < end);
+
+    i + k - start
+}
+
 /// Types of distance, single k-mer (Jaccard) or multi-k (core/accessory)
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
 pub enum DistType {
