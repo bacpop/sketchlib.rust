@@ -2,9 +2,9 @@
 
 ## Current round: shared dense/kNN path and completeness
 
-Status: initial implementation, remote release build, smoke test, and agreed
-integration validation complete. The follow-up removal of redundant dense text
-batching is implemented locally, with remote verification pending.
+Status: implementation, remote release build, smoke test, and agreed integration
+validation complete, including the follow-up removal of redundant dense text
+batching and its remote rebuild and validation.
 The user authorised this round with "Yes, implement it".
 Remote commands were approved individually and run sequentially as `jlees`.
 The completed tiling phase and its validation remain recorded below.
@@ -107,8 +107,8 @@ Completed implementation sequence:
    construct a `DistanceMatrix` or retain previous tiles' results.
 2. Adapt `DistTile::consume()` to the two output modes while retaining the shared
    kernel/host pair decoder. Dense mode writes each record to the supplied
-   buffered writer before moving to the next tile. kNN still adds each unordered pair to
-   both heaps and uses the existing shared finalisation before writing.
+   buffered writer before moving to the next tile. kNN still adds each unordered
+   pair to both heaps and uses the existing shared finalisation before writing.
    Select raw ANI in dense mode and inverse ANI for sparse ranking.
 3. Convert the existing optional host completeness values to f32 once, upload
    them once using a permitted type-only `h2d_f32()` variant, and share the
@@ -203,6 +203,21 @@ logs, the subset/completeness fixtures, and `report.json` remain remotely in
 
 Local logs are `/private/tmp/sketchlib-cuda-phase2-build.log` and
 `/private/tmp/sketchlib-cuda-phase2-validation.log`.
+
+Follow-up: remove redundant dense text batching
+
+- At the user's request, removed `consume()`'s `String`, 64 KiB threshold,
+  manual chunk writes, and formatting-trait import. Dense records now use
+  `writeln!(writer, ...)` directly, retaining the existing writer-error context
+  and relying on the caller's `std::io::BufWriter`.
+- Local formatting and `git diff --check` passed. The approved remote release
+  rebuild and existing smoke/integration runner both passed. All 17 CPU/GPU
+  comparisons still passed, with maximum absolute error 1.4e-7 and the same
+  CPU-verified cutoff-tie policy. No tests were added.
+- The combined local build/validation log is
+  `/private/tmp/sketchlib-cuda-direct-write-validation.log`. New runtime
+  outputs, fixtures, per-run logs, and `report.json` remain remotely in
+  `/tmp/sketchlib-cuda-phase2-y1uacegn/`.
 
 ## Completed round: CUDA self-distance kNN tiling
 
