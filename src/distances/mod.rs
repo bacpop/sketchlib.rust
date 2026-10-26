@@ -52,12 +52,28 @@ pub fn set_k(sketches: &MultiSketch, kmer: Option<usize>, ani: bool) -> Result<D
 
 // Add to distances, only keep the best knn or fewer
 #[inline(always)]
-fn push_heap<T: PartialOrd + Ord>(heap: &mut BinaryHeap<T>, dist_item: T, knn: usize) {
+pub(crate) fn push_heap<T: PartialOrd + Ord>(heap: &mut BinaryHeap<T>, dist_item: T, knn: usize) {
     if heap.len() < knn || dist_item < *heap.peek().unwrap() {
         heap.push(dist_item);
         if heap.len() > knn {
             heap.pop();
         }
+    }
+}
+
+/// Finish a Jaccard/ANI kNN row using the same ordering for CPU and GPU results.
+pub(crate) fn write_jaccard_heap(
+    heap: BinaryHeap<SparseJaccard>,
+    row_dist_slice: &mut [SparseJaccard],
+    ani: bool,
+) {
+    debug_assert_eq!(row_dist_slice.len(), heap.len());
+    if ani {
+        for (inverse_ani, output_ani) in heap.into_sorted_vec().iter().zip(row_dist_slice) {
+            *output_ani = SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
+        }
+    } else {
+        row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
     }
 }
 
@@ -394,17 +410,7 @@ fn self_dists_knn_generic<'a, const BB: usize>(
                         let dist_item = SparseJaccard(j, dist_f32);
                         push_heap(&mut heap, dist_item, knn);
                     }
-                    debug_assert_eq!(row_dist_slice.len(), heap.len());
-                    if ani {
-                        // Undo the above transform
-                        heap.into_sorted_vec().iter().zip(row_dist_slice).for_each(
-                            |(inverse_ani, output_ani)| {
-                                *output_ani = SparseJaccard(inverse_ani.0, 1.0_f32 - inverse_ani.1);
-                            },
-                        );
-                    } else {
-                        row_dist_slice.clone_from_slice(&heap.into_sorted_vec());
-                    }
+                    write_jaccard_heap(heap, row_dist_slice, ani);
                 });
         }
         DistVec::CoreAcc(distances) => {

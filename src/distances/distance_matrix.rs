@@ -22,16 +22,17 @@ pub fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
 
 /// Indexes (i, j) in rectangular form, given k and total samples n in long form
 #[inline(always)]
+#[cfg_attr(feature = "gpu", cuda_device::device)]
 pub fn calc_query_indices(k: usize, n: usize) -> (usize, usize) {
     let i = k / n;
     let j = k % n;
-    debug_assert!(i < n);
     debug_assert!(j < n);
     (i, j)
 }
 
 /// Indexes j in square form, given k, index i (use [`calc_row_idx`]) and total samples n in long form
 #[inline(always)]
+#[cfg_attr(feature = "gpu", cuda_device::device)]
 pub fn calc_col_idx(k: usize, i: usize, n: usize) -> usize {
     debug_assert!(i < n);
     let k_i64 = k as i64;
@@ -43,6 +44,7 @@ pub fn calc_col_idx(k: usize, i: usize, n: usize) -> usize {
 
 /// Indexes i in square form, given k and total samples n in long form
 #[inline(always)]
+#[cfg_attr(feature = "gpu", cuda_device::device)]
 pub fn calc_row_idx(k: usize, n: usize) -> usize {
     let k_i64 = k as i64;
     let n_i64 = n as i64;
@@ -64,16 +66,15 @@ fn row_start_inclusive(i: usize, n: usize) -> usize {
 /// Row i for upper-triangle row-major indexing, including the diagonal.
 #[inline(always)]
 pub fn calc_row_idx_diag(k: usize, n: usize) -> usize {
-    debug_assert!(k < n);
+    debug_assert!(k < triangular_n_diag(n));
     let n64 = n as i64;
-    let total = triangular_n_diag(n);
 
     let a = 2 * n64 + 1;
     let d = a * a - 8 * (k as i64);
 
     // The quadratic root uses ceil(sqrt(d)) before integer division.
     let sqrt_floor = d.isqrt();
-    let sqrt_ceil = sqrt_floor + (sqrt_floor * sqrt_floor != d);
+    let sqrt_ceil = sqrt_floor + i64::from(sqrt_floor * sqrt_floor != d);
 
     ((a - sqrt_ceil) / 2) as usize
 }
