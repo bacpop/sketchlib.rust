@@ -6,7 +6,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::mem;
-use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -48,8 +47,8 @@ pub struct MultiSketch {
     // NB: another way to do this is with the ouroboros crate, which allows this to reference self
     // But this requires manual impl for ser and deser, and does the same indirection as an index anyway so not worth it
     block_reindex: Option<Vec<usize>>,
-    #[serde(skip, default = "MultiSketch::empty_sketch_bins")]
-    sketch_bins: Arc<SketchVec>,
+    #[serde(skip, default = "aligned_sketch_vec")]
+    sketch_bins: SketchVec,
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
@@ -59,10 +58,6 @@ pub struct MultiSketch {
 }
 
 impl MultiSketch {
-    fn empty_sketch_bins() -> Arc<SketchVec> {
-        Arc::new(aligned_sketch_vec())
-    }
-
     /// Create a new container for a `Vec<Sketch>`, emptying the Vec.
     ///
     /// Does not actually save the data
@@ -87,7 +82,7 @@ impl MultiSketch {
             sketch_metadata: mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins: Arc::new(aligned_sketch_vec()),
+            sketch_bins: aligned_sketch_vec(),
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
@@ -130,7 +125,7 @@ impl MultiSketch {
             sketch_metadata: std::mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins: Arc::new(sketch_bins),
+            sketch_bins,
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
@@ -280,9 +275,8 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride,
         );
-        self.sketch_bins = Arc::new(
-            sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len()),
-        );
+        self.sketch_bins =
+            sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len());
     }
 
     /// Read a subset of the bins from an .skd file, in a memory efficient manner
@@ -308,8 +302,7 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride,
         );
-        self.sketch_bins =
-            Arc::new(sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride));
+        self.sketch_bins = sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride);
     }
 
     /// Get the bins for a given sketch index at a given k-mer index
@@ -324,11 +317,6 @@ impl MultiSketch {
     /// Get the bins for a all sketches. For GPU
     pub fn get_sketch_all(&self) -> &[u64] {
         &self.sketch_bins[..]
-    }
-
-    /// Share the aligned sketch allocation without copying its contents.
-    pub fn get_sketch_all_arc(&self) -> Arc<SketchVec> {
-        Arc::clone(&self.sketch_bins)
     }
 
     /// Checks for query compatibility with another [`MultiSketch`] object

@@ -1,34 +1,47 @@
 use std::collections::BinaryHeap;
+use std::fmt::Write as FmtWrite;
+use std::future::Future;
 use std::io::Write as IoWrite;
 use std::mem;
 use std::ops::Range;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Error};
+use rayon::prelude::*;
 
 use cuda_async::simt::device_box::DeviceBox;
-use cuda_async::simt::device_context::init_device_contexts;
+use cuda_async::simt::device_context::{init_device_contexts, with_cuda_context};
 use cuda_async::simt::device_operation::{self, value, DeviceOperation, Zippable};
 use cuda_async::zip;
+use cuda_core::simt::device_buffer::DeviceCopy;
 use cuda_core::simt::memory::{
     malloc_async, memcpy_dtoh_async, memcpy_htod_async, memset_d8_async,
 };
-use cuda_core::LaunchConfig1D;
+use cuda_core::{LaunchConfig1D, PinnedHostBuffer};
 use cuda_device::{device, kernel, launch_bounds, launch_contract, thread, DisjointSlice};
 use cuda_host::cuda_module;
+use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use crate::distances::distance_matrix::*;
 use crate::distances::jaccard::ani_pois;
 use crate::distances::{push_heap, write_jaccard_heap};
 use crate::sketch::multisketch::MultiSketch;
-use crate::sketch::{SketchVec, BIN_BITS};
+use crate::sketch::BIN_BITS;
+use crate::utils::get_progress_bar;
 
 const BBITS: u64 = BIN_BITS as u64;
+const MAX_IN_FLIGHT_TILES: usize = 4;
+const DENSE_CHUNK_SIZE: usize = 1000;
 
-// TODO pass async calls through this function
-#[cfg(feature = "gpu")]
-fn run_gpu_batches() -> Result<(), Error> {
-    todo!("asynchronous tile dispatch is deferred")
+/// Keep the async boundary here; callers do not need a runtime or async API.
+fn run_gpu_batches<T>(work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()?
+        .block_on(work)
 }
 
 /// Decode the same tile-local pair on the device and in the host consumer.
@@ -178,7 +191,7 @@ mod kernels {
 
 /// One pair of sketch blocks, with launch ranges and shared host ownership.
 struct DistTile {
-    sketches: Arc<SketchVec>,
+    sketches: Arc<PinnedHostBuffer<u64>>,
     ref_samples: Range<usize>,
     query_samples: Range<usize>,
     ref_bins: Range<usize>,
@@ -194,7 +207,12 @@ struct DistTile {
 }
 
 impl DistTile {
-    fn new(tile_idx: usize, sketches: &MultiSketch, max_sketch_batch: usize) -> Self {
+    fn new(
+        tile_idx: usize,
+        sketches: &MultiSketch,
+        max_sketch_batch: usize,
+        pinned_sketches: Arc<PinnedHostBuffer<u64>>,
+    ) -> Self {
         let n = sketches.number_samples_loaded();
         let n_blocks = n.div_ceil(max_sketch_batch);
         let block_i = calc_row_idx_diag(tile_idx, n_blocks);
@@ -216,7 +234,7 @@ impl DistTile {
         };
 
         Self {
-            sketches: sketches.get_sketch_all_arc(),
+            sketches: pinned_sketches,
             interleave_ref_cfg: LaunchConfig1D::new(ref_bins.len().div_ceil(256) as u32, 256, 0),
             interleave_query_cfg: LaunchConfig1D::new(
                 query_bins.len().div_ceil(256) as u32,
@@ -237,7 +255,7 @@ impl DistTile {
     }
 
     /// Build one stream-ordered operation; scheduling and completion stay with
-    /// the caller. The returned owners keep device allocations alive through sync.
+    /// the caller. The returned owners also protect cancelled in-flight work.
     fn pipeline(
         &self,
         module: kernels::LoadedModule,
@@ -249,7 +267,11 @@ impl DistTile {
         completeness: Arc<DeviceBox<[f32]>>,
         correct_completeness: bool,
         completeness_cutoff: f32,
-    ) -> Result<impl DeviceOperation<Output = (Vec<f32>, impl Send)> + '_, Error> {
+        host_output: PinnedHostBuffer<f32>,
+    ) -> Result<
+        impl DeviceOperation<Output = (PinnedHostBuffer<f32>, impl Send), IntoFuture: Send> + '_,
+        Error,
+    > {
         // Prepare contracts before any device work is submitted, so failures
         // propagate normally rather than panicking inside a pipeline closure.
         let prepared_ref = module.prepare_interleave_sketches(self.interleave_ref_cfg)?;
@@ -264,6 +286,8 @@ impl DistTile {
         let n_distances = self.n_distances;
         let sample_offsets = (self.ref_samples.start, self.query_samples.start);
         let query_slice = &self.sketches[self.query_bins.clone()];
+        let host_sketches = Arc::clone(&self.sketches);
+        let module_owner = module.clone();
 
         // https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html
         Ok(zip!(
@@ -339,9 +363,9 @@ impl DistTile {
                                 completeness,
                                 output,
                             )| {
-                                d2h(output).and_then(move |(host, output)| {
+                                d2h(output, host_output).and_then(move |(host, output)| {
                                     // DeviceBox frees on a separate stream. Retain every
-                                    // allocation in the result until the caller's sync.
+                                    // allocation through completion or SDK reclamation.
                                     value((
                                         host,
                                         (
@@ -352,6 +376,8 @@ impl DistTile {
                                             kmers,
                                             completeness,
                                             output,
+                                            host_sketches,
+                                            module_owner,
                                         ),
                                     ))
                                 })
@@ -362,46 +388,117 @@ impl DistTile {
         ))
     }
 
-    fn consume<W: IoWrite>(
+    // Parallel kNN tasks own one sample row's heap each, sharing the Rayon pool.
+    // Read each stored pair for both endpoints, avoiding locks, extra partial
+    // heaps, and distance copies. Future: benchmark shared heaps protected by
+    // locks, or a suitable atomic heap design, with partitions that keep
+    // collisions rare; that could make a single pass over distances worthwhile.
+    fn consume(
         &self,
-        distances: Vec<f32>,
+        distances: &[f32],
         knn: Option<usize>,
-        heaps: &mut [BinaryHeap<SparseJaccard>],
         names: &[&str],
-        writer: &mut W,
-    ) -> Result<(), Error> {
-        for (idx, distance) in distances.into_iter().enumerate() {
-            let (i, j) = dist_pair_indices(
-                idx,
-                self.ref_samples.len(),
-                self.query_samples.len(),
-                self.diagonal,
-            );
-            let i = self.ref_samples.start + i;
-            let j = self.query_samples.start + j;
-            if let Some(knn) = knn {
-                push_heap(&mut heaps[i], SparseJaccard(j, distance), knn);
-                push_heap(&mut heaps[j], SparseJaccard(i, distance), knn);
-            } else {
-                writeln!(writer, "{}\t{}\t{distance}", names[i], names[j])
-                    .context("Error writing streamed GPU distance output")?;
-            }
+        text_tx: &SyncSender<(String, usize, Option<oneshot::Sender<()>>)>,
+        written: oneshot::Sender<()>,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<BinaryHeap<SparseJaccard>>, Error> {
+        let n_ref = self.ref_samples.len();
+        let n_query = self.query_samples.len();
+        if let Some(knn) = knn {
+            let n_rows = n_ref + if self.diagonal { 0 } else { n_query };
+            let mut heaps = vec![BinaryHeap::new(); n_rows];
+            heaps
+                .par_iter_mut()
+                .enumerate()
+                .try_for_each(|(row, heap)| -> Result<(), Error> {
+                    let (n_neighbours, sample_start) = if self.diagonal || row < n_ref {
+                        (n_query, self.query_samples.start)
+                    } else {
+                        (n_ref, self.ref_samples.start)
+                    };
+                    // Keep cancellation checks coarse, as in dense formatting.
+                    for start in (0..n_neighbours).step_by(DENSE_CHUNK_SIZE) {
+                        if cancelled.load(Ordering::Relaxed) {
+                            return Err(anyhow!("GPU distance calculation cancelled"));
+                        }
+                        for neighbour in start..n_neighbours.min(start + DENSE_CHUNK_SIZE) {
+                            let idx = if self.diagonal {
+                                if row == neighbour {
+                                    continue;
+                                }
+                                square_to_condensed(row.min(neighbour), row.max(neighbour), n_ref)
+                            } else if row < n_ref {
+                                row * n_query + neighbour
+                            } else {
+                                neighbour * n_query + row - n_ref
+                            };
+                            push_heap(
+                                heap,
+                                SparseJaccard(sample_start + neighbour, distances[idx]),
+                                knn,
+                            );
+                        }
+                    }
+                    Ok(())
+                })?;
+            Ok(heaps)
+        } else {
+            distances
+                .par_chunks(DENSE_CHUNK_SIZE)
+                .enumerate()
+                .try_for_each(|(chunk_idx, chunk)| -> Result<(), Error> {
+                    if cancelled.load(Ordering::Relaxed) {
+                        return Err(anyhow!("GPU distance calculation cancelled"));
+                    }
+                    let (mut i, mut j) = dist_pair_indices(
+                        chunk_idx * DENSE_CHUNK_SIZE,
+                        n_ref,
+                        n_query,
+                        self.diagonal,
+                    );
+                    let mut text = String::with_capacity(chunk.len() * 24);
+                    for &distance in chunk {
+                        writeln!(
+                            text,
+                            "{}\t{}\t{distance}",
+                            names[self.ref_samples.start + i],
+                            names[self.query_samples.start + j]
+                        )?;
+                        j += 1;
+                        if j == n_query {
+                            i += 1;
+                            j = if self.diagonal { i + 1 } else { 0 };
+                        }
+                    }
+                    text_tx
+                        .send((text, chunk.len(), None))
+                        .context("GPU distance writer stopped")?;
+                    Ok(())
+                })?;
+            // All parallel sends have completed, so the marker follows every
+            // chunk of this tile even though producers use different threads.
+            text_tx
+                .send((String::new(), 0, Some(written)))
+                .context("GPU distance writer stopped")?;
+            Ok(Vec::new())
         }
-        Ok(())
     }
 }
 
-/// Write GPU self-distances using synchronous tiles. `None` streams every
+/// Write GPU self-distances using at most four concurrent tiles. `None` streams every
 /// unordered pair without a global ordering guarantee; `Some(k)` selects kNN.
 /// Completeness correction uses f32, including its pair-product cutoff test;
 /// values very close to the cutoff can take a different branch from CPU f64.
+/// Direct callers must configure Rayon as for CPU streaming: dense mode needs
+/// at least two workers, with one reserved for the writer; kNN needs no reservation.
+/// CPU tasks within and across tiles share that pool independently of the tile limit.
 pub fn self_dists_stream<W: IoWrite + Send>(
     writer: &mut W,
     sketches: &MultiSketch,
     n: usize,
     knn: Option<usize>,
     dist_type: DistType,
-    _quiet: bool,
+    quiet: bool,
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
     gpu_device_id: usize,
@@ -424,11 +521,21 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         DistType::Jaccard(k_idx, k_val, ani) => (Some((k_idx, k_val)), ani),
         DistType::CoreAcc => todo!("GPU core/accessory regression is deferred"),
     };
+    let pool_size = rayon::current_num_threads();
+    if knn.is_none() && pool_size < 2 {
+        return Err(anyhow!("GPU dense streaming requires a Rayon producer and writer; configure the pool with set_threads_with_writer()"));
+    }
 
     init_device_contexts(gpu_device_id, 1)?;
     // SAFETY: this crate owns the embedded bundle for the kernels above.
     let module = unsafe { kernels::load_async(gpu_device_id)? };
-    let kmers_dev = h2d_usize(sketches.kmer_lengths()).arc().sync()?;
+    let kmers_dev = h2d(sketches.kmer_lengths()).arc().sync()?;
+
+    // This full pinned copy could be replaced by a reusable copy buffer in future
+    // to reduce host memory use, at the cost of staging sketch blocks repeatedly.
+    let pinned_sketches = Arc::new(with_cuda_context(gpu_device_id, |ctx| {
+        PinnedHostBuffer::from_slice(ctx, sketches.get_sketch_all())
+    })??);
 
     // A disabled correction still passes a valid buffer to the typed launch;
     // its single placeholder value is never indexed by the kernel.
@@ -436,7 +543,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         || vec![1.0],
         |values| values.iter().map(|&value| value as f32).collect(),
     );
-    let completeness_dev = h2d_f32(&completeness).arc().sync()?;
+    let completeness_dev = h2d(&completeness).arc().sync()?;
     let correct_completeness = completeness_vec.is_some();
     let mut heaps = if let Some(knn) = knn {
         log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours (GPU)");
@@ -448,42 +555,203 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let names = <DistanceMatrix as Distances>::sketch_names(sketches);
     let n_blocks = n.div_ceil(max_sketch_batch);
     let n_tiles = n_blocks * (n_blocks + 1) / 2;
+    let mut tiles = (0..n_tiles)
+        .map(|idx| {
+            DistTile::new(
+                idx,
+                sketches,
+                max_sketch_batch,
+                Arc::clone(&pinned_sketches),
+            )
+        })
+        .filter(|tile| tile.n_distances != 0);
+    let initial_tiles: Vec<_> = tiles.by_ref().take(MAX_IN_FLIGHT_TILES).collect();
+    let n_slots = initial_tiles.len();
+    let mut tiles = initial_tiles.into_iter().chain(tiles);
+    let block_size = n.min(max_sketch_batch);
+    let max_distances =
+        (block_size * (block_size - 1) / 2).max(block_size * (n - block_size).min(block_size));
+    // Allocate before concurrent dispatch: pinned allocations can synchronize.
+    let mut host_outputs = with_cuda_context(gpu_device_id, |ctx| {
+        (0..n_slots)
+            .map(|_| PinnedHostBuffer::<f32>::zeroed(ctx, max_distances))
+            .collect::<Result<Vec<_>, _>>()
+    })??;
+    let progress = get_progress_bar(n * (n - 1) / 2, true, quiet);
+    let cancelled = AtomicBool::new(false);
+    let dense = knn.is_none();
+    let consumer_threads = if dense { pool_size - 1 } else { pool_size };
 
-    for tile_idx in 0..n_tiles {
-        let tile = DistTile::new(tile_idx, sketches, max_sketch_batch);
-        if tile.n_distances == 0 {
-            continue;
+    let result = rayon::in_place_scope(|scope| {
+        let (text_tx, text_rx) = mpsc::sync_channel::<(
+            String, usize, Option<oneshot::Sender<()>>,
+        )>(2 * consumer_threads);
+        let (writer_done_tx, mut writer_done_rx) = oneshot::channel();
+        let (writer_started_tx, writer_started_rx) = oneshot::channel();
+        if dense {
+            let writer = &mut *writer;
+            let progress = &progress;
+            let cancelled = &cancelled;
+            scope.spawn(move |_| {
+                let _ = writer_started_tx.send(());
+                let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), Error> {
+                    for (text, records, written) in text_rx.iter() {
+                        if cancelled.load(Ordering::Relaxed) {
+                            return Err(anyhow!("GPU distance calculation cancelled"));
+                        }
+                        writer.write_all(text.as_bytes())
+                            .context("Error writing streamed GPU distance output")?;
+                        progress.inc(records as u64);
+                        if let Some(written) = written {
+                            let _ = written.send(());
+                        }
+                    }
+                    Ok(())
+                })).unwrap_or_else(|_| Err(anyhow!("GPU distance writer panicked")));
+                // Publish the actual I/O error before receiver drop wakes producers.
+                let failed = result.is_err();
+                let _ = writer_done_tx.send(result);
+                if failed {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            });
+        } else {
+            drop(text_rx);
+            drop(writer_done_tx);
+            drop(writer_started_tx);
         }
-        let (result, _device_buffers) = tile
-            .pipeline(
-                module.clone(),
-                Arc::clone(&kmers_dev),
-                dist_type,
-                k_vals,
-                ani,
-                knn.is_some(),
-                Arc::clone(&completeness_dev),
-                correct_completeness,
-                completeness_cutoff as f32,
-            )?
-            .sync()?;
-        tile.consume(result, knn, &mut heaps, &names, writer)?;
-    }
 
-    if let Some(knn) = knn {
-        let mut distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
-        if let DistVec::Jaccard(rows) = distances.dists_mut() {
-            for (heap, row) in heaps.into_iter().zip(rows.chunks_mut(knn)) {
-                write_jaccard_heap(heap, row, ani);
+        run_gpu_batches(async {
+            if dense {
+                // Reserve the writer worker before parallel producers can block
+                // on the bounded channel, including with --threads 1.
+                writer_started_rx.await.context("GPU distance writer failed to start")?;
             }
+            let mut gpu_jobs = JoinSet::<Result<(DistTile, PinnedHostBuffer<f32>), Error>>::new();
+            let mut consumers = JoinSet::<Result<
+                (DistTile, PinnedHostBuffer<f32>, Vec<BinaryHeap<SparseJaccard>>), Error,
+            >>::new();
+            let result = async {
+                loop {
+                    if cancelled.load(Ordering::Relaxed) {
+                        (&mut writer_done_rx).await.context("GPU distance writer stopped")??;
+                        return Err(anyhow!("GPU distance calculation cancelled"));
+                    }
+                    // A buffer returns only after consumption, not merely GPU completion.
+                    while !host_outputs.is_empty() {
+                        let Some(tile) = tiles.next() else { break };
+                        let host_output = host_outputs.pop().unwrap();
+                        let module = module.clone();
+                        let kmers = Arc::clone(&kmers_dev);
+                        let completeness = Arc::clone(&completeness_dev);
+                        gpu_jobs.spawn(async move {
+                            let (host, device_buffers) = tile.pipeline(
+                                module, kmers, dist_type, k_vals, ani, knn.is_some(),
+                                completeness, correct_completeness, completeness_cutoff as f32,
+                                host_output,
+                            )?.await?;
+                            // DeviceBox cleanup remains on the GPU dispatch thread.
+                            drop(device_buffers);
+                            Ok::<_, Error>((tile, host))
+                        });
+                    }
+                    if gpu_jobs.is_empty() && consumers.is_empty() {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        writer_result = &mut writer_done_rx, if dense => {
+                            writer_result.context("GPU distance writer stopped")??;
+                            return Err(anyhow!("GPU distance writer stopped before all tiles were consumed"));
+                        }
+                        Some(completed) = consumers.join_next(), if !consumers.is_empty() => {
+                            let (tile, host, local_heaps) = completed
+                                .context("GPU tile consumer task failed")??;
+                            if let Some(knn) = knn {
+                                let n_ref = tile.ref_samples.len();
+                                for (row, local_heap) in local_heaps.into_iter().enumerate() {
+                                    let global_row = if row < n_ref {
+                                        tile.ref_samples.start + row
+                                    } else {
+                                        tile.query_samples.start + row - n_ref
+                                    };
+                                    for candidate in local_heap {
+                                        push_heap(&mut heaps[global_row], candidate, knn);
+                                    }
+                                }
+                                progress.inc(tile.n_distances as u64);
+                            }
+                            host_outputs.push(host);
+                        }
+                        Some(completed) = gpu_jobs.join_next(), if !gpu_jobs.is_empty() => {
+                            let (tile, host) = completed.context("GPU tile task failed")??;
+                            let (done_tx, done_rx) = oneshot::channel();
+                            let (written_tx, written_rx) = oneshot::channel();
+                            let text_tx = text_tx.clone();
+                            let names = &names;
+                            let cancelled = &cancelled;
+                            scope.spawn(move |_| {
+                                let result = catch_unwind(AssertUnwindSafe(|| {
+                                    let local_heaps = tile.consume(
+                                        &host[..tile.n_distances], knn, names,
+                                        &text_tx, written_tx, cancelled,
+                                    )?;
+                                    Ok((tile, host, local_heaps))
+                                })).unwrap_or_else(|_| Err(anyhow!("GPU tile consumer panicked")));
+                                let _ = done_tx.send(result);
+                            });
+                            consumers.spawn(async move {
+                                let result = done_rx.await.context("GPU tile consumer stopped")??;
+                                if dense {
+                                    written_rx.await.context("GPU distance writer stopped")?;
+                                }
+                                Ok::<_, Error>(result)
+                            });
+                        }
+                    }
+                }
+                Ok(())
+            }.await;
+
+            if result.is_err() {
+                cancelled.store(true, Ordering::Relaxed);
+                gpu_jobs.abort_all();
+                consumers.abort_all();
+                // Join cancellation, not GPU execution: DeviceFuture retains its
+                // owned resources behind a completion event until safe reclamation.
+                while gpu_jobs.join_next().await.is_some() {}
+                while consumers.join_next().await.is_some() {}
+            }
+            drop(text_tx);
+            result?;
+            if dense {
+                writer_done_rx.await.context("GPU distance writer stopped")??;
+            }
+            Ok(())
+        })
+    }).inspect(|_| {
+        // Close the distance bar before sparse output moves stderr's cursor.
+        progress.finish_and_clear();
+    }).inspect_err(|_| {
+        progress.abandon();
+    }).and_then(|()| {
+        if let Some(knn) = knn {
+            let mut distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
+            if let DistVec::Jaccard(rows) = distances.dists_mut() {
+                for (heap, row) in heaps.into_iter().zip(rows.chunks_mut(knn)) {
+                    write_jaccard_heap(heap, row, ani);
+                }
+            }
+            log::info!("Writing out in sparse matrix form");
+            write!(writer, "{distances}")?;
         }
-        log::info!("Writing out in sparse matrix form");
-        write!(writer, "{distances}")?;
-    }
-    Ok(())
+        Ok(())
+    });
+    result
 }
 
-fn h2d(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>> + '_ {
+#[allow(dead_code)] // Retain the canonical u64 implementation for reference.
+fn h2d_u64(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>> + '_ {
     device_operation::with_context(move |ctx| {
         let stream = ctx.get_cuda_stream();
         let n = host_data.len();
@@ -496,25 +764,14 @@ fn h2d(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>> + '
     })
 }
 
-fn h2d_usize(host_data: &[usize]) -> impl DeviceOperation<Output = DeviceBox<[usize]>> + '_ {
+/// Generic version of the canonical H2D helper for sketch bins and shared tables.
+fn h2d<T: DeviceCopy + Send + Sync + 'static>(
+    host_data: &[T],
+) -> impl DeviceOperation<Output = DeviceBox<[T]>> + '_ {
     device_operation::with_context(move |ctx| {
         let stream = ctx.get_cuda_stream();
         let n = host_data.len();
-        let num_bytes = n * mem::size_of::<usize>();
-        unsafe {
-            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
-            memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
-        }
-    })
-}
-
-/// Type-only variant of `h2d()` for the shared completeness values.
-fn h2d_f32(host_data: &[f32]) -> impl DeviceOperation<Output = DeviceBox<[f32]>> + '_ {
-    device_operation::with_context(move |ctx| {
-        let stream = ctx.get_cuda_stream();
-        let n = host_data.len();
-        let num_bytes = n * mem::size_of::<f32>();
+        let num_bytes = n * mem::size_of::<T>();
         unsafe {
             let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
             memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
@@ -552,12 +809,14 @@ fn zeros(n: usize) -> impl DeviceOperation<Output = DeviceBox<[f32]>> {
 
 /// Copies device memory back to host (D2H).
 /// `ctx` is provided by the scheduler at execution time.
-fn d2h(dev: DeviceBox<[f32]>) -> impl DeviceOperation<Output = (Vec<f32>, DeviceBox<[f32]>)> {
+fn d2h(
+    dev: DeviceBox<[f32]>,
+    mut host: PinnedHostBuffer<f32>,
+) -> impl DeviceOperation<Output = (PinnedHostBuffer<f32>, DeviceBox<[f32]>)> {
     device_operation::with_context(move |ctx| {
         let stream = ctx.get_cuda_stream();
         let n = dev.len();
         let num_bytes = n * mem::size_of::<f32>();
-        let mut host = vec![0.0f32; n];
         unsafe {
             memcpy_dtoh_async(
                 host.as_mut_ptr(),
@@ -567,7 +826,7 @@ fn d2h(dev: DeviceBox<[f32]>) -> impl DeviceOperation<Output = (Vec<f32>, Device
             )
             .unwrap();
         }
-        // Keep dev in the output until the caller has synchronised the stream.
+        // Keep both owners through async completion (or SDK cancellation cleanup).
         value((host, dev))
     })
 }
