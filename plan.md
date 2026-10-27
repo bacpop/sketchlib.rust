@@ -1,6 +1,616 @@
 # CUDA self-distance planning
 
-## Current round: shared dense/kNN path and completeness
+## Current round: finish GPU distance progress before sparse output
+
+Status: implementation in progress. The user approved the minimal fix with
+"Great, implement that minimal fix". Preserve the previous rounds and their
+existing working-tree changes.
+
+Reported problem and source findings:
+
+- The user observes the GPU progress bar left at 99% when distance calculation
+  ends and requests completion/closure before the sparse-writing log message.
+- `self_dists_stream()` currently finalises and writes the sparse matrix in an
+  `and_then` closure, emits "Writing out in sparse matrix form", and only then
+  calls `progress.finish_and_clear()`. This completion is after the requested
+  distance-phase boundary and allows the writing message to interleave with an
+  unfinished progress display.
+- The inspected indicatif 0.17.11 implementation of `finish_and_clear()` sets
+  position to the configured length, marks the display finished/hidden, and
+  forces a final draw. No additional tick, progress counter, or manual position
+  adjustment is needed.
+- The user's example shows a 99% bar immediately before the sparse-writing
+  log line, whereas CPU progress disappears before output. Further source
+  inspection confirms that our `simple_logger` writes directly to stderr via
+  `eprintln!`, while indicatif clears its previously drawn lines relative to
+  the current terminal cursor. The logger does not coordinate with indicatif.
+  Inference: logging first can move the cursor away from the bar, so the later
+  clear may leave its last rendered 99% line visible. The method can finish its
+  internal state without removing that stale earlier line. Rate-limited drawing
+  also means the last rendered percentage need not equal the final counter.
+  This is a source-supported explanation of the reported output, not a terminal
+  reproduction; automated progress/quiet checks remain excluded.
+
+Approved minimal fix:
+
+- Finish and clear the existing bar immediately after successful GPU dispatch,
+  CPU consumption, and heap merging have completed, before sparse finalisation
+  or its writing message. Preserve the existing clear-on-completion behaviour.
+- On distance-phase failure, abandon the bar and return the error. A subsequent
+  sparse-output failure still returns an error; the completed distance bar does
+  not need to be reopened or abandoned again. Dense completion remains after
+  its producer/writer pipeline has completed.
+- Keep quiet handling, progress increments, kernels, canonical transfer helpers,
+  thread budgets, tile ownership and numerical/output behaviour unchanged. No
+  new wrapper or additional progress mechanism is needed.
+- Validate source ordering and formatting locally without compilation/runtime
+  tests. Any remote copy/build/smoke command requires its own approval and must
+  run sequentially as `jlees`. Prior exclusions of automated progress/quiet
+  checks and agent-run scaling benchmarks remain in force; do not add new tests
+  for this lifecycle-only change.
+
+Implementation detail verified in the installed dependency:
+`indicatif-0.17.11/src/state.rs::finish_using_style()` handles `AndClear` by
+setting the position to the length and calling `draw(true, now)`.
+
+Implementation record (in progress):
+
+- Moved progress completion/abandonment onto the distance-phase Result, before
+  the existing sparse-finalisation closure. Successful completion now clears
+  the bar before the writing log; sparse-output errors do not reopen that bar.
+- The source change only relocates these lifecycle calls and adds an ordering
+  comment. Local rustfmt and `git diff --check` passed. No local build or
+  runtime tests ran. Remote build and one existing GPU kNN smoke run await
+  individual approval; no new automated progress/quiet tests will be added.
+
+## Completed round: parallel CPU consumption within each distance tile
+
+Status: implementation, remote release build, smoke test, 33 CPU/GPU correctness
+comparisons and both writer-failure checks complete. The user authorised this
+round with "Implement it". Existing working-tree changes have been preserved.
+Scaling validation remains reserved for the user's manual testing.
+
+Confirmed scope and constraints:
+
+- Completed tiles must expose enough CPU work to use the provided `--threads`
+  budget, including when only one tile is available. Remove the effective
+  four-consumer/formatter limit imposed by one sequential CPU job per tile.
+- Use the single existing shared Rayon pool across every tile. kNN has
+  `--threads` workers; dense mode keeps its existing `--threads + 1` pool,
+  including the one writer worker. Do not create per-tile pools, reserve extra
+  workers, or multiply the worker count by the four concurrent tiles.
+- Keep the four-tile admission/memory bound through consumption and the current
+  pinned-buffer ownership/reuse. Preserve the single dense writer, 1000-record
+  formatted chunks, bounded text queue, progress semantics, prompt failure
+  behaviour, output format, unordered dense-pair contract, and cutoff-tie rule.
+- Keep distance kernels and canonical H2D/D2H/zeros helpers outside this change.
+  Avoid full distance copies, full-matrix expansion, redundant parameter checks,
+  additional wrapper structures, and unrelated algorithm changes.
+- Compilation and runtime checks remain remote-only, sequentially as `jlees`,
+  with approval before every remote command. Reuse the repository's existing
+  Python validation runner; do not use the Cargo test harness. Continue to
+  exclude progress/quiet checks and f32/f64 cutoff precision-boundary tests.
+- The user will validate scaling manually. Do not run scaling/performance
+  benchmarks, measure CPU utilisation, or add worker-count sweeps for scaling.
+
+Source findings at the start of this round:
+
+- `DistTile::consume()` scanned a tile sequentially and updated heaps
+  for both endpoints of each unordered pair. The four-tile admission bound thus
+  permitted at most four CPU consumers, even with a larger configured Rayon pool.
+- `n_formatters = min(MAX_IN_FLIGHT_TILES, pool_size - 1)` sized the dense text
+  channel; changing that value alone would not parallelise consumption.
+- kNN tile heaps are merged into global heaps serially on the dispatcher. The
+  user decided to keep this merge unchanged, as recorded below.
+- Existing compact-index arithmetic (`square_to_condensed` for diagonal tiles,
+  row-major indices for rectangles) permits accessing a sample's neighbours
+  without allocating a square matrix or recomputing distances.
+- Rayon parallel iterators and nested tasks reuse their current pool. This
+  allows all tiles to share the configured workers without creating four pools.
+
+References:
+
+- [Rayon shared pool execution](https://docs.rs/rayon/latest/rayon/struct.ThreadPool.html#method.install)
+- [Parallel mutable slice partitions](https://docs.rs/rayon/latest/rayon/slice/trait.ParallelSliceMut.html#method.par_chunks_mut)
+
+Agreed kNN work partitioning:
+
+- Process sample rows (or groups of rows) in parallel, giving
+  each row exclusive access to its existing tile-local heap. Each worker reads
+  the stored distances for that row and updates only that heap. A pair's stored
+  value is read once for each endpoint, but calculated on the GPU only once.
+  This keeps heap memory independent of worker count and needs no per-distance
+  locks or additional heap copies. Compact triangular/rectangular storage stays
+  intact. The user accepted the extra read and selected parallel sample rows.
+- At the user's request, a comment beside `DistTile::consume()` records this
+  decision and a future option: benchmark locks or a suitable atomic heap design
+  if work partitioning keeps collisions rare. Such synchronization may permit a
+  single pass over the distance buffer; it is not part of this round.
+  The comment now describes the implemented approach.
+- Splitting pair ranges into private partial heaps was considered but not
+  selected because heap storage and merging grow with parallel partitions.
+
+Global heap merging:
+
+- Keep the existing serial merge and unsorted iteration through the tile-local
+  heap unchanged. The user considered a sorted-vector merge with early stopping,
+  but explicitly rejected the extra complexity if sorting costs O(k log k).
+- Rust's BinaryHeap source explicitly documents `into_sorted_vec()` as in-place
+  heapsort with O(k log k) complexity. Ordinary iteration costs O(k) but has no
+  sorted-order guarantee, so it cannot use the proposed prefix early stopping.
+  The condition for leaving the merge unchanged is therefore satisfied. Do not
+  add sorted conversion, a new merge loop, an empty-heap fast path, or parallel
+  global updates in this round.
+
+Dense formatting within a tile:
+
+- Distribute the existing 1000-record chunks across parallel tasks in the same
+  shared Rayon pool. Keep one writer worker and the existing formatted-text
+  channel; size its bound at twice the formatter budget (`pool_size - 1`),
+  removing the four-tile cap from that calculation. Tasks across all tiles share
+  that budget; there is no new pool or per-tile worker reservation.
+- Wait for a tile's formatting tasks to finish sending before sending its final
+  completion marker. The writer acknowledges the marker after all that tile's
+  chunks have been written, retaining the current buffer/slot release contract.
+  Keep allocation bounded by active tasks and the channel instead of collecting
+  all formatted chunks into a vector. Preserve prompt cancellation on failure.
+
+Validation scope:
+
+- The user explicitly reserved scaling validation for their own manual testing.
+  No representative benchmark command or dataset is needed from them, and no
+  scaling claims should be inferred from correctness tests.
+- After implementation, reuse the existing GPU smoke run, 33 CPU/GPU numerical
+  comparisons and two writer-failure checks. Keep their existing one/four-worker
+  coverage and comparison/tie rules; do not add scaling sweeps or benchmarks.
+  All execution remains remote-only and individually approved, as before.
+- Inspect the shared-pool scheduling and removal of the four-formatter cap in
+  source. Confirm that no new pool or writer worker is created and that all
+  work within and across tiles uses the configured worker budget. The four-tile
+  admission/buffer bound remains independent of CPU parallelism.
+
+Completed implementation sequence:
+
+1. Change kNN consumption to parallel sample rows, with exclusive access to
+   each existing tile-local heap. Address the compact triangular/rectangular
+   buffer directly; perform no distance recomputation, copies, or matrix
+   expansion. Update the requested comment to describe the implemented approach
+   and retain its future low-contention locks/atomics option.
+2. Change dense consumption to parallel 1000-record chunks within the same
+   shared pool, sending text to the existing writer. Decode each chunk's first
+   pair and advance the indices within the chunk, matching CPU streaming's
+   traversal. Wait for all sends before the tile completion marker and retain
+   prompt error cancellation.
+3. Size the text queue from the full formatter budget, without the four-tile
+   cap. Ensure the single reserved writer is running before formatting tasks
+   can block on the bounded queue. Do not create another pool or change the
+   `--threads`/`--threads + 1` convention. Preserve buffer lifetime/reuse, tile
+   admission, progress and the serial unsorted global heap merge.
+4. Format and inspect the diff locally without compilation or runtime tests.
+   Request approval for remote copies, build, and the existing validation
+   runner. Record actual outcomes here; leave scaling validation to the user.
+
+Implementation and validation record:
+
+- kNN now uses parallel mutable iteration over the existing tile-local row
+  heaps. Each row reads its neighbours directly from compact diagonal or
+  rectangular storage; pair values are read once for each endpoint. The requested
+  comment describes this choice and preserves the future locks/atomics option.
+- Dense mode now formats parallel 1000-record chunks. Its final marker is sent
+  only after those tasks join, retaining the existing writer acknowledgement and
+  pinned-output lifetime. The text queue uses twice the full consumer budget,
+  without a four-tile cap, and a startup acknowledgement reserves the existing
+  writer worker before producers can block on the queue.
+- Source inspection confirms no new pools/workers, distance copies, kernel or
+  canonical-helper changes, global-merge changes, or validation-script changes.
+  Local rustfmt and `git diff --check` passed; no local build or runtime tests
+  have run.
+- After the approved copy, the sequential remote build and unchanged validation
+  runner both passed as `jlees`. The release build used
+  `CUDA_HOME=/usr/local/cuda-13.4 /home/jlees/.cargo/bin/cargo oxide build` and
+  completed in 20.56s. No build fixes, dependency pins or toolchain changes were
+  needed in this round.
+- The GPU kNN smoke run on `1k_subset` passed. All 33 CPU/GPU comparisons passed
+  at absolute tolerance 1e-6, covering dense/kNN, Jaccard/ANI, absent/mixed
+  completeness, one/two/four-block layouts, and the existing one/four-worker
+  correctness cases. Dense outputs contained all 32640 unordered pairs, with
+  no self-pairs or duplicates; kNN outputs had 256 rows with ten distinct
+  neighbours in score order. Alternative neighbours satisfied the previously
+  agreed CPU-verified cutoff-tie rule.
+
+| Completeness | Metric | Dense maximum absolute error | kNN maximum absolute error |
+| --- | --- | ---: | ---: |
+| Absent | Jaccard | 0 | 0 |
+| Absent | ANI | 0 | 0 |
+| Mixed | Jaccard | 1.4e-7 | 1.3e-7 |
+| Mixed | ANI | 1e-7 | 1e-7 |
+
+- The singleton-remainder dense case also passed, with maximum error 1.4e-7.
+  Mixed-completeness checks retained their existing above/below-cutoff coverage;
+  no precision-boundary tests were added.
+- Both existing `/dev/full` runs produced the expected writer error and exited
+  without hanging, with `--threads 1` and 4. Progress/quiet checks remain
+  excluded. No scaling benchmarks, CPU utilisation measurements, extra worker
+  sweeps or performance claims were made; the user will validate scaling.
+- The combined build/validation log is
+  `/private/tmp/sketchlib-cuda-parallel-rows-validation.log` locally. Outputs,
+  fixtures, per-command logs and `report.json` remain remotely in
+  `/tmp/sketchlib-cuda-async-n38oj4e6/`. The unchanged reusable runner is
+  `scripts/validate_gpu_distances.py`.
+- Final source review and `git diff --check` passed. The four-tile admission
+  bound is now independent of parallel tasks within those tiles, while all CPU
+  row/chunk tasks share the existing consumer pool and dense mode's single
+  reserved writer. The global heap merge remains serial and unsorted.
+
+Merge reference:
+
+- [Rust BinaryHeap sorted conversion](https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html#method.into_sorted_vec)
+- [Rust BinaryHeap source and heapsort complexity](https://doc.rust-lang.org/src/alloc/collections/binary_heap/mod.rs.html)
+
+## Completed round: asynchronous tiles, pinned sketches, and parallel consumers
+
+Status: implementation, remote release build, smoke test, 33 CPU/GPU comparisons,
+and both writer-failure checks complete. The user confirmed shared understanding
+and authorised implementation/testing. Every remote command was approved and
+run sequentially as `jlees`; no local compilation or runtime tests ran.
+
+Requested scope:
+
+- Schedule independent `DistTile` pipelines concurrently through cuda-oxide's
+  asynchronous operations. Keep the public `self_dists_stream()` entry point
+  synchronous, using a Tokio runtime inside `run_gpu_batches()` to execute and
+  join an async block. The existing tile pipeline already composes H2D,
+  interleaving, distances, and D2H and retains its buffer owners.
+- Use `PinnedHostBuffer` for host sketch transfers and add CPU parallelism for
+  kNN consumption. Resolve ownership, heap merging, and bounded buffering before
+  implementation. Preserve dense streaming through the existing buffered writer
+  and its unordered-pair output contract.
+- Add progress reporting that observes `quiet`, using the agreed host-side
+  consumed-pair count. The user accepted pauses during GPU computation in
+  exchange for avoiding device counters and polling.
+- Preserve Jaccard/ANI and f32 completeness behaviour from the validated previous
+  round, the user-controlled block limit (default 10000), and the total-dataset
+  GPU minimum of 256. The original `self_dists_knn_generic()` name in the brief
+  now corresponds to the unified GPU `self_dists_stream()` entry point.
+- Preserve canonical helpers except the explicitly approved pinned-buffer
+  `d2h()` change and the permitted generic H2D helper, retaining the original
+  H2D implementation with an `_u64` suffix. Type-only variants remain permitted;
+  unrelated changes to canonical helpers require agreement. Keep `zeros()` intact.
+  Avoid redundant parameter checks and unnecessary wrapper abstractions.
+- Prefiltering, shared-memory query caching, reference/query comparisons, and
+  core/accessory regression remain outside this round.
+- Compile and test only on the remote machine, sequentially as `jlees`, with
+  explicit approval before every remote command, including reads and copies.
+  Use `CUDA_HOME=/usr/local/cuda-13.4 cargo oxide build`. Keep a reusable Python
+  smoke/CPU-comparison runner in this repository and document its invocation;
+  do not use the Cargo test harness.
+
+Source findings at the start of this round:
+
+- `DistTile::pipeline()` already built one stream-ordered operation; its caller
+  ran `.sync()` and consumed each result before constructing the next tile.
+  `run_gpu_batches()` was a deferred stub.
+- The documented default `StreamPoolRoundRobin` has four streams. It assigns
+  operations to streams; the application must separately bound submitted tiles
+  and completed results waiting for CPU consumption.
+- Existing dense consumption wrote directly to the supplied writer, which is
+  already buffered by `set_ostream()`. The prior redundant text batching was
+  removed from that synchronous consumer; this round's requested parallel text
+  producers give bounded formatted chunks a distinct inter-thread purpose.
+
+Documentation:
+
+- [Concurrent execution](https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html)
+- [Scheduling and streams](https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/scheduling-and-streams.html)
+- [Overlapping transfers and compute](https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/overlapping-transfers-and-compute.html)
+- [Async MLP pipeline](https://nvidia.github.io/cuda-rust/cuda-oxide/projects/async-mlp-pipeline.html)
+- [Rayon in-place scope](https://docs.rs/rayon/latest/rayon/fn.in_place_scope.html)
+
+Resolved decisions for this round:
+
+- Admit at most four tiles across GPU execution and CPU consumption. A tile
+  retains its slot until consumption finishes, so slow consumers also bound
+  completed host results. Implement the limit as a constant, proposed name
+  `MAX_IN_FLIGHT_TILES: usize = 4`, so it can be changed later without adding a
+  command-line option in this phase. The user explicitly accepted this limit
+  and requested a constant.
+
+Agreed pinned-memory design and source findings:
+
+- The inspected `PinnedHostBuffer::from_slice()` allocates new page-locked
+  storage and copies the input; it does not pin the existing `Arc<SketchVec>`
+  allocation in place. It exposes immutable slices and implements Send/Sync for
+  u64, so an `Arc<PinnedHostBuffer<u64>>` can safely supply overlapping read-only
+  ranges to multiple tile H2D transfers, provided ownership survives completion.
+- The user approved copying all loaded sketch data once when creating pinned
+  memory, then sharing ranges of that allocation among tiles. Implement this:
+  create one GPU-call-owned pinned allocation from `get_sketch_all()` and share
+  it with Arc. Retain the pinned owner through each operation's completion,
+  including error cleanup, rather than relying only on a borrowed host slice.
+  This replaces the unaccepted per-slot staging proposal; no repeated host
+  staging copies or per-slot sketch buffers would be needed.
+- `get_sketch_all_arc()` is used only by `DistTile::new()`. Once tiles share the
+  pinned allocation instead, remove that accessor, the Arc storage wrappers in
+  `MultiSketch`, and its Arc-specific empty-storage helper. Restore ordinary
+  aligned `SketchVec` ownership there and use the existing `get_sketch_all()`
+  slice accessor for the one-time copy. No CUDA-specific storage variant is
+  needed in `MultiSketch`; CPU storage and on-disk layout remain independent of
+  CUDA.
+- Accepted memory tradeoff: the original aligned sketch allocation remains in
+  `MultiSketch` while one full pinned duplicate exists for the GPU call. Thus
+  pinned sketch memory scales with the loaded dataset, whereas the four-tile
+  limit bounds device allocations and pending distance results. Add a comment
+  at the full pinned allocation explaining that a reusable copy buffer might
+  reduce this memory cost in future, as explicitly requested by the user.
+  Allocation failures should propagate; do not silently switch strategies.
+
+Agreed CPU consumer design:
+
+- Use the existing Rayon pool (and existing `--threads`
+  setting) for kNN tile consumers. Each consumer builds local top-k heaps only
+  for the sample rows touched by its tile, updating both endpoints with the
+  shared pair decoder. A single owner merges those retained candidates into
+  the global heaps as consumers complete, then releases each tile's slot.
+  Keeping each tile's top k per sample suffices for the global top k; tie
+  identities retain the existing unspecified cutoff-tie behaviour.
+- This avoids locking global heaps for individual distance updates and
+  avoids allocating a full-dataset heap array for every consumer. Merging on
+  completion also avoids retaining per-tile heaps until the end of the run.
+  The user accepted this approach with an explicit constraint against excess
+  thread creation.
+- All consumers share that one Rayon pool. Submit one sequential heap-building
+  job per tile; do not create per-tile pools or run nested parallel loops within
+  tile consumers. At most `min(MAX_IN_FLIGHT_TILES, Rayon pool size)` such jobs
+  execute simultaneously, and queued consumers still hold their tile slots.
+
+Agreed runtime arrangement:
+
+- Implement `run_gpu_batches()` using a Tokio current-thread
+  runtime on the calling host thread, rather than adding a Tokio worker pool.
+  GPU tile futures can overlap across the four CUDA streams while this single
+  thread submits/polls them. Offload substantial CPU consumption to the shared
+  Rayon pool so it does not block GPU dispatch. This also keeps cuda-oxide's
+  thread-local device state and stream pool on one host thread. Release completed
+  device-buffer owners on that thread before handing host values to consumers.
+  The user accepted this arrangement and reaffirmed the helper's purpose:
+  it accepts an async block and drives it to completion while the public
+  distance function and its callers remain synchronous.
+
+Agreed dense producer/writer topology and chunk settings:
+
+- The user requested the CPU streaming pattern: multiple Rayon producers
+  receive completed distance buffers and format text, while one consumer alone
+  writes that text to the existing `BufWriter`. This replaces the unaccepted
+  proposal to perform formatting and writing in a single consumer.
+- Keep one sequential formatting producer per tile in the same shared Rayon
+  pool, without nested parallelism or additional pools. Send bounded text chunks
+  through a multi-producer/single-consumer channel to one writer job. The async
+  GPU dispatcher must not perform bulk formatting, wait on a blocking channel,
+  or perform output I/O.
+- Source inspection confirms the dense CLI path already calls
+  `set_threads_with_writer(threads)`, configuring one shared pool with
+  `threads + 1` workers. Use that existing writer reservation: at most
+  `min(MAX_IN_FLIGHT_TILES, threads)` formatting producers plus the one writer
+  execute concurrently. With `--threads 1`, one formatter and one writer can
+  still make progress. Do not add another reservation or create per-tile pools.
+  The user explicitly confirmed the CPU convention of `--threads + 1` as the
+  total dense-mode pool budget. kNN keeps the `--threads` pool budget. The
+  current-thread Tokio dispatcher adds no Tokio worker pool.
+- The four-tile admission limit includes formatting, queued chunks, and writing.
+  Release a dense tile's slot only after all its chunks have been written, not
+  just after formatting or enqueueing. Output order, including chunks from
+  different tiles, is unspecified. Slow output must bound both raw results and
+  queued formatted text; formatting an entire tile into one String is excluded.
+- Scoped Rayon jobs can borrow the existing writer and sample names without
+  cloning them or requiring a new public `'static` ownership contract. Use an
+  in-place scope so the dispatcher stays on its original host thread.
+- Use the CPU streaming chunk size of 1000 records
+  and bound the text channel at twice the number of possible active formatting
+  producers. These chunks transfer formatting work to the writer; retain the
+  standard `BufWriter` without introducing another byte-buffering wrapper.
+  The user accepted these chunk and channel settings.
+
+Agreed progress reporting:
+
+- Count fully consumed unordered sample pairs
+  out of `n * (n - 1) / 2`, weighted by comparisons rather than tile count.
+  Dense mode advances after each text chunk has been written; kNN advances
+  after each tile's local heaps have been merged into the global heaps.
+- Use the existing host progress-bar helper, with `quiet` hiding the bar.
+  The single writer worker advances dense progress only after successful chunk
+  writes; the host coordinator advances kNN progress after merging each tile's
+  local heaps. There are no per-pair progress updates from heap consumers.
+  No polling thread/task, device atomic, unified-memory allocation, or kernel
+  progress argument is needed. The user explicitly accepted pauses during GPU
+  computation and preferred this simpler design.
+
+Approved D2H helper change:
+
+- Before this round, canonical `d2h()` allocated an ordinary `Vec<f32>` destination.
+  The inspected `memcpy_dtoh_async()` documentation requires pinned host memory
+  for guaranteed asynchronous behaviour; CUDA documents that transfers involving
+  pageable host memory may block the host thread even with an Async API.
+- Pass a reusable pinned output allocation into `d2h()` and
+  return `(PinnedHostBuffer<f32>, DeviceBox<[f32]>)`, retaining the current device
+  owner lifetime. Copy `dev.len()` values into that destination; consumers use
+  the tile's logical distance range, without copying back into a Vec.
+  Allocate the bounded output buffers before concurrent tile execution and reuse
+  them after consumption, avoiding pinned allocations in the submission loop.
+- The user explicitly approved this canonical-helper change and required that
+  it avoid extra host copies. Keep the stream-ordered memcpy behaviour and
+  device-buffer retention; `zeros()` stays unchanged. This approval does not
+  authorise unrelated changes to canonical helpers.
+
+Agreed failure behaviour:
+
+- The user rejected treating partial results as useful output. On the first
+  failure, fail the whole run and return an Error immediately or as soon as
+  graceful cleanup permits. A full rerun is required; do not attempt to complete,
+  salvage, resume, merge, or keep emitting queued results after detecting failure.
+- Stop admitting tiles, signal CPU consumers to stop promptly, and close/drop
+  channels as appropriate to unblock producers. Discard queued distances and
+  formatted text. Join CPU jobs as they exit to protect borrowed data, rather
+  than letting them finish processing their entire remaining tiles. Preserve
+  the original substantive error over secondary channel-closure errors.
+- Aborting host futures does not cancel already-submitted CUDA work. The
+  inspected cuda-oxide `DeviceFuture` implementation defers reclamation of its
+  owned output after cancellation, retaining resources behind a completion event.
+  Retain all pinned/device owners in the operation output so this mechanism can
+  protect them. Prefer prompt future cancellation and SDK-managed safe cleanup;
+  wait for GPU completion only if required for safe cleanup with the dependency
+  actually compiled remotely. Do not keep normal result consumption running just
+  to drain work, or force a blocking SDK reclamation drain without necessity.
+- Stop/clear progress on failure without reporting successful completion and
+  never write an incomplete sparse matrix. Any output emitted before an error
+  is invalid and requires a complete rerun. No output-salvage or file-transaction
+  feature is requested.
+
+Thread configuration for callers:
+
+- Reuse the already configured Rayon pool; the GPU helper must not create or
+  resize another one. Keep the CLI's existing dense writer reservation and kNN
+  thread count. Document the same setup requirement for direct library callers:
+  dense mode needs producer capacity plus its writer worker. Scheduling must not
+  deadlock if that precondition is missing; use a clear host-side configuration
+  error if needed, rather than silently adding threads.
+
+Agreed remote validation:
+
+- Keep the reusable stdlib Python runner in
+  `scripts/validate_gpu_distances.py` (not the Cargo test harness), adapting the
+  existing one-off runner and documenting its command in this plan. Only run it
+  remotely after explicit approval; its subprocesses execute sequentially.
+- Retain the supplied 1000-sample GPU kNN smoke command and the previous CPU/GPU
+  comparison policy: absolute tolerance 1e-6, exact unordered-pair coverage for
+  dense results, kNN structure/order, and CPU-verified alternatives at cutoff
+  ties. Cover Jaccard/ANI and absent/mixed completeness away from the excluded
+  f32/f64 cutoff precision boundary.
+- Retain single-tile and singleton-remainder coverage. Add forced four-block
+  integration runs (256 samples, block limit 64, ten tiles) so the four-tile
+  window must refill. Exercise both dense and kNN with `--threads 1` and with
+  multiple workers, checking results against the same CPU references.
+- Exercise a dense writer failure using `/dev/full`, with a subprocess timeout
+  and a required nonzero exit, to check prompt error propagation and absence of
+  channel/pool deadlocks. The user explicitly excluded progress/quiet checks:
+  do not add terminal capture, progress assertions, or quiet-mode test runs.
+  Progress must still observe `quiet` in the implementation.
+- Numerical validation establishes correctness, not a guaranteed speedup or
+  hardware-level overlap for kernels that saturate the GPU. Inspect dispatch
+  ownership and the bounded scheduling path alongside runtime comparisons.
+
+Completed implementation sequence:
+
+1. Restore aligned `SketchVec` ownership in `MultiSketch`, remove its now-unused
+   Arc accessor/setup, and create one `Arc<PinnedHostBuffer<u64>>` inside the GPU
+   call from the existing slice accessor. Add the requested future-copy-buffer
+   comment. Preserve the metadata/data file format. Consolidate typed H2D
+   helpers using the permitted generic implementation and retain `h2d_u64()`.
+2. Allocate at most four reusable pinned output buffers before launching tiles.
+   Apply the approved `d2h()` change and adapt `DistTile::pipeline()` to retain
+   the pinned sketch owner and all device owners through async completion and
+   cancellation. Consumers read only the tile's logical output range, directly
+   from pinned memory. Preserve existing pair decoding, kernels, completeness
+   arithmetic, and empty-diagonal handling; keep `zeros()` unchanged.
+3. Implement `run_gpu_batches()` as the synchronous wrapper around a Tokio
+   current-thread runtime accepting an async block. Dispatch independent tile
+   operations through the existing stream policy, retaining a constant four-tile
+   admission bound through CPU consumption. Use completion notifications to
+   refill slots as they become available; no per-tile `.sync()`. Add only the
+   dependency features needed for these channels/tasks; do not pin cuda-oxide.
+4. Use the single existing Rayon pool through an in-place scope. kNN consumers
+   build local heaps for each tile's participating rows, then the coordinator
+   merges them. Dense consumers format 1000-record chunks and feed the single
+   writer through the agreed bounded channel. Return/reuse output buffers only
+   when the tile's slot is released. Preserve the dense and sparse output formats
+   and ordering contracts, and the agreed thread budgets.
+5. Add host progress at successful writes/heap merges, respecting `quiet` without
+   another thread. Wire the agreed prompt failure path through dispatch,
+   consumers, and writer: stop further work, discard pending results, preserve
+   the original error, and perform only required safe cleanup. Keep additional
+   abstractions and host scheduling checks to what this ownership requires.
+6. Add the reusable runner to `scripts/validate_gpu_distances.py` and document
+   its invocation/results here. Format and inspect changes locally without
+   building or running tests. Obtain approval separately for every remote copy,
+   build, read, or validation invocation; run commands sequentially as `jlees`.
+   Fix in-scope failures and record actual validation outcomes and limits.
+
+Reusable validation invocation from the remote repository:
+
+```sh
+python3 scripts/validate_gpu_distances.py --repo /home/jlees/sketchlib.rust --dataset 1k_subset --gpu 0
+```
+
+The build remains a separate authorised command unless explicitly included in
+an approved sequential build-and-validation invocation. The runner does not
+authorise itself to connect remotely or run commands without user approval.
+
+Implementation and validation record:
+
+- The implementation uses two task sets on a current-thread runtime:
+  GPU completions hand pinned outputs to scoped Rayon jobs; consumer completions
+  return them only after local heap merging or the writer's final-chunk
+  acknowledgement. At most four output buffers exist, bounding the entire
+  tile lifetime. Pinned input/output owners survive async cancellation.
+- Dense mode uses the existing shared pool with its writer reservation and a
+  bounded formatted-text channel. kNN uses tile-local heaps without nested
+  parallel loops. `MultiSketch`'s Arc-only accessor/setup have been removed.
+- The reusable runner is now in `scripts/validate_gpu_distances.py`. Its matrix
+  has 33 CPU/GPU comparisons, the GPU smoke run, and two writer-failure runs
+  (`--threads 1` and 4). Progress/quiet checks are excluded as requested.
+- Local rustfmt and `git diff --check` passed. No local compilation or runtime
+  tests have run. The approved first remote build found a missing `Send` bound
+  on the future behind `pipeline()`'s opaque return type. Added that interface
+  bound; no runtime tests ran in the failed build-and-validation invocation.
+  The initial log is `/private/tmp/sketchlib-cuda-async-validation.log` locally.
+- The next approved remote release build passed in 20.13s using
+  `CUDA_HOME=/usr/local/cuda-13.4 /home/jlees/.cargo/bin/cargo oxide build`.
+  The resolved remote cuda-async source is version 0.5.0 at existing revision
+  `9df9e7cef561e03a066230b3bb433b3d8285da81`. An approved source read verified
+  that its `DeviceFuture::drop()` invokes deferred reclamation, matching the
+  cancellation design. No cuda-oxide revision pin or toolchain change was added.
+  Build/source-audit output is in
+  `/private/tmp/sketchlib-cuda-async-rebuild.log` locally.
+- The approved runner completed successfully against the new release executable
+  on GPU 0. The `1k_subset` kNN smoke run passed. All 33 CPU/GPU comparisons
+  passed at absolute tolerance 1e-6. The 256-sample integration subset spans the
+  source collection and reverses sample order, checking logical indices as well
+  as arithmetic. Mixed completeness cycles through 0.95, 0.85, 0.50 and 1.0.
+
+| Completeness | Metric | Dense maximum absolute error | kNN maximum absolute error |
+| --- | --- | ---: | ---: |
+| Absent | Jaccard | 0 | 0 |
+| Absent | ANI | 0 | 0 |
+| Mixed | Jaccard | 1.4e-7 | 1.3e-7 |
+| Mixed | ANI | 1e-7 | 1e-7 |
+
+- Every table row passed for single-tile, two-block, and four-block layouts.
+  Four-block runs produce ten tiles, refilling the four-tile window, and passed
+  with both `--threads 1` and 4. Every dense output has exactly 32640 unordered
+  pairs without duplicates or self-pairs. Every kNN output has 256 rows with
+  ten distinct non-self neighbours, in score order. Changes in selected tied
+  neighbours were verified against the CPU dense oracle under the agreed cutoff
+  rule, including at different thread counts.
+- The singleton-remainder dense run passed with maximum error 1.4e-7. Mixed
+  completeness changes eligible pairs and leaves below-cutoff pairs unchanged
+  within tolerance. No precision-boundary tests were added or run.
+- Both `/dev/full` runs, with `--threads 1` and 4, produced the expected writer
+  error and exited without hanging, each taking approximately 0.57s including
+  process/GPU setup. No progress/quiet checks were added or run.
+- The full successful runner log is
+  `/private/tmp/sketchlib-cuda-async-tests.log` locally. Per-command logs,
+  outputs, fixtures, and `report.json` remain remotely in
+  `/tmp/sketchlib-cuda-async-xqn3gaxo/`. The runner remains in the repository for
+  reuse and outside the Cargo test harness.
+- Final source inspection and `git diff --check` passed. Runtime comparisons
+  validate results and the tested failure path; no GPU overlap profiler or
+  performance benchmark was run. The accepted full pinned duplicate remains a
+  host-memory cost, with the requested copy-buffer comment at its allocation.
+
+Additional transfer reference:
+
+- [CUDA API synchronization behaviour](https://docs.nvidia.com/cuda/cuda-runtime-api/api-sync-behavior.html)
+
+## Completed round: shared dense/kNN path and completeness
 
 Status: implementation, remote release build, smoke test, and agreed integration
 validation complete, including the follow-up removal of redundant dense text

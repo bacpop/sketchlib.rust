@@ -20,6 +20,11 @@ Two distinct samples whose distance contributes a neighbour candidate for
 each sample. The pair is unordered: comparing A with B represents the same
 pair as comparing B with A.
 
+**Sample row**:
+A sample's comparisons with other samples, used to choose its nearest
+neighbours. Nearest-neighbour selection can be asymmetric even though
+pairwise distances are symmetric.
+
 **Diagonal tile**:
 The unordered sample pairs within one sketch block. Self-pairs are excluded.
 

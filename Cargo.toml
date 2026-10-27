@@ -90,7 +90,7 @@ cuda-async = {
     optional = true
 }
 tokio = {
-    version = "1", features = ["rt", "rt-multi-thread", "macros"],
+    version = "1", features = ["rt", "macros", "sync"],
     optional = true
 }
 
