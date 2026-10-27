@@ -2,15 +2,15 @@
 
 ## Current round: finish GPU distance progress before sparse output
 
-Status: implementation in progress. The user approved the minimal fix with
-"Great, implement that minimal fix". Preserve the previous rounds and their
-existing working-tree changes.
+Status: implementation, remote release build and GPU kNN smoke run complete.
+The user approved the minimal fix with "Great, implement that minimal fix".
+Previous rounds and their existing working-tree changes have been preserved.
 
 Reported problem and source findings:
 
 - The user observes the GPU progress bar left at 99% when distance calculation
   ends and requests completion/closure before the sparse-writing log message.
-- `self_dists_stream()` currently finalises and writes the sparse matrix in an
+- Before this fix, `self_dists_stream()` finalised and wrote the sparse matrix in an
   `and_then` closure, emits "Writing out in sparse matrix form", and only then
   calls `progress.finish_and_clear()`. This completion is after the requested
   distance-phase boundary and allows the writing message to interleave with an
@@ -53,15 +53,25 @@ Implementation detail verified in the installed dependency:
 `indicatif-0.17.11/src/state.rs::finish_using_style()` handles `AndClear` by
 setting the position to the length and calling `draw(true, now)`.
 
-Implementation record (in progress):
+Implementation and validation record:
 
 - Moved progress completion/abandonment onto the distance-phase Result, before
   the existing sparse-finalisation closure. Successful completion now clears
   the bar before the writing log; sparse-output errors do not reopen that bar.
 - The source change only relocates these lifecycle calls and adds an ordering
   comment. Local rustfmt and `git diff --check` passed. No local build or
-  runtime tests ran. Remote build and one existing GPU kNN smoke run await
-  individual approval; no new automated progress/quiet tests will be added.
+  runtime tests ran.
+- With individual approval, copied the source and plan to the remote checkout,
+  then ran the release build and one existing GPU kNN smoke command sequentially
+  as `jlees`, with a non-root guard. The build succeeded in 20.30 seconds; the
+  smoke run (`-k 21 --knn 10 -v --gpu 0 1k_subset`) reached "Complete".
+- Remote smoke output:
+  `/tmp/sketchlib-gpu-progress-smoke-1793116255615.tsv`.
+  Local captured build/smoke log:
+  `/private/tmp/sketchlib-gpu-progress-finish-validation.log`.
+- No automated progress/quiet checks or scaling benchmarks ran. The captured
+  noninteractive log does not verify rendered terminal clearing; source ordering
+  now guarantees the finish call precedes the sparse-writing log message.
 
 ## Completed round: parallel CPU consumption within each distance tile
 
