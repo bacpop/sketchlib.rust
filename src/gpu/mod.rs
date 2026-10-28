@@ -164,7 +164,7 @@ mod kernels {
     #[launch_contract(domain = 1, block = (256, 1, 1))]
     // Host [sample][k-mer][bin] -> device [k-mer][bin][sample].
     // Strides (bin, k-mer, sample): (1, n_bins, n_bins * n_kmers)
-    // -> (n_samples, n_samples * n_bins, 1). n_bins includes all bit planes.
+    // -> (n_samples, n_samples * n_bins, 1)
     pub fn interleave_sketches(
         sketch_slice: &[u64],
         n_samples: usize,
