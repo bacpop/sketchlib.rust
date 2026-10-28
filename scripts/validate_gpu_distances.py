@@ -15,6 +15,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import shlex
 import subprocess
 import tempfile
@@ -26,7 +27,7 @@ TOLERANCE = 1e-6
 KNN = 10
 
 
-def run(command, repo, log, expected_failure=False):
+def run(command, repo, log, expected_error=None):
     print("RUN " + shlex.join(map(str, command)), flush=True)
     start = time.monotonic()
     with log.open("w") as stream:
@@ -35,14 +36,14 @@ def run(command, repo, log, expected_failure=False):
             stderr=subprocess.STDOUT, timeout=180,
         )
     elapsed = time.monotonic() - start
-    if expected_failure:
+    if expected_error is not None:
         contents = log.read_text()
-        if result.returncode <= 0 or "No space left on device" not in contents:
+        if result.returncode <= 0 or expected_error not in contents:
             raise RuntimeError(
-                f"Expected a writer-error exit, got {result.returncode}; log: {log}\n"
+                f"Expected error {expected_error!r}, got exit {result.returncode}; log: {log}\n"
                 + contents[-6000:]
             )
-        print(f"PASS writer failure ({elapsed:.2f}s); log: {log}", flush=True)
+        print(f"PASS expected error ({elapsed:.2f}s); log: {log}", flush=True)
         return {"exit_code": result.returncode, "elapsed_seconds": elapsed}
     if result.returncode:
         raise RuntimeError(
@@ -138,12 +139,13 @@ def main():
         raise RuntimeError("Run this validation as jlees, never root")
     repo = args.repo.resolve()
     binary = repo / "target/release/sketchlib"
-    work = Path(tempfile.mkdtemp(prefix="sketchlib-cuda-async-"))
+    work = Path(tempfile.mkdtemp(prefix="sketchlib-cuda-shared-"))
     print(f"Validation outputs and logs: {work}", flush=True)
     report = {"status": "running", "repo": str(repo), "results": {}}
 
     def distance_run(label, subset=None, ani=False, sparse=False, mixed=False,
-                     gpu=False, batch=None, threads=1, expected_failure=False):
+                     gpu=False, batch=None, threads=1, expected_failure=False,
+                     shared=True, dataset=None, expected_error=None):
         output = Path("/dev/full") if expected_failure else work / f"{label}.tsv"
         command = [binary, "dist", "-o", output, "-k", "21", "-v",
                    "--threads", str(threads)]
@@ -157,17 +159,22 @@ def main():
             command += ["--ref-completeness-file", work / "completeness.tsv"]
         if gpu:
             command += ["--gpu", str(args.gpu)]
+            if not shared:
+                command += ["--no-gpu-shared"]
         if batch is not None:
             command += ["--max-sketch-batch", str(batch)]
-        command += [args.dataset]
-        result = run(command, repo, work / f"{label}.log", expected_failure)
-        if expected_failure:
+        command += [args.dataset if dataset is None else dataset]
+        result = run(command, repo, work / f"{label}.log",
+                     "No space left on device" if expected_failure else expected_error)
+        if expected_failure or expected_error is not None:
             return result
         return output
 
     try:
-        smoke_path = distance_run("smoke_gpu", sparse=True, gpu=True)
-        smoke = read_output(smoke_path)
+        for shared in (True, False):
+            mode = "shared" if shared else "global"
+            smoke_path = distance_run(f"smoke_gpu_{mode}", sparse=True, gpu=True, shared=shared)
+            smoke = read_output(smoke_path)
         all_names = sorted(smoke)
         if len(all_names) < 256:
             raise ValueError("Smoke dataset must have at least 256 samples")
@@ -212,32 +219,89 @@ def main():
                     report[f"{tag}_changed_pairs"] = len(changed)
                 # Four blocks produce ten tiles, exercising window refills and
                 # both the smallest CLI pool and concurrent CPU consumers.
-                for batch, threads, layout in (
-                    (None, 1, "single_t1"),
-                    (128, 1, "two_blocks_t1"),
-                    (64, 1, "four_blocks_t1"),
-                    (64, 4, "four_blocks_t4"),
-                ):
-                    for sparse in (False, True):
-                        label = f"{tag}_gpu_{'knn' if sparse else 'dense'}_{layout}"
-                        candidate = read_output(
-                            distance_run(label, subset, ani=ani, sparse=sparse, mixed=mixed,
-                                         gpu=True, batch=batch, threads=threads),
-                            dense=not sparse, names=names, ani=ani,
-                        )
-                        result = (compare_knn(cpu_knn, candidate, cpu_dense, ani) if sparse
-                                  else compare_dense(cpu_dense, candidate))
-                        report["results"][label] = result
-                        print(f"PASS {label}: {json.dumps(result, sort_keys=True)}", flush=True)
-                if mixed and not ani:
-                    label = "mixed_jaccard_gpu_dense_singleton"
-                    candidate = read_output(
-                        distance_run(label, subset, mixed=True, gpu=True, batch=255),
-                        dense=True, names=names,
-                    )
-                    result = compare_dense(cpu_dense, candidate)
-                    report["results"][label] = result
-                    print(f"PASS {label}: {json.dumps(result, sort_keys=True)}", flush=True)
+                for shared in (True, False):
+                    mode = "shared" if shared else "global"
+                    for batch, threads, layout in (
+                        (None, 1, "single_t1"),
+                        (128, 1, "two_blocks_t1"),
+                        (64, 1, "four_blocks_t1"),
+                        (64, 4, "four_blocks_t4"),
+                        (63, 1, "uneven_blocks_t1"),
+                    ):
+                        for sparse in (False, True):
+                            label = f"{tag}_gpu_{mode}_{'knn' if sparse else 'dense'}_{layout}"
+                            candidate = read_output(
+                                distance_run(label, subset, ani=ani, sparse=sparse, mixed=mixed,
+                                             gpu=True, batch=batch, threads=threads, shared=shared),
+                                dense=not sparse, names=names, ani=ani,
+                            )
+                            result = (compare_knn(cpu_knn, candidate, cpu_dense, ani) if sparse
+                                      else compare_dense(cpu_dense, candidate))
+                            report["results"][label] = result
+                            print(f"PASS {label}: {json.dumps(result, sort_keys=True)}", flush=True)
+                    if mixed and not ani:
+                        for sparse in (False, True):
+                            label = f"mixed_jaccard_gpu_{mode}_{'knn' if sparse else 'dense'}_singleton"
+                            candidate = read_output(
+                                distance_run(label, subset, sparse=sparse, mixed=True,
+                                             gpu=True, batch=255, shared=shared),
+                                dense=not sparse, names=names,
+                            )
+                            result = (compare_knn(cpu_knn, candidate, cpu_dense, ani) if sparse
+                                      else compare_dense(cpu_dense, candidate))
+                            report["results"][label] = result
+                            print(f"PASS {label}: {json.dumps(result, sort_keys=True)}", flush=True)
+
+        # Use the production sketch CLI to build rows larger than supported
+        # per-block shared memory. Two k-mers also exercise a nonzero k-mer index
+        # and the original sample-contiguous query stride in the new kernel.
+        fixture = work / "large_sketches"
+        fixture.mkdir()
+        rng = random.Random(21)
+        sequence = "".join(rng.choice("ACGT") for _ in range(8192))
+        fixture_names = {f"sample_{index:03d}" for index in range(256)}
+        inputs = fixture / "inputs.tsv"
+        with inputs.open("w") as listing:
+            for index, name in enumerate(sorted(fixture_names)):
+                bases = list(sequence)
+                for mutation in range(index):
+                    position = (index * 37 + mutation * 101) % len(bases)
+                    bases[position] = "ACGT"[("ACGT".index(bases[position]) + 1) % 4]
+                fasta = fixture / f"{name}.fa"
+                fasta.write_text(f">{name}\n{''.join(bases)}\n")
+                listing.write(f"{name}\t{fasta}\n")
+        fixture_db = fixture / "sketches"
+        run([binary, "sketch", "-f", inputs, "-o", fixture_db, "-k", "15,21",
+             "--sketch-size", "262144", "--threads", "1"],
+            repo, work / "large_sketches_build.log")
+        report["shared_memory_failures"] = {}
+        for sparse in (False, True):
+            label = f"oversized_shared_{'knn' if sparse else 'dense'}"
+            report["shared_memory_failures"][label] = distance_run(
+                label, sparse=sparse, gpu=True, dataset=fixture_db,
+                expected_error="--no-gpu-shared",
+            )
+        for ani in (False, True):
+            tag = "large_ani" if ani else "large_jaccard"
+            cpu_dense = read_output(
+                distance_run(f"{tag}_cpu_dense", ani=ani, dataset=fixture_db),
+                dense=True, names=fixture_names, ani=ani,
+            )
+            cpu_knn = read_output(
+                distance_run(f"{tag}_cpu_knn", ani=ani, sparse=True, dataset=fixture_db),
+                names=fixture_names, ani=ani,
+            )
+            for sparse in (False, True):
+                label = f"{tag}_gpu_global_{'knn' if sparse else 'dense'}"
+                candidate = read_output(
+                    distance_run(label, ani=ani, sparse=sparse, gpu=True,
+                                 dataset=fixture_db, shared=False),
+                    dense=not sparse, names=fixture_names, ani=ani,
+                )
+                result = (compare_knn(cpu_knn, candidate, cpu_dense, ani) if sparse
+                          else compare_dense(cpu_dense, candidate))
+                report["results"][label] = result
+                print(f"PASS {label}: {json.dumps(result, sort_keys=True)}", flush=True)
         report["writer_failures"] = {}
         for threads in (1, 4):
             label = f"writer_failure_t{threads}"

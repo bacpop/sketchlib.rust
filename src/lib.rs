@@ -318,6 +318,7 @@ pub fn main() -> Result<(), Error> {
             completeness_cutoff,
             gpu,
             max_sketch_batch,
+            no_gpu_shared,
         } => {
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
@@ -397,6 +398,7 @@ pub fn main() -> Result<(), Error> {
                             *completeness_cutoff,
                             gpu_device_id,
                             *max_sketch_batch,
+                            !*no_gpu_shared,
                         )?;
                     } else {
                         match knn {

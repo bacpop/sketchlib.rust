@@ -1,6 +1,240 @@
 # CUDA self-distance planning
 
-## Current round: finish GPU distance progress before sparse output
+## Current round: shared-query-memory distance kernel
+
+Status: implementation, remote release build, both GPU smoke modes, all 88
+CPU/GPU comparisons and the four expected-failure checks complete. The user
+authorised implementation with "Yes, begin implementation". Prior validation
+history and profiling artifacts have been preserved.
+
+Requested scope:
+
+- Add a new distance kernel inside `mod kernels` that stages one query sample's
+  sketch in shared memory. Every thread in a CUDA block must compare against
+  that same query. Keep the existing `dists` kernel as dead code for a future
+  alternative implementation.
+- Keep query sketches in their original sample-contiguous layout and remove
+  query interleaving from the active pipeline. Retain reference interleaving
+  for consecutive-thread access to different reference samples.
+- Compute full rectangular outputs for all tiles, including both directions
+  within diagonal tiles. Exclude self-pairs from kNN and dense output, and emit
+  each unordered dense pair once, filtering the lower triangle in diagonal
+  tiles. Use an explicit self-distance sentinel appropriate to the metric.
+- Preserve the existing asynchronous pipeline, four-tile admission bound,
+  shared Rayon consumer/formatter budget, single dense writer, completeness
+  correction, error propagation, and progress-bar completion boundary.
+- Keep canonical transfer/allocation helpers unchanged unless the user agrees
+  a change is necessary. Avoid new wrapper structures, redundant input checks,
+  and unnecessary small helper functions.
+- Do not implement transpose, device sorting, top-k selection, CUB/CCCL
+  integration, prefilter support or reference/query cross-comparisons.
+
+Source findings before implementation:
+
+- The current entry point is `self_dists_stream()`; it now handles both dense
+  and kNN output. `DistTile::pipeline()` interleaves both inputs and launches
+  `dists` with 256 threads per block.
+- Off-diagonal output is currently reference-major; diagonal output is packed
+  strict-upper triangular. Both host consumers and pinned-output sizing depend
+  on that layout and must change with the new kernel.
+- Full square diagonal output increases a single-block tile from n(n-1)/2 to
+  n*n stored f32 values. At the default block size of 10,000, that output is
+  400 MB per tile. The existing four-tile bound remains a tile-count bound.
+- Progress tracks logical unordered pairs, not physical kernel output cells.
+  Full-square diagonal output must not double-count progress or count self-pairs.
+- cuda-oxide documents runtime-sized `DynamicSharedArray`, launch-time shared
+  memory sizing, and an unconditional block barrier after cooperative loading.
+  Padded reference lanes must participate in that barrier before skipping work.
+- Sketch size is configurable, so the shared-memory sizing strategy must
+  account for sketches larger than a block's available shared memory.
+- The locally cached dependency exposes typed 2D launch configurations and
+  runtime-row-width disjoint outputs. Its APIs can be inspected without a local
+  CUDA build; remote compilation remains necessary for verification.
+
+Agreed output layout:
+
+- Store active tile results in query-major rows, with index `j * n_ref + i`.
+  Each 256-thread CUDA block handles one query against a segment of references.
+  This supports shared query reads, coalesced reference/output access, and
+  contiguous sample rows for the later device top-k phase. Update both host
+  consumers to use this layout while preserving global sample identities.
+- The user approved this layout and requested an explanatory code comment.
+  Document it beside the new kernel output and where the consumer indexes it:
+  `// Query-major output: distance[j * n_ref + i] compares query j with reference i.`
+
+Agreed shared-memory mode and explicit opt-out:
+
+- Cooperatively load the complete selected-k-mer query sketch into dynamically
+  sized shared memory, requiring `sketchsize64 * BIN_BITS * size_of::<u64>()`
+  bytes per CUDA block (2 KiB for a sketch size of 1024). Retain one barrier
+  between loading and read-only computation. The user accepted failure when a
+  complete row exceeds supported shared memory; no chunked staging is needed.
+- Add the boolean `dist --no-gpu-shared` flag and pass its setting through the
+  existing GPU entry point into the tile pipeline and new kernel. Shared memory
+  remains enabled by default. The opt-out keeps the same query-major distance
+  layout, launch mapping and sample-contiguous query input, but reads query
+  values directly from that global-memory slice, with no shared-memory load,
+  barrier or requested shared-memory allocation.
+- Both modes use the new kernel implementation. The opt-out does not select
+  the old `dists` kernel, which remains dead code for later work. Canonical
+  transfer helpers remain unchanged.
+- Do not automatically select a mode, retry a failed launch, or infer an
+  opt-out from the sketch size or device memory. If shared-mode preparation or
+  launch fails because the sketch does not fit, return an error that mentions
+  rerunning with `--no-gpu-shared`; the user explicitly selects that rerun.
+- CLI wiring follows the existing `max_sketch_batch` route from `Commands::Dist`
+  through `src/lib.rs` to `gpu::self_dists_stream()` and the tile pipeline.
+
+Agreed self-pair handling:
+
+- Store positive infinity for self-pairs in Jaccard and inverse-ANI output,
+  and negative infinity in raw-ANI dense output. Continue explicitly excluding
+  self-pairs in the host consumer, since a partly filled tile-local heap can
+  otherwise accept even a worst-valued sentinel. Avoid NaN: the existing
+  `SparseJaccard::cmp()` unwraps floating-point partial comparisons.
+- The user accepted these sentinels and the explicit consumer exclusion.
+
+Authorised implementation plan:
+
+1. Add and wire `--no-gpu-shared` through `Commands::Dist`, its caller in
+   `src/lib.rs`, `self_dists_stream()` and the tile pipeline. Keep one GPU
+   entry point. CPU distance behaviour remains unchanged.
+2. Add the new kernel, retaining `dists` and its condensed-index helper as
+   dead code. Use 256-thread blocks; each block owns one query/reference-segment
+   combination. Keep query rows contiguous in global memory. Shared mode
+   cooperatively copies only the selected k-mer sketch, then all lanes reach
+   the barrier before any padded lanes stop. Global mode reads the same query
+   slice directly, without requesting shared memory. Use the existing Jaccard,
+   completeness and ANI arithmetic in both modes.
+3. Document the agreed query-major layout in code. Represent every tile as
+   `n_query * n_ref` f32 cells, including full-square diagonal output. Store
+   the agreed self-pair sentinel using global sample identities. Preserve the
+   original reference/query argument roles for completeness and sample names.
+4. Remove the query interleaving launch and allocation from the active
+   pipeline. Preserve reference interleaving, async stream ordering, pinned
+   input/output ownership, cancellation safety and the canonical transfer
+   helpers. Report resource/launch failures through Result, with the opt-out
+   hint for shared-memory size failures; never retry automatically.
+5. Update sample-row kNN consumers to read `j * n_ref + i`. Diagonal rows use
+   their own computed direction and skip self-pairs. Off-diagonal reference
+   rows scan columns and query rows scan contiguous rows, adding candidates
+   with the existing global sample IDs. Keep the shared Rayon pool, serial
+   global heap merge and four-tile admission bound.
+6. Update dense formatting to decode query-major cells, emit only `i < j` in
+   diagonal tiles, and emit every cell in off-diagonal tiles. Preserve the
+   existing bounded producer queue, single writer and unordered-pair contract.
+   Each chunk reports its emitted record count, not its physical cell count.
+7. Size reusable pinned outputs for the largest full rectangle (`block_size`
+   squared), while consuming only each tile's logical output slice. Keep the
+   user-controlled block-size limit and default of 10,000. For kNN progress,
+   count diagonal logical pairs as `n_ref * (n_ref - 1) / 2`, and off-diagonal
+   logical pairs as `n_ref * n_query`. Preserve finish/clear before sparse
+   finalisation and abandon on distance-phase failure.
+8. Extend the existing remote validation runner as described below. Record
+   actual results here after implementation, preserving prior validation
+   history and the user's profiling artifacts.
+
+Launch details to verify during implementation:
+
+- Keep the launch mapping valid for user-configured block sizes above 65,535;
+  do not inadvertently limit query count by placing all queries on CUDA's
+  smaller grid Y dimension. A flattened query/segment block index can preserve
+  the agreed mapping without such a limit.
+- The cached cuda-oxide PreparedLaunch range contract validates its advertised
+  maximum shared-memory size even when the selected allocation is zero. Do not
+  let a shared-mode resource declaration prevent `--no-gpu-shared` from
+  launching. Use a supported launch API with the actual requested byte count
+  and a documented indexing/lifetime safety argument, without modifying the
+  dependency or adding automatic mode selection.
+
+Validation coverage:
+
+- Reuse `scripts/validate_gpu_distances.py` for the GPU smoke and CPU/GPU
+  comparisons, keeping its tolerance and cutoff-tie rules. Cover single and
+  multiple tiles, diagonal exclusion, rectangular remainder tiles, dense and
+  kNN output, ANI/Jaccard, completeness correction, and writer failures.
+- Exercise both the default shared-memory path and `--no-gpu-shared` against
+  CPU references. Include a non-multiple block size (for example, 63) and a
+  singleton remainder tile in both dense and kNN modes. The existing full
+  1k smoke also exercises multiple reference segments per query and a padded
+  final segment. Verify finite outputs, no self-pairs, exact unordered dense
+  pair coverage, and valid kNN rows using the existing comparison rules.
+- Create a temporary large-sketch fixture using the CLI, confirm shared-mode
+  failure returns an error mentioning `--no-gpu-shared`, then explicitly run
+  global mode and compare against CPU. Keep fixture creation and all CLI runs
+  sequential in the reusable Python runner. Do not use the Cargo test harness.
+- Run compilation and runtime checks only on the remote machine, sequentially
+  as `jlees`, never root, with approval before each remote command, including
+  copies. Build with `CUDA_HOME=/usr/local/cuda-13.4 cargo oxide build`.
+- Retain the user's exclusions of automated progress/quiet checks, cutoff
+  precision-boundary tests, and agent-run scaling benchmarks.
+
+Reference:
+[cuda-oxide shared memory and synchronization](https://nvidia.github.io/cuda-rust/cuda-oxide/advanced/shared-memory-and-synchronization.html).
+
+Implementation and validation record:
+
+- Added `dists_query` with a flattened query/reference-segment launch, full
+  query-major output, shared/global query modes and the agreed self sentinels.
+  Kept the original `dists` implementation and condensed decoder as dead code.
+- Removed query interleaving and its allocation from the active async pipeline.
+  Selected k-mer parameters are passed as scalars; the active kernel no longer
+  needs the unused device k-mer list. Completeness remains uploaded once.
+- The new kernel uses cuda-oxide's raw owned async launch with its actual
+  shared-memory byte count. The SDK's non-generic constructor only marshals an
+  already-loaded function and unconditionally returns Ok; its documented
+  expectation does not intercept driver execution errors. Those errors still
+  propagate through the asynchronous operation, with an opt-out hint in shared
+  mode. All allocation and transfer helper bodies are unchanged.
+- Wired `--no-gpu-shared`, updated both consumers, enlarged pinned output slots
+  to full-square capacity, and retained logical-pair progress accounting.
+- Extended `scripts/validate_gpu_distances.py` for both memory modes, uneven
+  and singleton remainder tiles, and a CLI-created two-k-mer oversized-sketch
+  fixture with explicit shared-mode failure and global-mode CPU comparisons.
+  The fixture also checks the new query stride at a nonzero k-mer index.
+- Local rustfmt and `git diff --check` pass. No local build or runtime tests
+  have been run. The individually approved remote copy completed. The initial
+  remote build found that cuda-oxide's root `LaunchConfig` differs from the
+  required `cuda_core::simt::LaunchConfig`; corrected the import. Initial build
+  log: `/private/tmp/sketchlib-cuda-shared-build.log`.
+- With subsequent individual approvals, copied that import correction and
+  ran the release build followed by the validation script sequentially as
+  `jlees`, with a non-root guard. The release build succeeded in 21.15 seconds;
+  the full command exited zero. No dependency pin or toolchain change was made.
+- Both GPU smoke runs passed on all 1,000 samples. All 88 CPU/GPU comparisons
+  passed at tolerance 1e-6, covering shared/global modes, dense/kNN output,
+  Jaccard/ANI, completeness, single/multiple tiles, uneven block sizes and
+  singleton remainder tiles. Dense cases contain exactly 32,640 unordered
+  pairs; sparse cases contain 256 rows with 10 distinct neighbours each. No
+  output contains self-pairs, duplicate dense pairs, NaN or infinity.
+- Maximum absolute errors across the comparisons:
+
+  | Fixture / completeness | Metric | Dense | kNN |
+  | --- | --- | --- | --- |
+  | 1k subset / none | Jaccard | 0 | 0 |
+  | 1k subset / none | ANI | 0 | 0 |
+  | 1k subset / mixed | Jaccard | 1.4e-7 | 1.3e-7 |
+  | 1k subset / mixed | ANI | 1e-7 | 1e-7 |
+  | Oversized two-k-mer fixture / none | Jaccard | 0 | 0 |
+  | Oversized two-k-mer fixture / none | ANI | 0 | 0 |
+
+- Changed kNN identities were confined to CPU-oracle-verified cutoff ties,
+  following the agreed comparison rule (at most 119 substitutions in a case).
+- The generated fixture has 256 samples, k-mers 15 and 21, and sketch size
+  262,144, requiring 512 KiB for the selected query sketch. Shared-mode dense
+  and kNN commands both returned nonzero errors containing `--no-gpu-shared`;
+  neither hung. Explicit global-mode reruns passed CPU comparisons, including
+  selection of the second k-mer. Both `/dev/full` writer failures also returned
+  the expected I/O error without hanging, with `--threads 1` and 4.
+- Remote fixtures, outputs, individual logs and `report.json` remain under
+  `/tmp/sketchlib-cuda-shared-nnftkekx/`. The captured local build/validation
+  log is `/private/tmp/sketchlib-cuda-shared-validation.log`.
+- Final local source review, rustfmt and `git diff --check` passed. No local
+  CUDA build/runtime tests, automated progress/quiet checks, cutoff precision
+  boundary tests or scaling/performance benchmarks were run. Performance
+  assessment remains with the user's manual profiling.
+
+## Completed round: finish GPU distance progress before sparse output
 
 Status: implementation, remote release build and GPU kNN smoke run complete.
 The user approved the minimal fix with "Great, implement that minimal fix".

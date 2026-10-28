@@ -20,8 +20,11 @@ use cuda_core::simt::device_buffer::DeviceCopy;
 use cuda_core::simt::memory::{
     malloc_async, memcpy_dtoh_async, memcpy_htod_async, memset_d8_async,
 };
+use cuda_core::simt::LaunchConfig;
 use cuda_core::{LaunchConfig1D, PinnedHostBuffer};
-use cuda_device::{device, kernel, launch_bounds, launch_contract, thread, DisjointSlice};
+use cuda_device::{
+    device, kernel, launch_bounds, launch_contract, thread, DisjointSlice, DynamicSharedArray,
+};
 use cuda_host::cuda_module;
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
@@ -44,7 +47,8 @@ fn run_gpu_batches<T>(work: impl Future<Output = Result<T, Error>>) -> Result<T,
         .block_on(work)
 }
 
-/// Decode the same tile-local pair on the device and in the host consumer.
+/// Decode the original condensed layout for the retained alternative kernel.
+#[allow(dead_code)]
 #[device]
 fn dist_pair_indices(
     idx: usize,
@@ -90,6 +94,7 @@ fn calc_jaccard_index(
 mod kernels {
     use super::*;
 
+    #[allow(dead_code)] // Retain the original kernel as a future alternative.
     #[kernel]
     #[launch_bounds(256)]
     #[launch_contract(domain = 1, block = (256, 1, 1))]
@@ -159,6 +164,98 @@ mod kernels {
         }
     }
 
+    // Query-major output: distance[j * n_ref + i] compares query j with reference i.
+    // Reference input is interleaved; each query's selected k-mer stays contiguous.
+    // https://nvidia.github.io/cuda-rust/cuda-oxide/advanced/shared-memory-and-synchronization.html
+    #[kernel]
+    #[launch_bounds(256)]
+    pub fn dists_query(
+        ref_sketches: &[u64],
+        query_sketches: &[u64],
+        n_ref_samples: usize,
+        n_kmers: usize,
+        n_bins: usize,
+        sketchsize64: u64,
+        k_vals: (usize, f64),
+        ani: bool,
+        inverse_ani: bool,
+        use_shared: bool,
+        completeness: &[f32],
+        correct_completeness: bool,
+        completeness_cutoff: f32,
+        sample_offsets: (usize, usize),
+        mut dist: DisjointSlice<f32>,
+    ) {
+        let tid = thread::threadIdx_x() as usize;
+        let block_size = thread::blockDim_x() as usize;
+        let segments = n_ref_samples.div_ceil(block_size);
+        let block = thread::blockIdx_x() as usize;
+        // Flatten query/segment blocks so query count is not limited by grid Y.
+        let j = block / segments;
+        let i = (block % segments) * block_size + tid;
+        let (k_idx, k_f64) = k_vals;
+        let query_start = (j * n_kmers + k_idx) * n_bins;
+        let query_row = &query_sketches[query_start..query_start + n_bins];
+        let query_row = if use_shared {
+            let shared = DynamicSharedArray::<u64>::get();
+            let mut bin = tid;
+            while bin < n_bins {
+                // SAFETY: lanes write distinct bins within the host-sized pool.
+                unsafe { shared.add(bin).write(query_row[bin]) };
+                bin += block_size;
+            }
+            // All lanes, including padded reference lanes, must finish loading.
+            thread::sync_threads();
+            // SAFETY: the complete row is initialized and is read-only from here.
+            unsafe { std::slice::from_raw_parts(shared, n_bins) }
+        } else {
+            query_row
+        };
+
+        if i < n_ref_samples {
+            // SAFETY: each block owns a distinct (query, reference segment),
+            // and each active lane owns one cell of the n_query * n_ref output.
+            let dist_elem = unsafe { dist.get_unchecked_mut(j * n_ref_samples + i) };
+            if sample_offsets.0 + i == sample_offsets.1 + j {
+                *dist_elem = if ani && !inverse_ani {
+                    f32::NEG_INFINITY
+                } else {
+                    f32::INFINITY
+                };
+                return;
+            }
+
+            let ref_start = k_idx * n_bins * n_ref_samples + i;
+            let mut jaccard_index = calc_jaccard_index(
+                &ref_sketches[ref_start..],
+                query_row,
+                n_ref_samples as u64,
+                1,
+                sketchsize64,
+            );
+            if correct_completeness {
+                let c1 = completeness[sample_offsets.0 + i];
+                let c2 = completeness[sample_offsets.1 + j];
+                let product = c1 * c2;
+                // Preserve the CPU pair-product rule with f32 correction.
+                if product >= completeness_cutoff {
+                    jaccard_index =
+                        ((jaccard_index as f32 / (product / (c1 + c2 - product))).min(1.0)) as f64;
+                }
+            }
+            *dist_elem = if ani {
+                let similarity = ani_pois(jaccard_index, k_f64);
+                if inverse_ani {
+                    (1.0_f64 - similarity) as f32
+                } else {
+                    similarity as f32
+                }
+            } else {
+                (1.0_f64 - jaccard_index) as f32
+            };
+        }
+    }
+
     #[kernel]
     #[launch_bounds(256)]
     #[launch_contract(domain = 1, block = (256, 1, 1))]
@@ -199,11 +296,11 @@ struct DistTile {
     n_kmers: usize,
     n_bins: usize,
     sketchsize64: u64,
+    use_shared: bool,
     diagonal: bool,
     n_distances: usize,
     interleave_ref_cfg: LaunchConfig1D,
-    interleave_query_cfg: LaunchConfig1D,
-    distance_cfg: LaunchConfig1D,
+    distance_cfg: LaunchConfig,
 }
 
 impl DistTile {
@@ -212,6 +309,7 @@ impl DistTile {
         sketches: &MultiSketch,
         max_sketch_batch: usize,
         pinned_sketches: Arc<PinnedHostBuffer<u64>>,
+        use_shared: bool,
     ) -> Self {
         let n = sketches.number_samples_loaded();
         let n_blocks = n.div_ceil(max_sketch_batch);
@@ -227,21 +325,20 @@ impl DistTile {
         let ref_bins = ref_samples.start * sample_stride..ref_samples.end * sample_stride;
         let query_bins = query_samples.start * sample_stride..query_samples.end * sample_stride;
         let diagonal = block_i == block_j;
-        let n_distances = if diagonal {
-            n_ref * (n_ref - 1) / 2
-        } else {
-            n_ref * n_query
-        };
+        let n_distances = n_ref * n_query;
 
         Self {
             sketches: pinned_sketches,
             interleave_ref_cfg: LaunchConfig1D::new(ref_bins.len().div_ceil(256) as u32, 256, 0),
-            interleave_query_cfg: LaunchConfig1D::new(
-                query_bins.len().div_ceil(256) as u32,
-                256,
-                0,
-            ),
-            distance_cfg: LaunchConfig1D::new(n_distances.div_ceil(256) as u32, 256, 0),
+            distance_cfg: LaunchConfig {
+                grid_dim: ((n_query * n_ref.div_ceil(256)) as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: if use_shared {
+                    (n_bins * mem::size_of::<u64>()) as u32
+                } else {
+                    0
+                },
+            },
             ref_samples,
             query_samples,
             ref_bins,
@@ -249,6 +346,7 @@ impl DistTile {
             n_kmers: sketches.kmer_lengths().len(),
             n_bins,
             sketchsize64: sketches.sketchsize64,
+            use_shared,
             diagonal,
             n_distances,
         }
@@ -259,9 +357,7 @@ impl DistTile {
     fn pipeline(
         &self,
         module: kernels::LoadedModule,
-        kmers: Arc<DeviceBox<[usize]>>,
-        dist_type: DistType,
-        k_vals: Option<(usize, f64)>,
+        k_vals: (usize, f64),
         ani: bool,
         inverse_ani: bool,
         completeness: Arc<DeviceBox<[f32]>>,
@@ -275,14 +371,12 @@ impl DistTile {
         // Prepare contracts before any device work is submitted, so failures
         // propagate normally rather than panicking inside a pipeline closure.
         let prepared_ref = module.prepare_interleave_sketches(self.interleave_ref_cfg)?;
-        let prepared_query = module.prepare_interleave_sketches(self.interleave_query_cfg)?;
-        let prepared_dist = module.prepare_dists(self.distance_cfg)?;
+        let distance_cfg = self.distance_cfg;
         let n_ref = self.ref_samples.len();
-        let n_query = self.query_samples.len();
         let n_kmers = self.n_kmers;
         let n_bins = self.n_bins;
         let sketchsize64 = self.sketchsize64;
-        let diagonal = self.diagonal;
+        let use_shared = self.use_shared;
         let n_distances = self.n_distances;
         let sample_offsets = (self.ref_samples.start, self.query_samples.start);
         let query_slice = &self.sketches[self.query_bins.clone()];
@@ -307,90 +401,72 @@ impl DistTile {
                 .and_then(move |(input, interleaved)| value((input, interleaved, module)))
         })
         .and_then(move |(ref_input, ref_interleaved, module)| {
-            zip!(h2d(query_slice), zeros_u64(query_slice.len())).and_then(
-                move |(input, interleaved)| {
-                    module
-                        .interleave_sketches_async_owned(
-                            &prepared_query,
-                            input,
-                            n_query,
-                            n_kmers,
-                            n_bins,
-                            interleaved,
-                        )
-                        .and_then(move |(query_input, query_interleaved)| {
+            h2d(query_slice).and_then(move |query_input| {
+                value((ref_input, ref_interleaved, query_input, module))
+            })
+        })
+        .and_then(move |(ref_input, ref_interleaved, query_input, module)| {
+            zeros(n_distances).and_then(move |output| {
+                // SAFETY: the 1D grid contains exactly n_query groups of
+                // ceil(n_ref / 256) blocks, with 256 lanes per block. Each
+                // active lane writes a unique query-major cell. Inputs cover
+                // all samples/k-mers; shared mode requests one full query
+                // row, and global mode requests zero bytes. Owned buffers
+                // and the pinned input/module owners survive completion or
+                // cancellation. Raw configuration permits the actual
+                // runtime size without a fixed shared-memory contract cap.
+                unsafe {
+                    module.dists_query_async_owned(
+                        distance_cfg,
+                        ref_interleaved,
+                        query_input,
+                        n_ref,
+                        n_kmers,
+                        n_bins,
+                        sketchsize64,
+                        k_vals,
+                        ani,
+                        inverse_ani,
+                        use_shared,
+                        completeness,
+                        correct_completeness,
+                        completeness_cutoff,
+                        sample_offsets,
+                        output,
+                    )
+                }
+                // This non-generic SDK constructor only marshals arguments
+                // for an already loaded function and always returns Ok.
+                // Actual driver/launch failures propagate when the op executes.
+                .expect("non-generic CUDA launch construction is infallible")
+                .and_then(
+                    move |(ref_interleaved, query_input, completeness, output)| {
+                        d2h(output, host_output).and_then(move |(host, output)| {
+                            // DeviceBox frees on a separate stream. Retain every
+                            // allocation through completion or SDK reclamation.
                             value((
-                                ref_input,
-                                ref_interleaved,
-                                query_input,
-                                query_interleaved,
-                                module,
+                                host,
+                                (
+                                    ref_input,
+                                    ref_interleaved,
+                                    query_input,
+                                    completeness,
+                                    output,
+                                    host_sketches,
+                                    module_owner,
+                                ),
                             ))
                         })
-                },
-            )
-        })
-        .and_then(
-            move |(ref_input, ref_interleaved, query_input, query_interleaved, module)| {
-                zeros(n_distances).and_then(move |output| {
-                    module
-                        .dists_async_owned(
-                            &prepared_dist,
-                            ref_interleaved,
-                            query_interleaved,
-                            n_ref,
-                            n_query,
-                            (n_ref, n_ref * n_bins, 1),
-                            (n_query, n_query * n_bins, 1),
-                            sketchsize64,
-                            kmers,
-                            dist_type,
-                            k_vals,
-                            ani,
-                            inverse_ani,
-                            diagonal,
-                            completeness,
-                            correct_completeness,
-                            completeness_cutoff,
-                            sample_offsets,
-                            output,
-                        )
-                        .and_then(
-                            move |(
-                                ref_interleaved,
-                                query_interleaved,
-                                kmers,
-                                completeness,
-                                output,
-                            )| {
-                                d2h(output, host_output).and_then(move |(host, output)| {
-                                    // DeviceBox frees on a separate stream. Retain every
-                                    // allocation through completion or SDK reclamation.
-                                    value((
-                                        host,
-                                        (
-                                            ref_input,
-                                            ref_interleaved,
-                                            query_input,
-                                            query_interleaved,
-                                            kmers,
-                                            completeness,
-                                            output,
-                                            host_sketches,
-                                            module_owner,
-                                        ),
-                                    ))
-                                })
-                            },
-                        )
-                })
-            },
-        ))
+                    },
+                )
+            })
+        }))
     }
 
     // Parallel kNN tasks own one sample row's heap each, sharing the Rayon pool.
-    // Read each stored pair for both endpoints, avoiding locks, extra partial
-    // heaps, and distance copies. Future: benchmark shared heaps protected by
+    // Read off-diagonal pairs for both endpoints, avoiding locks, extra partial
+    // heaps, and distance copies. Diagonal rows use their own computed direction.
+    // Future: benchmark shared heaps protected by
     // locks, or a suitable atomic heap design, with partitions that keep
     // collisions rare; that could make a single pass over distances worthwhile.
     fn consume(
@@ -422,15 +498,17 @@ impl DistTile {
                             return Err(anyhow!("GPU distance calculation cancelled"));
                         }
                         for neighbour in start..n_neighbours.min(start + DENSE_CHUNK_SIZE) {
+                            if self.diagonal && row == neighbour {
+                                continue;
+                            }
+                            // Query-major output: distance[j * n_ref + i]
+                            // compares query j with reference i.
                             let idx = if self.diagonal {
-                                if row == neighbour {
-                                    continue;
-                                }
-                                square_to_condensed(row.min(neighbour), row.max(neighbour), n_ref)
+                                row * n_ref + neighbour
                             } else if row < n_ref {
-                                row * n_query + neighbour
+                                neighbour * n_ref + row
                             } else {
-                                neighbour * n_query + row - n_ref
+                                (row - n_ref) * n_ref + neighbour
                             };
                             push_heap(
                                 heap,
@@ -450,29 +528,31 @@ impl DistTile {
                     if cancelled.load(Ordering::Relaxed) {
                         return Err(anyhow!("GPU distance calculation cancelled"));
                     }
-                    let (mut i, mut j) = dist_pair_indices(
-                        chunk_idx * DENSE_CHUNK_SIZE,
-                        n_ref,
-                        n_query,
-                        self.diagonal,
-                    );
+                    let offset = chunk_idx * DENSE_CHUNK_SIZE;
+                    let (mut i, mut j) = (offset % n_ref, offset / n_ref);
                     let mut text = String::with_capacity(chunk.len() * 24);
+                    let mut records = 0;
                     for &distance in chunk {
-                        writeln!(
-                            text,
-                            "{}\t{}\t{distance}",
-                            names[self.ref_samples.start + i],
-                            names[self.query_samples.start + j]
-                        )?;
-                        j += 1;
-                        if j == n_query {
-                            i += 1;
-                            j = if self.diagonal { i + 1 } else { 0 };
+                        if !self.diagonal || i < j {
+                            writeln!(
+                                text,
+                                "{}\t{}\t{distance}",
+                                names[self.ref_samples.start + i],
+                                names[self.query_samples.start + j]
+                            )?;
+                            records += 1;
+                        }
+                        i += 1;
+                        if i == n_ref {
+                            i = 0;
+                            j += 1;
                         }
                     }
-                    text_tx
-                        .send((text, chunk.len(), None))
-                        .context("GPU distance writer stopped")?;
+                    if records != 0 {
+                        text_tx
+                            .send((text, records, None))
+                            .context("GPU distance writer stopped")?;
+                    }
                     Ok(())
                 })?;
             // All parallel sends have completed, so the marker follows every
@@ -492,6 +572,7 @@ impl DistTile {
 /// Direct callers must configure Rayon as for CPU streaming: dense mode needs
 /// at least two workers, with one reserved for the writer; kNN needs no reservation.
 /// CPU tasks within and across tiles share that pool independently of the tile limit.
+/// `use_shared` stages each query sketch in shared memory; false reads it globally.
 pub fn self_dists_stream<W: IoWrite + Send>(
     writer: &mut W,
     sketches: &MultiSketch,
@@ -503,6 +584,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     completeness_cutoff: f64,
     gpu_device_id: usize,
     max_sketch_batch: usize,
+    use_shared: bool,
 ) -> Result<(), Error> {
     if sketches.is_legacy_format() {
         return Err(anyhow!(
@@ -518,7 +600,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         return Err(anyhow!("GPU kNN requires knn to be smaller than n"));
     }
     let (k_vals, ani) = match dist_type {
-        DistType::Jaccard(k_idx, k_val, ani) => (Some((k_idx, k_val)), ani),
+        DistType::Jaccard(k_idx, k_val, ani) => ((k_idx, k_val), ani),
         DistType::CoreAcc => todo!("GPU core/accessory regression is deferred"),
     };
     let pool_size = rayon::current_num_threads();
@@ -529,7 +611,6 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     init_device_contexts(gpu_device_id, 1)?;
     // SAFETY: this crate owns the embedded bundle for the kernels above.
     let module = unsafe { kernels::load_async(gpu_device_id)? };
-    let kmers_dev = h2d(sketches.kmer_lengths()).arc().sync()?;
 
     // This full pinned copy could be replaced by a reusable copy buffer in future
     // to reduce host memory use, at the cost of staging sketch blocks repeatedly.
@@ -555,22 +636,20 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let names = <DistanceMatrix as Distances>::sketch_names(sketches);
     let n_blocks = n.div_ceil(max_sketch_batch);
     let n_tiles = n_blocks * (n_blocks + 1) / 2;
-    let mut tiles = (0..n_tiles)
-        .map(|idx| {
-            DistTile::new(
-                idx,
-                sketches,
-                max_sketch_batch,
-                Arc::clone(&pinned_sketches),
-            )
-        })
-        .filter(|tile| tile.n_distances != 0);
+    let mut tiles = (0..n_tiles).map(|idx| {
+        DistTile::new(
+            idx,
+            sketches,
+            max_sketch_batch,
+            Arc::clone(&pinned_sketches),
+            use_shared,
+        )
+    });
     let initial_tiles: Vec<_> = tiles.by_ref().take(MAX_IN_FLIGHT_TILES).collect();
     let n_slots = initial_tiles.len();
     let mut tiles = initial_tiles.into_iter().chain(tiles);
     let block_size = n.min(max_sketch_batch);
-    let max_distances =
-        (block_size * (block_size - 1) / 2).max(block_size * (n - block_size).min(block_size));
+    let max_distances = block_size * block_size;
     // Allocate before concurrent dispatch: pinned allocations can synchronize.
     let mut host_outputs = with_cuda_context(gpu_device_id, |ctx| {
         (0..n_slots)
@@ -642,14 +721,17 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                         let Some(tile) = tiles.next() else { break };
                         let host_output = host_outputs.pop().unwrap();
                         let module = module.clone();
-                        let kmers = Arc::clone(&kmers_dev);
                         let completeness = Arc::clone(&completeness_dev);
                         gpu_jobs.spawn(async move {
                             let (host, device_buffers) = tile.pipeline(
-                                module, kmers, dist_type, k_vals, ani, knn.is_some(),
+                                module, k_vals, ani, knn.is_some(),
                                 completeness, correct_completeness, completeness_cutoff as f32,
                                 host_output,
-                            )?.await?;
+                            )?.await.context(if use_shared {
+                                "GPU shared-query distance pipeline failed; if the query sketch exceeds shared-memory capacity, rerun with --no-gpu-shared"
+                            } else {
+                                "GPU global-query distance pipeline failed"
+                            })?;
                             // DeviceBox cleanup remains on the GPU dispatch thread.
                             drop(device_buffers);
                             Ok::<_, Error>((tile, host))
@@ -679,7 +761,12 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                                         push_heap(&mut heaps[global_row], candidate, knn);
                                     }
                                 }
-                                progress.inc(tile.n_distances as u64);
+                                let n_pairs = if tile.diagonal {
+                                    n_ref * (n_ref - 1) / 2
+                                } else {
+                                    tile.n_distances
+                                };
+                                progress.inc(n_pairs as u64);
                             }
                             host_outputs.push(host);
                         }

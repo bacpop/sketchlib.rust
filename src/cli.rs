@@ -250,6 +250,10 @@ pub enum Commands {
         /// Maximum sketches per block for dense or kNN GPU self-distances
         #[arg(long, default_value_t = DEFAULT_MAX_SKETCH_BATCH, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         max_sketch_batch: usize,
+
+        /// Read GPU query sketches from global memory instead of shared memory
+        #[arg(long)]
+        no_gpu_shared: bool,
     },
 
     /// Building and querying with inverted indices (.ski)
