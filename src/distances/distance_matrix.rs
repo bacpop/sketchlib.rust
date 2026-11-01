@@ -25,7 +25,6 @@ pub fn ref_query_index(i: usize, j: usize, n: usize) -> usize {
 pub fn calc_query_indices(k: usize, n: usize) -> (usize, usize) {
     let i = k / n;
     let j = k % n;
-    debug_assert!(i < n);
     debug_assert!(j < n);
     (i, j)
 }

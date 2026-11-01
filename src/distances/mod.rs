@@ -332,7 +332,8 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
 
 
 /// GPU (wgpu) variant of [`self_dists_all_stream`] for Jaccard distances and ANI.
-/// Same line format; pairs come out in condensed upper-triangle order.
+/// Same line format; pairs come out tile by tile and chunk by chunk, in no global order,
+/// as in the CUDA code.
 #[cfg(feature = "wgpu")]
 fn self_dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
     writer: &mut W,
@@ -342,23 +343,43 @@ fn self_dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
     completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
 ) -> Result<(), Error> {
-    let dists = pollster::block_on(get_distances_wgpu(
-        sketches,
-        n,
-        dist_type,
-        completeness_vec,
-        completeness_cutoff,
-        BB,
-    ))?;
+    let pool_size = rayon::current_num_threads();
+    if pool_size < 2 {
+        bail!("GPU dense streaming requires a Rayon producer and writer; configure the pool with set_threads_with_writer()");
+    }
     let ref_names = <DistanceMatrix as Distances>::sketch_names(sketches);
 
-    // Same pair order as the kernel's dist_idx
-    let pairs = (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j)));
-    for ((i, j), dist) in pairs.zip(dists) {
-        writeln!(writer, "{}\t{}\t{dist}", ref_names[i], ref_names[j])
-            .context("Error writing streamed distance output")?;
-    }
-    Ok(())
+    rayon::in_place_scope(|scope| {
+        let (text_tx, text_rx) = mpsc::sync_channel::<String>(2 * (pool_size - 1));
+        let (writer_started_tx, writer_started_rx) = mpsc::channel::<()>();
+        let (writer_done_tx, writer_done_rx) = mpsc::channel::<Result<(), Error>>();
+        scope.spawn(move |_| {
+            let _ = writer_started_tx.send(());
+            let result = text_rx.iter().try_for_each(|text| {
+                writer
+                    .write_all(text.as_bytes())
+                    .context("Error writing streamed distance output")
+            });
+            // Returning drops text_rx, which stops the producers after an error
+            let _ = writer_done_tx.send(result);
+        });
+        // Reserve the writer worker before the producers can block on the bounded channel
+        writer_started_rx.recv().context("Distance writer failed to start")?;
+
+        let gpu_result = pollster::block_on(get_distances_wgpu(
+            sketches,
+            n,
+            dist_type,
+            completeness_vec,
+            completeness_cutoff,
+            BB,
+            |tile, dists| tile.consume(dists, &ref_names, &text_tx),
+        ));
+        drop(text_tx);
+        // A write error explains a "writer stopped" error from the producers, so it goes first
+        writer_done_rx.recv().context("Distance writer stopped")??;
+        gpu_result
+    })
 }
 
 /// Self query mode (dense, all distances)

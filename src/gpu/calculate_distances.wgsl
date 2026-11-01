@@ -21,19 +21,22 @@ struct DistanceParams {
     self_comparison: u32, // 4 bytes, offset 80
     use_shared: u32,      // 4 bytes, offset 84
 
-    _pad1: u32,          // 4 bytes, offset 88
-    _pad2: u32,          // 4 bytes, offset 92
+    tilerange_ref_offset: u32,   // 4 bytes, offset 88: first sample of tilerange_ref
+    tilerange_query_offset: u32, // 4 bytes, offset 92: first sample of tilerange_query
 };
 
 // Get your bindings
 @group(0) @binding(0) var<uniform> params: DistanceParams;
-@group(0) @binding(1) var<storage, read> input_sketches: array<vec2<u32>>;
+// tilerange_ref's sketches, CUDA's `ref`
+@group(0) @binding(1) var<storage, read> ref_sketches: array<vec2<u32>>;
 // This storage buffer can be read from and written to
 @group(0) @binding(2) var<storage, read_write> output_dists: array<f32>;
 // k-mer lengths, CUDA's `const int *kmers`
 @group(0) @binding(3) var<storage, read> kmers: array<u32>;
 // Completeness of each sample (only read when USE_COMPLETENESS)
 @group(0) @binding(4) var<storage, read> completeness: array<f32>;
+// tilerange_query's sketches, CUDA's `query` (the same buffer as ref_sketches in a diagonal tile)
+@group(0) @binding(5) var<storage, read> query_sketches: array<vec2<u32>>;
 
 // Tells wgpu that this function is a valid compute pipeline entry_point
 override WORKGROUP_SIZE: u32 = 256;
@@ -72,44 +75,50 @@ fn main(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
     @builtin(local_invocation_id) local_invocation_id: vec3<u32>,
 ) {
-    // This follows the CUDA kernel indexing FOR QUERY VS REF
-//     let query_idx   = workgroup_id.x / BLOCKS_PER_QUERY;
-//     let ref_idx     = (workgroup_id.x % BLOCKS_PER_QUERY) * WORKGROUP_SIZE + local_invocation_id.x;
-//     let dist_idx    = query_idx * REF_N + ref_idx;
+    // Indices within this tile, as CUDA's calculate_dists (dist.cu:175-200)
+    var query_idx: u32 = 0u;
+    var ref_idx: u32 = 0u;
+    var dist_idx: u32 = 0u;
+    if (params.self_comparison != 0u) {
+        // ALL-vs-ALL (a diagonal tile). This gets "query_idx", which allows you to know which query genome we are processing
+        var workgroups_done : u32 = 0;
+        loop {
+            if (query_idx >= params.ref_n - 1u) { // Suggestion from CHatty to prevent underflows in veeeeeeeery large data sets (should not happen ever... I think?)
+                break;
+            }
 
-    // This is for ALL-vs-ALL. This gets "query_idx", which allows you to know which query genome we are processing
-    var workgroups_done : u32 = 0;
-    var query_idx: u32 = 0;
-    loop {
-        if (query_idx >= params.ref_n - 1u) { // Suggestion from CHatty to prevent underflows in veeeeeeeery large data sets (should not happen ever... I think?)
-            break;
+            workgroups_done +=
+                (params.ref_n + WORKGROUP_SIZE - 2 - query_idx) / WORKGROUP_SIZE;
+
+            if (workgroups_done > workgroup_id.x) {
+                break;
+            }
+            query_idx++;
         }
 
-        workgroups_done +=
-            (params.ref_n + WORKGROUP_SIZE - 2 - query_idx) / WORKGROUP_SIZE;
-
-        if (workgroups_done > workgroup_id.x) {
-            break;
-        }
-        query_idx++;
+        // How many workgroups/blocks are there per query (i.e. share the same query genome in their shared memory)
+        let workgroups_per_query : u32 = (params.ref_n + WORKGROUP_SIZE - 2 - query_idx) / WORKGROUP_SIZE;
+        // Local ID in the query, starting from zero
+        let local_workgroup_idx : u32 = workgroup_id.x - (workgroups_done - workgroups_per_query);
+        // What reference genome we are going to calculate the distance against
+        ref_idx = query_idx + 1u + local_workgroup_idx * WORKGROUP_SIZE + local_invocation_id.x;
+        dist_idx =
+            query_idx * (2u * params.ref_n - query_idx - 1u) / 2u
+            + (ref_idx - query_idx - 1u);
+    } else {
+        // QUERY vs REF (an off-diagonal tile): each query row gets its own workgroups
+        let workgroups_per_query : u32 = (params.ref_n + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE;
+        query_idx = workgroup_id.x / workgroups_per_query;
+        ref_idx = (workgroup_id.x % workgroups_per_query) * WORKGROUP_SIZE + local_invocation_id.x;
+        dist_idx = query_idx * params.ref_n + ref_idx;
     }
-
-    // How many workgroups/blocks are there per query (i.e. share the same query genome in their shared memory)
-    let workgroups_per_query : u32 = (params.ref_n + WORKGROUP_SIZE - 2 - query_idx) / WORKGROUP_SIZE;
-    // Local ID in the query, starting from zero
-    let local_workgroup_idx : u32 = workgroup_id.x - (workgroups_done - workgroups_per_query);
-    // What reference genome we are going to calculate the distance against
-    let ref_idx : u32 = query_idx + 1u + local_workgroup_idx * WORKGROUP_SIZE + local_invocation_id.x;
 
     // SO that we don't access references that are not there! Invocations past the last
     // reference must still reach every workgroupBarrier(), so no early return
     let valid = ref_idx < params.ref_n;
-    let dist_idx =
-        query_idx * (2u * params.ref_n - query_idx - 1u) / 2u
-        + (ref_idx - query_idx - 1u);
 
-    // Entries of the flatten vector where we have the data
-    // (the binding already starts at the selected k-mer, as CUDA's `ref + k * kmer_stride`)
+    // Entries of the flatten vectors where we have the data. Each binding already starts at
+    // the selected k-mer of its tile range, as CUDA's `ref + k * kmer_stride`
     var ref_start = ref_idx * params.ref_strides.sample_stride;
     var query_start = query_idx * params.query_strides.sample_stride;
     let query_words = params.query_strides.sketchsize64 * params.query_strides.bbits;
@@ -123,7 +132,7 @@ fn main(
         if (params.use_shared != 0u && local_invocation_id.x < QUERY_LOADERS) {
             for (var w = local_invocation_id.x; w < query_words; w += QUERY_LOADERS) {
                 query_shared[w] =
-                    input_sketches[query_start + w * params.query_strides.bin_stride];
+                    query_sketches[query_start + w * params.query_strides.bin_stride];
             }
         }
         // CUDA's barrier.arrive_and_wait()
@@ -131,7 +140,12 @@ fn main(
 
         if (valid) {
             let samebits = count_samebits(ref_start, query_start);
-            dist = jaccard_output(samebits, query_idx, ref_idx, kmers[kmer_idx]);
+            dist = jaccard_output(
+                samebits,
+                params.tilerange_query_offset + query_idx,
+                params.tilerange_ref_offset + ref_idx,
+                kmers[kmer_idx],
+            );
         }
 
         // Move to next k-mer length
@@ -150,7 +164,7 @@ fn query_word(query_start: u32, bin_index: u32) -> vec2<u32> {
     if (params.use_shared != 0u) {
         return query_shared[bin_index];
     }
-    return input_sketches[query_start + bin_index * params.query_strides.bin_stride];
+    return query_sketches[query_start + bin_index * params.query_strides.bin_stride];
 }
 
 // Number of matching bins (CUDA's jaccard_dist() up to the popcount)
@@ -163,7 +177,7 @@ fn count_samebits(ref_start: u32, query_start: u32) -> u32 {
 
         for (var j = 0u; j < params.ref_strides.bbits; j++) {
             let ref_word =
-                input_sketches[ref_start + bin_index * params.ref_strides.bin_stride];
+                ref_sketches[ref_start + bin_index * params.ref_strides.bin_stride];
 
             bits &= ~(ref_word ^ query_word(query_start, bin_index));
             bin_index++;
