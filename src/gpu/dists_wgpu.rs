@@ -215,9 +215,6 @@ pub async fn get_distances_wgpu(
     let instance = create_instance();
     let adapter = select_adapter(&instance, gpu_device).await?;
     let info = adapter.get_info();
-    if info.device_type == wgpu::DeviceType::Cpu {
-        log::warn!("{} is a software adapter, not a GPU: expect it to be slow", info.name);
-    }
 
     // Ask for the hardware limits rather than the WebGPU defaults, so the tile ranges and
     // workgroup sizes reflect what this device can actually do
@@ -673,15 +670,25 @@ fn create_instance() -> wgpu::Instance {
     })
 }
 
-// The adapter --gpu N names, by its index in enumerate_adapters() (as --list-gpus shows
-// it); with --gpu alone, the adapter wgpu prefers for performance, a discrete GPU if any
+// Hardware adapters only: software ones (lavapipe/llvmpipe, WARP) report DeviceType::Cpu
+async fn gpu_adapters(instance: &wgpu::Instance) -> Vec<wgpu::Adapter> {
+    instance
+        .enumerate_adapters(GPU_BACKENDS)
+        .await
+        .into_iter()
+        .filter(|adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu)
+        .collect()
+}
+
+// The adapter --gpu N names, by its index in gpu_adapters() (as --list-gpus shows it);
+// with --gpu alone, the adapter wgpu prefers for performance, a discrete GPU if any
 async fn select_adapter(
     instance: &wgpu::Instance,
     gpu_device: Option<usize>,
 ) -> anyhow::Result<wgpu::Adapter> {
     match gpu_device {
         Some(index) => {
-            let mut adapters = instance.enumerate_adapters(GPU_BACKENDS).await;
+            let mut adapters = gpu_adapters(instance).await;
             ensure!(
                 index < adapters.len(),
                 "There is no GPU {index}: `sketchlib dist --list-gpus` lists the {} available",
@@ -689,20 +696,30 @@ async fn select_adapter(
             );
             Ok(adapters.swap_remove(index))
         }
-        None => instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .context("No GPU adapter found"),
+        None => {
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                })
+                .await
+                .context("No GPU adapter found")?;
+            // Without a real GPU, wgpu can still offer a software one
+            let info = adapter.get_info();
+            ensure!(
+                info.device_type != wgpu::DeviceType::Cpu,
+                "No GPU found, only the software adapter {}",
+                info.name
+            );
+            Ok(adapter)
+        }
     }
 }
 
 /// The GPUs --gpu N chooses from, one line each, `index: name (type, backend)`, in the
 /// order it numbers them
 pub fn gpu_list() -> Vec<String> {
-    let adapters = pollster::block_on(create_instance().enumerate_adapters(GPU_BACKENDS));
+    let adapters = pollster::block_on(gpu_adapters(&create_instance()));
     adapters
         .iter()
         .enumerate()
