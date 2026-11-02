@@ -12,12 +12,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Error};
 use rayon::prelude::*;
 
-use cuda_async::simt::device_box::DeviceBox;
-use cuda_async::simt::device_context::{init_device_contexts, with_cuda_context};
-use cuda_async::simt::device_operation::{self, value, DeviceOperation, Zippable};
+use cuda_async::device_box::DeviceBox;
+use cuda_async::device_context::{init_device_contexts, with_cuda_context};
+use cuda_async::device_operation::{self, value, DeviceOperation, Zippable};
 use cuda_async::zip;
-use cuda_core::simt::device_buffer::DeviceCopy;
-use cuda_core::simt::memory::{
+use cuda_core::device_buffer::DeviceCopy;
+use cuda_core::memory::{
     malloc_async, memcpy_dtoh_async, memcpy_htod_async, memset_d8_async,
 };
 use cuda_core::{LaunchConfig1D, PinnedHostBuffer};
@@ -759,7 +759,7 @@ fn h2d_u64(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>>
         unsafe {
             let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
             memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
         }
     })
 }
@@ -775,7 +775,7 @@ fn h2d<T: DeviceCopy + Send + Sync + 'static>(
         unsafe {
             let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
             memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
         }
     })
 }
@@ -788,7 +788,7 @@ fn zeros_u64(n: usize) -> impl DeviceOperation<Output = DeviceBox<[u64]>> {
         unsafe {
             let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
             memset_d8_async(dptr, 0, num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
         }
     })
 }
@@ -802,7 +802,7 @@ fn zeros(n: usize) -> impl DeviceOperation<Output = DeviceBox<[f32]>> {
         unsafe {
             let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
             memset_d8_async(dptr, 0, num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, ctx.get_device_id()))
+            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
         }
     })
 }
