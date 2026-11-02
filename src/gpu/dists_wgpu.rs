@@ -187,6 +187,7 @@ pub async fn get_distances_wgpu(
     query_completeness_vec: Option<&Vec<f64>>, // only read with query_sketches
     completeness_cutoff: f64,
     bin_bits: usize, // BB chosen by the CPU dispatch: BIN_BITS, or LEGACY_BIN_BITS
+    gpu_device: Option<usize>, // index in gpu_list(); None: wgpu's choice
     mut on_tile: impl FnMut(&DistTile, &[f32]) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let &DistType::Jaccard(k_idx, _, ani) = dist_type else {
@@ -211,22 +212,12 @@ pub async fn get_distances_wgpu(
         "Reference and query sketches differ in k-mer lengths, sketch size, hash type or format"
     );
 
-    // TODO: this could be a parameter? Also, we should expose which GPU to select by index, apart than from PowerPreference, which might be quite useful for browser but a bit less in highly optimised environments.
-    let power_pref = wgpu::PowerPreference::None;
-    let backends = wgpu::Backends::all();
-
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        // This fills the remaining items with the "..THING" and the thing itself.
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: power_pref, ..Default::default()
-        })
-        .await
-        .context("No GPU adapter found")?;
+    let instance = create_instance();
+    let adapter = select_adapter(&instance, gpu_device).await?;
+    let info = adapter.get_info();
+    if info.device_type == wgpu::DeviceType::Cpu {
+        log::warn!("{} is a software adapter, not a GPU: expect it to be slow", info.name);
+    }
 
     // Ask for the hardware limits rather than the WebGPU defaults, so the tile ranges and
     // workgroup sizes reflect what this device can actually do
@@ -239,7 +230,7 @@ pub async fn get_distances_wgpu(
         .await
         .context("Failed to get GPU device")?;
 
-    log::info!("Using this GPU: {}", adapter.get_info().name);
+    log::info!("Using this GPU: {} ({:?}, {:?})", info.name, info.device_type, info.backend);
 
     // =============================================
     // SETTING UP DATA!
@@ -668,6 +659,58 @@ pub async fn get_distances_wgpu(
         free_staging.push(staging);
     }
     Ok(())
+}
+
+// Native backends only: with OpenGL too, a GPU would be listed twice
+const GPU_BACKENDS: wgpu::Backends = wgpu::Backends::PRIMARY;
+
+// The wgpu instance behind every GPU entry point
+fn create_instance() -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: GPU_BACKENDS,
+        // This fills the remaining items with the "..THING" and the thing itself.
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    })
+}
+
+// The adapter --gpu N names, by its index in enumerate_adapters() (as --list-gpus shows
+// it); with --gpu alone, the adapter wgpu prefers for performance, a discrete GPU if any
+async fn select_adapter(
+    instance: &wgpu::Instance,
+    gpu_device: Option<usize>,
+) -> anyhow::Result<wgpu::Adapter> {
+    match gpu_device {
+        Some(index) => {
+            let mut adapters = instance.enumerate_adapters(GPU_BACKENDS).await;
+            ensure!(
+                index < adapters.len(),
+                "There is no GPU {index}: `sketchlib dist --list-gpus` lists the {} available",
+                adapters.len()
+            );
+            Ok(adapters.swap_remove(index))
+        }
+        None => instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                ..Default::default()
+            })
+            .await
+            .context("No GPU adapter found"),
+    }
+}
+
+/// The GPUs --gpu N chooses from, one line each, `index: name (type, backend)`, in the
+/// order it numbers them
+pub fn gpu_list() -> Vec<String> {
+    let adapters = pollster::block_on(create_instance().enumerate_adapters(GPU_BACKENDS));
+    adapters
+        .iter()
+        .enumerate()
+        .map(|(index, adapter)| {
+            let info = adapter.get_info();
+            format!("{index}: {} ({:?}, {:?})", info.name, info.device_type, info.backend)
+        })
+        .collect()
 }
 
 // Workgroups needed for all-vs-all: each query row of n - q - 1 references gets its

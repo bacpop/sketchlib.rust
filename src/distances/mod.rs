@@ -232,22 +232,6 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
     completeness_cutoff: f64,
     threads: usize,
 ) -> Result<(), Error> {
-    #[cfg(feature = "wgpu")]
-    {
-        if matches!(dist_type, DistType::Jaccard(..)) {
-            return dists_all_stream_wgpu::<BB, W>(
-                writer,
-                sketches,
-                None,
-                &dist_type,
-                completeness_vec,
-                None,
-                completeness_cutoff,
-            );
-        }
-        log::warn!("The wgpu backend does not support core/accessory distances yet; using the CPU");
-    }
-
     let ani = matches!(dist_type, DistType::Jaccard(_, _, true));
     let k_vals = match dist_type {
         DistType::Jaccard(k_idx, k_val, _) => Some((k_idx, k_val)),
@@ -333,22 +317,25 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
 
 
 /// GPU (wgpu) variant of [`self_dists_all_stream`] (`query_sketches` = None) and
-/// [`cross_dists_all_stream`], for Jaccard distances and ANI. Same line format; pairs come
-/// out tile by tile and chunk by chunk, in no global order, as in the CUDA code.
+/// [`cross_dists_all_stream`], for Jaccard distances and ANI, on GPU `gpu_device` of
+/// [`available_gpus`] (None: wgpu's choice). Same line format; pairs come out tile by tile
+/// and chunk by chunk, in no global order, as in the CUDA code.
 #[cfg(feature = "wgpu")]
-fn dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
+pub fn dists_all_stream_gpu<W: IoWrite + Send>(
     writer: &mut W,
     ref_sketches: &MultiSketch,
     query_sketches: Option<&MultiSketch>,
-    dist_type: &DistType,
+    dist_type: DistType,
     ref_completeness_vec: Option<&Vec<f64>>,
     query_completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
+    gpu_device: Option<usize>,
 ) -> Result<(), Error> {
     let pool_size = rayon::current_num_threads();
     if pool_size < 2 {
         bail!("GPU dense streaming requires a Rayon producer and writer; configure the pool with set_threads_with_writer()");
     }
+    let bin_bits = if ref_sketches.is_legacy_format() { LEGACY_BIN_BITS } else { BIN_BITS };
     let ref_names = <DistanceMatrix as Distances>::sketch_names(ref_sketches);
     let query_names = query_sketches.map(<DistanceMatrix as Distances>::sketch_names);
 
@@ -372,11 +359,12 @@ fn dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
         let gpu_result = pollster::block_on(get_distances_wgpu(
             ref_sketches,
             query_sketches,
-            dist_type,
+            &dist_type,
             ref_completeness_vec,
             query_completeness_vec,
             completeness_cutoff,
-            BB,
+            bin_bits,
+            gpu_device,
             |tile, dists| match &query_names {
                 // Self mode: both sides from the reference set, the lower index first
                 None => tile.consume(dists, &ref_names, &ref_names, false, &text_tx),
@@ -389,6 +377,33 @@ fn dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
         writer_done_rx.recv().context("Distance writer stopped")??;
         gpu_result
     })
+}
+
+/// Stand-in for builds without the `wgpu` feature, so callers need no cfg of their own
+#[cfg(not(feature = "wgpu"))]
+pub fn dists_all_stream_gpu<W: IoWrite + Send>(
+    _writer: &mut W,
+    _ref_sketches: &MultiSketch,
+    _query_sketches: Option<&MultiSketch>,
+    _dist_type: DistType,
+    _ref_completeness_vec: Option<&Vec<f64>>,
+    _query_completeness_vec: Option<&Vec<f64>>,
+    _completeness_cutoff: f64,
+    _gpu_device: Option<usize>,
+) -> Result<(), Error> {
+    bail!("This sketchlib was built without GPU support: rebuild it with --features wgpu")
+}
+
+/// The GPUs [`dists_all_stream_gpu`] can use, one line each, `index: name (type, backend)`
+#[cfg(feature = "wgpu")]
+pub fn available_gpus() -> Result<Vec<String>, Error> {
+    Ok(crate::gpu::dists_wgpu::gpu_list())
+}
+
+/// Stand-in for builds without the `wgpu` feature
+#[cfg(not(feature = "wgpu"))]
+pub fn available_gpus() -> Result<Vec<String>, Error> {
+    bail!("This sketchlib was built without GPU support: rebuild it with --features wgpu")
 }
 
 /// Self query mode (dense, all distances)
@@ -709,22 +724,6 @@ fn cross_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
     completeness_cutoff: f64,
     threads: usize,
 ) -> Result<(), Error> {
-    #[cfg(feature = "wgpu")]
-    {
-        if matches!(dist_type, DistType::Jaccard(..)) {
-            return dists_all_stream_wgpu::<BB, W>(
-                writer,
-                ref_sketches,
-                Some(query_sketches),
-                &dist_type,
-                ref_completeness_vec,
-                query_completeness_vec,
-                completeness_cutoff,
-            );
-        }
-        log::warn!("The wgpu backend does not support core/accessory distances yet; using the CPU");
-    }
-
     let ani = matches!(dist_type, DistType::Jaccard(_, _, true));
     let k_vals = match dist_type {
         DistType::Jaccard(k_idx, k_val, _) => Some((k_idx, k_val)),

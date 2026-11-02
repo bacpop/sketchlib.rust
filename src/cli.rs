@@ -197,8 +197,8 @@ pub enum Commands {
     /// Calculate pairwise distances using sketches
     Dist {
         /// The .skm file used as the reference
-        #[arg(required = true)]
-        ref_db: String,
+        #[arg(required_unless_present = "list_gpus")]
+        ref_db: Option<String>,
 
         /// The .skm file used as the query (omit for ref v ref)
         #[arg(group = "query")]
@@ -240,6 +240,17 @@ pub enum Commands {
         /// minimum completeness for a sample to be corrected but the completeness correction
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
+
+        /// Calculate dense Jaccard/ANI distances on the GPU (needs a build with
+        /// `--features wgpu`): alone, wgpu chooses, preferring a discrete GPU; with N, GPU N
+        /// of --list-gpus. kNN and core/accessory distances stay on the CPU. Give it after
+        /// the databases, or as --gpu=N, as it takes an optional value
+        #[arg(long, num_args = 0..=1, value_name = "N")]
+        gpu: Option<Option<usize>>,
+
+        /// List the GPUs --gpu N can choose from, and exit
+        #[arg(long)]
+        list_gpus: bool,
     },
 
     /// Building and querying with inverted indices (.ski)

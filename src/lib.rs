@@ -154,6 +154,7 @@ use std::time::Instant;
 extern crate arrayref;
 extern crate num_cpus;
 use anyhow::{bail, Error};
+use crate::distances::distance_matrix::DistType;
 #[cfg(not(target_arch = "wasm32"))]
 use indicatif::ParallelProgressIterator;
 #[cfg(not(target_arch = "wasm32"))]
@@ -316,7 +317,19 @@ pub fn main() -> Result<(), Error> {
             ref_completeness_file,
             query_completeness_file,
             completeness_cutoff,
+            gpu,
+            list_gpus,
         } => {
+            if *list_gpus {
+                for gpu_line in available_gpus()? {
+                    println!("{gpu_line}");
+                }
+                return Ok(());
+            }
+            // clap requires it without --list-gpus
+            let Some(ref_db) = ref_db.as_deref() else {
+                bail!("dist needs a reference database");
+            };
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
                 // concurrently with compute (mirrors Sketch/Append/Inverted Build/Query).
@@ -353,6 +366,17 @@ pub fn main() -> Result<(), Error> {
                 panic!("Error setting k size: {e}");
             });
 
+            // The GPU covers dense Jaccard and ANI distances; anything else stays on the CPU.
+            // --gpu alone leaves the device to wgpu (gpu_device = None)
+            if gpu.is_some() && !cfg!(feature = "wgpu") {
+                bail!("This sketchlib was built without GPU support: rebuild it with --features wgpu");
+            }
+            let gpu_device = gpu.flatten();
+            let use_gpu = gpu.is_some() && knn.is_none() && matches!(dist_type, DistType::Jaccard(..));
+            if gpu.is_some() && !use_gpu {
+                log::warn!("--gpu only covers dense Jaccard and ANI distances (-k without --knn) for now; using the CPU");
+            }
+
             // Read queries if supplied. Note no subsetting here
             let queries = if let Some(query_db_name) = query_db {
                 log::info!("Loading query sketches from {query_db_name}.skm/.skd");
@@ -379,16 +403,29 @@ pub fn main() -> Result<(), Error> {
                             // Self mode (dense)
                             log::info!("Calculating all ref vs ref distances");
                             log::info!("Streaming out in long matrix form");
-                            self_dists_all_stream(
-                                &mut output_file,
-                                &references,
-                                n,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                                *threads,
-                            )?;
+                            if use_gpu {
+                                dists_all_stream_gpu(
+                                    &mut output_file,
+                                    &references,
+                                    None,
+                                    dist_type,
+                                    ref_completeness_vec.as_ref(),
+                                    None,
+                                    *completeness_cutoff,
+                                    gpu_device,
+                                )?;
+                            } else {
+                                self_dists_all_stream(
+                                    &mut output_file,
+                                    &references,
+                                    n,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                    *threads,
+                                )?;
+                            }
                         }
                         Some(mut nn) => {
                             // Self mode (sparse): a genome cannot be its own neighbour
@@ -452,19 +489,32 @@ pub fn main() -> Result<(), Error> {
                             // Cross-query mode (dense, all pairs)
                             log::info!("Calculating all ref vs query distances");
                             log::info!("Streaming out in long matrix form");
-                            cross_dists_all_stream(
-                                &mut output_file,
-                                &references,
-                                &query_db,
-                                n,
-                                n_query,
-                                dist_type,
-                                args.quiet,
-                                ref_completeness_vec.as_ref(),
-                                query_completeness_vec.as_ref(),
-                                *completeness_cutoff,
-                                *threads,
-                            )?;
+                            if use_gpu {
+                                dists_all_stream_gpu(
+                                    &mut output_file,
+                                    &references,
+                                    Some(&query_db),
+                                    dist_type,
+                                    ref_completeness_vec.as_ref(),
+                                    query_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                    gpu_device,
+                                )?;
+                            } else {
+                                cross_dists_all_stream(
+                                    &mut output_file,
+                                    &references,
+                                    &query_db,
+                                    n,
+                                    n_query,
+                                    dist_type,
+                                    args.quiet,
+                                    ref_completeness_vec.as_ref(),
+                                    query_completeness_vec.as_ref(),
+                                    *completeness_cutoff,
+                                    *threads,
+                                )?;
+                            }
                         }
                     }
                 }
