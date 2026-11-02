@@ -235,12 +235,13 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
     #[cfg(feature = "wgpu")]
     {
         if matches!(dist_type, DistType::Jaccard(..)) {
-            return self_dists_all_stream_wgpu::<BB, W>(
+            return dists_all_stream_wgpu::<BB, W>(
                 writer,
                 sketches,
-                n,
+                None,
                 &dist_type,
                 completeness_vec,
+                None,
                 completeness_cutoff,
             );
         }
@@ -331,23 +332,25 @@ fn self_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
 }
 
 
-/// GPU (wgpu) variant of [`self_dists_all_stream`] for Jaccard distances and ANI.
-/// Same line format; pairs come out tile by tile and chunk by chunk, in no global order,
-/// as in the CUDA code.
+/// GPU (wgpu) variant of [`self_dists_all_stream`] (`query_sketches` = None) and
+/// [`cross_dists_all_stream`], for Jaccard distances and ANI. Same line format; pairs come
+/// out tile by tile and chunk by chunk, in no global order, as in the CUDA code.
 #[cfg(feature = "wgpu")]
-fn self_dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
+fn dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
     writer: &mut W,
-    sketches: &MultiSketch,
-    n: usize,
+    ref_sketches: &MultiSketch,
+    query_sketches: Option<&MultiSketch>,
     dist_type: &DistType,
-    completeness_vec: Option<&Vec<f64>>,
+    ref_completeness_vec: Option<&Vec<f64>>,
+    query_completeness_vec: Option<&Vec<f64>>,
     completeness_cutoff: f64,
 ) -> Result<(), Error> {
     let pool_size = rayon::current_num_threads();
     if pool_size < 2 {
         bail!("GPU dense streaming requires a Rayon producer and writer; configure the pool with set_threads_with_writer()");
     }
-    let ref_names = <DistanceMatrix as Distances>::sketch_names(sketches);
+    let ref_names = <DistanceMatrix as Distances>::sketch_names(ref_sketches);
+    let query_names = query_sketches.map(<DistanceMatrix as Distances>::sketch_names);
 
     rayon::in_place_scope(|scope| {
         let (text_tx, text_rx) = mpsc::sync_channel::<String>(2 * (pool_size - 1));
@@ -367,13 +370,19 @@ fn self_dists_all_stream_wgpu<const BB: usize, W: IoWrite + Send>(
         writer_started_rx.recv().context("Distance writer failed to start")?;
 
         let gpu_result = pollster::block_on(get_distances_wgpu(
-            sketches,
-            n,
+            ref_sketches,
+            query_sketches,
             dist_type,
-            completeness_vec,
+            ref_completeness_vec,
+            query_completeness_vec,
             completeness_cutoff,
             BB,
-            |tile, dists| tile.consume(dists, &ref_names, &text_tx),
+            |tile, dists| match &query_names {
+                // Self mode: both sides from the reference set, the lower index first
+                None => tile.consume(dists, &ref_names, &ref_names, false, &text_tx),
+                // Query vs ref: the ref sample first, as the CPU code
+                Some(query_names) => tile.consume(dists, query_names, &ref_names, true, &text_tx),
+            },
         ));
         drop(text_tx);
         // A write error explains a "writer stopped" error from the producers, so it goes first
@@ -700,6 +709,22 @@ fn cross_dists_all_stream_generic<const BB: usize, W: IoWrite + Send>(
     completeness_cutoff: f64,
     threads: usize,
 ) -> Result<(), Error> {
+    #[cfg(feature = "wgpu")]
+    {
+        if matches!(dist_type, DistType::Jaccard(..)) {
+            return dists_all_stream_wgpu::<BB, W>(
+                writer,
+                ref_sketches,
+                Some(query_sketches),
+                &dist_type,
+                ref_completeness_vec,
+                query_completeness_vec,
+                completeness_cutoff,
+            );
+        }
+        log::warn!("The wgpu backend does not support core/accessory distances yet; using the CPU");
+    }
+
     let ani = matches!(dist_type, DistType::Jaccard(_, _, true));
     let k_vals = match dist_type {
         DistType::Jaccard(k_idx, k_val, _) => Some((k_idx, k_val)),

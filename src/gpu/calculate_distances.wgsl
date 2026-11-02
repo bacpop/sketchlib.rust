@@ -21,8 +21,8 @@ struct DistanceParams {
     self_comparison: u32, // 4 bytes, offset 80
     use_shared: u32,      // 4 bytes, offset 84
 
-    tilerange_ref_offset: u32,   // 4 bytes, offset 88: first sample of tilerange_ref
-    tilerange_query_offset: u32, // 4 bytes, offset 92: first sample of tilerange_query
+    tilerange_ref_offset: u32,   // 4 bytes, offset 88: tilerange_ref's first sample in `completeness`
+    tilerange_query_offset: u32, // 4 bytes, offset 92: tilerange_query's first sample in `completeness`
 };
 
 // Get your bindings
@@ -33,7 +33,8 @@ struct DistanceParams {
 @group(0) @binding(2) var<storage, read_write> output_dists: array<f32>;
 // k-mer lengths, CUDA's `const int *kmers`
 @group(0) @binding(3) var<storage, read> kmers: array<u32>;
-// Completeness of each sample (only read when USE_COMPLETENESS)
+// Completeness of each ref sample, then (query vs ref) of each query sample (only read when
+// USE_COMPLETENESS)
 @group(0) @binding(4) var<storage, read> completeness: array<f32>;
 // tilerange_query's sketches, CUDA's `query` (the same buffer as ref_sketches in a diagonal tile)
 @group(0) @binding(5) var<storage, read> query_sketches: array<vec2<u32>>;

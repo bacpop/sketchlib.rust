@@ -63,8 +63,8 @@ struct DistanceParams {            // 96 BYTES
     self_comparison: u32,         // 4 bytes
     use_shared: u32,              // 4 bytes
 
-    tilerange_ref_offset: u32,    // 4 bytes: first sample of tilerange_ref
-    tilerange_query_offset: u32,  // 4 bytes: first sample of tilerange_query
+    tilerange_ref_offset: u32,    // 4 bytes: tilerange_ref's first sample in the completeness values
+    tilerange_query_offset: u32,  // 4 bytes: tilerange_query's first sample in the completeness values
 }
 
 // NOTE on padding: we have 16 bytes WORDS we must align to.
@@ -90,7 +90,16 @@ struct InterleaveParams { // 16 BYTES
 struct DistsPipeline {
     pipeline: wgpu::ComputePipeline,
     diagonal_bg: wgpu::BindGroup,
-    off_diagonal_bg: wgpu::BindGroup,
+    off_diagonal_bg: Option<wgpu::BindGroup>, // only with a ref side
+}
+
+// The ref side of the off-diagonal tiles: a tile range as stored and interleaved, with its
+// interleave parameters and bind group
+struct RefSideBuffers {
+    raw: wgpu::Buffer,
+    interleaved: wgpu::Buffer,
+    params: wgpu::Buffer,
+    interleave_bg: wgpu::BindGroup,
 }
 
 /// One pair of tile ranges, computed in one dispatch (the CUDA code's `DistTile`).
@@ -127,11 +136,15 @@ impl DistTile {
     }
 
     /// Formats this tile's distances in parallel chunks of text, each sent to the writer
-    /// as soon as it is ready, in no particular order (the CUDA code's consume(), dense mode)
+    /// as soon as it is ready, in no particular order (the CUDA code's consume(), dense mode).
+    /// Lines start with the ref sample if `ref_first` (query vs ref, as the CPU code), or
+    /// else with the query one (self mode: the lower index first, as the CPU code)
     pub fn consume(
         &self,
         distances: &[f32],
-        names: &[&str],
+        query_names: &[&str],
+        ref_names: &[&str],
+        ref_first: bool,
         text_tx: &SyncSender<String>,
     ) -> anyhow::Result<()> {
         let n_ref = self.tilerange_ref.len();
@@ -142,12 +155,13 @@ impl DistTile {
                 let (mut i, mut j) = self.dist_pair_indices(chunk_idx * DENSE_CHUNK_SIZE);
                 let mut text = String::with_capacity(chunk.len() * 24);
                 for &distance in chunk {
-                    writeln!(
-                        text,
-                        "{}\t{}\t{distance}",
-                        names[self.tilerange_query.start + i],
-                        names[self.tilerange_ref.start + j]
-                    )?;
+                    let query_name = query_names[self.tilerange_query.start + i];
+                    let ref_name = ref_names[self.tilerange_ref.start + j];
+                    if ref_first {
+                        writeln!(text, "{ref_name}\t{query_name}\t{distance}")?;
+                    } else {
+                        writeln!(text, "{query_name}\t{ref_name}\t{distance}")?;
+                    }
                     j += 1;
                     if j == n_ref {
                         i += 1;
@@ -160,15 +174,17 @@ impl DistTile {
 }
 
 
-/// All-vs-all Jaccard distances (or ANI), computed tile by tile as in the CUDA code, with up
+/// Jaccard distances (or ANI), all-vs-all within `ref_sketches` (self mode) or between
+/// `query_sketches` and `ref_sketches`, computed tile by tile as in the CUDA code, with up
 /// to MAX_IN_FLIGHT_TILES tiles queued on the GPU. `on_tile` gets every tile's distances as
 /// soon as they are read back, in the kernel's dist_idx order within the tile
 // TODO: subject to a potential renaming to make everything more uniform and synch with CPU's and CUDA's code, so that it's not a nightmare to support all
 pub async fn get_distances_wgpu(
-    sketches: &MultiSketch,
-    n: usize, // number of samples
+    ref_sketches: &MultiSketch,
+    query_sketches: Option<&MultiSketch>, // None: all-vs-all within ref_sketches (self mode)
     dist_type: &DistType,
-    completeness_vec: Option<&Vec<f64>>,
+    ref_completeness_vec: Option<&Vec<f64>>,
+    query_completeness_vec: Option<&Vec<f64>>, // only read with query_sketches
     completeness_cutoff: f64,
     bin_bits: usize, // BB chosen by the CPU dispatch: BIN_BITS, or LEGACY_BIN_BITS
     mut on_tile: impl FnMut(&DistTile, &[f32]) -> anyhow::Result<()>,
@@ -176,13 +192,23 @@ pub async fn get_distances_wgpu(
     let &DistType::Jaccard(k_idx, _, ani) = dist_type else {
         bail!("The wgpu backend only supports Jaccard distances for now");
     };
+    // Self mode is the reference set against itself, as both the query and the ref side
+    let self_mode = query_sketches.is_none();
+    let query_sketches = query_sketches.unwrap_or(ref_sketches);
+    let n_ref = ref_sketches.number_samples_loaded();
+    let n_query = query_sketches.number_samples_loaded();
     // No pairs, and wgpu rejects zero-sized buffers
-    if n < 2 {
+    if n_ref == 0 || n_query == 0 || (self_mode && n_ref < 2) {
         return Ok(());
     }
     ensure!(
-        k_idx < sketches.kmer_lengths().len(),
+        k_idx < ref_sketches.kmer_lengths().len(),
         "k-mer index {k_idx} out of range"
+    );
+    // Both sets are read with one layout and the same k-mer index
+    ensure!(
+        ref_sketches.is_compatible_with(query_sketches),
+        "Reference and query sketches differ in k-mer lengths, sketch size, hash type or format"
     );
 
     // TODO: this could be a parameter? Also, we should expose which GPU to select by index, apart than from PowerPreference, which might be quite useful for browser but a bit less in highly optimised environments.
@@ -242,16 +268,22 @@ pub async fn get_distances_wgpu(
     let default_workgroup_size =
         DEFAULT_WORKGROUP_SIZE.min(max_workgroup_size) / subgroup_size * subgroup_size;
 
-    // Sketches as stored, [sample][k-mer][bin]: CUDA's get_strides()
-    let (_, n_bins, words_per_sample) = sketches.get_strides();
-    let n_kmers = sketches.kmer_lengths().len();
-    let all_sketches = sketches.get_sketch_all();
+    // Sketches as stored, [sample][k-mer][bin]: CUDA's get_strides() (the same for both
+    // sets, as they are compatible)
+    let (_, n_bins, words_per_sample) = ref_sketches.get_strides();
+    let n_kmers = ref_sketches.kmer_lengths().len();
 
     // Tiles, as the CUDA code's DistTile: tile ranges balanced to at most
-    // max_tilerange_size() samples, so that every tile fits this device in one dispatch
-    let n_tileranges = n.div_ceil(max_tilerange_size(&limits, default_workgroup_size, words_per_sample)?);
-    let tilerange_size = n.div_ceil(n_tileranges);
-    let tiles = make_tiles(n, tilerange_size);
+    // max_tilerange_size() samples, so that every tile fits this device in one dispatch.
+    // Self mode takes the upper triangle of tiles; query vs ref, every pair of tile ranges
+    let max_size = max_tilerange_size(&limits, default_workgroup_size, words_per_sample)?;
+    let tileranges_query = balanced_tileranges(n_query, max_size);
+    let tileranges_ref = if self_mode {
+        tileranges_query.clone()
+    } else {
+        balanced_tileranges(n_ref, max_size)
+    };
+    let tiles = make_tiles(&tileranges_query, &tileranges_ref, self_mode);
     // Per tile, the workgroup size with the fewest idle invocations, or CUDA's for every tile
     let tile_workgroup_sizes = tiles
         .iter()
@@ -267,49 +299,76 @@ pub async fn get_distances_wgpu(
     distinct_sizes.sort_unstable();
     distinct_sizes.dedup();
     log::info!(
-        "{} tile(s), from {n_tileranges} tile range(s) of up to {tilerange_size} samples; workgroup sizes {distinct_sizes:?} (subgroups of up to {subgroup_size}, device maximum {max_workgroup_size})",
-        tiles.len()
+        "{} tile(s), from {} query and {} ref tile range(s) of up to {} and {} samples; workgroup sizes {distinct_sizes:?} (subgroups of up to {subgroup_size}, device maximum {max_workgroup_size})",
+        tiles.len(),
+        tileranges_query.len(),
+        tileranges_ref.len(),
+        tileranges_query[0].len(),
+        tileranges_ref[0].len(),
     );
 
-    // Every tile range is interleaved with the same strides
-    let strides = tilerange_strides(sketches, tilerange_size, bin_bits)?;
+    // Every query tile range is interleaved with the same strides, and every ref one too
+    // (both the same in self mode)
+    let query_strides = tilerange_strides(query_sketches, tileranges_query[0].len(), bin_bits)?;
+    let ref_strides = tilerange_strides(ref_sketches, tileranges_ref[0].len(), bin_bits)?;
 
     // Single k-mer: CUDA would pass `ref + k_idx * kmer_stride`, `kmers + k_idx` and
     // kmer_n = 1. WGSL has no pointer arithmetic, so the offset goes into the binding.
     // We essentially pass as buffer the vector of k values.
-    let kmers = [u32::try_from(sketches.kmer_lengths()[k_idx])?];
-    let kmer_offset_bytes =
-        u64::try_from(k_idx)? * u64::from(strides.kmer_stride) * std::mem::size_of::<u64>() as u64;
-    // bin_stride is a multiple of 32 words (256 bytes), which satisfies every adapter
-    assert!(
-        kmer_offset_bytes % u64::from(limits.min_storage_buffer_offset_alignment) == 0,
-        "k-mer offset of {kmer_offset_bytes} bytes is not aligned to {}",
-        limits.min_storage_buffer_offset_alignment
-    );
+    let kmers = [u32::try_from(ref_sketches.kmer_lengths()[k_idx])?];
+    let kmer_offset = |strides: &SketchStrides| -> anyhow::Result<u64> {
+        let offset = u64::try_from(k_idx)? * u64::from(strides.kmer_stride) * std::mem::size_of::<u64>() as u64;
+        // bin_stride is a multiple of 32 words (256 bytes), which satisfies every adapter
+        assert!(
+            offset % u64::from(limits.min_storage_buffer_offset_alignment) == 0,
+            "k-mer offset of {offset} bytes is not aligned to {}",
+            limits.min_storage_buffer_offset_alignment
+        );
+        Ok(offset)
+    };
+    let query_kmer_offset = kmer_offset(&query_strides)?;
+    let ref_kmer_offset = kmer_offset(&ref_strides)?;
 
-    let completeness: Vec<f32> = match completeness_vec {
-        Some(cv) => {
+    // As the CPU code, a pair is corrected only when both of its samples have a value. One
+    // array holds every ref sample's, then (query vs ref) every query sample's; the tiles
+    // index it with their offsets
+    let use_completeness =
+        ref_completeness_vec.is_some() && (self_mode || query_completeness_vec.is_some());
+    let query_completeness_start = if self_mode { 0 } else { n_ref };
+    let completeness: Vec<f32> = match ref_completeness_vec {
+        Some(ref_cv) if use_completeness => {
             ensure!(
-                cv.len() == n,
-                "{} completeness values for {n} samples",
-                cv.len()
+                ref_cv.len() == n_ref,
+                "{} completeness values for {n_ref} reference samples",
+                ref_cv.len()
             );
-            cv.iter().map(|&c| c as f32).collect()
+            let query_cv: &[f64] = match query_completeness_vec {
+                Some(query_cv) if !self_mode => {
+                    ensure!(
+                        query_cv.len() == n_query,
+                        "{} completeness values for {n_query} query samples",
+                        query_cv.len()
+                    );
+                    query_cv
+                }
+                _ => &[],
+            };
+            ref_cv.iter().chain(query_cv).map(|&c| c as f32).collect()
         }
         // Never read with USE_COMPLETENESS = false, but the binding must exist
-        None => vec![1.0],
+        _ => vec![1.0],
     };
 
     // Query sketch in workgroup memory if it fits, as CUDA's check_shared_size()
     // Right now, "query" is also a reference, because we only have all vs all
-    let query_words = strides.sketchsize64 * strides.bbits;
+    let query_words = query_strides.sketchsize64 * query_strides.bbits;
     let query_bytes = u64::from(query_words) * std::mem::size_of::<u64>() as u64;
     let use_shared = query_bytes <= u64::from(limits.max_compute_workgroup_storage_size);
     if !use_shared {
         log::warn!(
             "You are using a sketch size that doesn't allow us to use a memory optimisation for the GPGPU code. This might slow down computation on this device. Reduce sketch size to {} or less for better performance",
             64 * u64::from(limits.max_compute_workgroup_storage_size)
-                / (u64::from(strides.bbits) * std::mem::size_of::<u64>() as u64)
+                / (u64::from(query_strides.bbits) * std::mem::size_of::<u64>() as u64)
         );
     }
     log::info!(
@@ -360,9 +419,9 @@ pub async fn get_distances_wgpu(
     };
 
     let word_bytes = std::mem::size_of::<u64>() as u64;
-    // One tile range as stored, and interleaved (samples padded to bin_stride)
-    let raw_tilerange_bytes = (tilerange_size * words_per_sample) as u64 * word_bytes;
-    let interleaved_tilerange_words = u64::from(strides.kmer_stride) * n_kmers as u64;
+    // A tile range as stored, and interleaved (samples padded to bin_stride), per side
+    let raw_bytes = |tileranges: &[Range<usize>]| (tileranges[0].len() * words_per_sample) as u64 * word_bytes;
+    let interleaved_words = |strides: &SketchStrides| u64::from(strides.kmer_stride) * n_kmers as u64;
     // Sized for the largest tile, and reused by every tile
     let output_bytes = tiles.iter().map(DistTile::n_distances).max().unwrap_or(0) as u64
         * std::mem::size_of::<f32>() as u64;
@@ -370,14 +429,11 @@ pub async fn get_distances_wgpu(
     // Parameters, written by each tile before its dispatches
     let input_parameters_gpu = create_gpu_buffer("input_parameters_gpu", std::mem::size_of::<DistanceParams>() as u64, use_uniform);
     let interleave_query_params_gpu = create_gpu_buffer("interleave_query_params_gpu", std::mem::size_of::<InterleaveParams>() as u64, use_uniform);
-    let interleave_ref_params_gpu = create_gpu_buffer("interleave_ref_params_gpu", std::mem::size_of::<InterleaveParams>() as u64, use_uniform);
 
-    // The tile's two tile ranges as stored (the CUDA code's h2d() of query_bins and
-    // ref_bins), and interleaved by interleave_sketches.wgsl
-    let tilerange_query_raw_gpu = create_gpu_buffer("tilerange_query_raw_gpu", raw_tilerange_bytes, use_input);
-    let tilerange_ref_raw_gpu = create_gpu_buffer("tilerange_ref_raw_gpu", raw_tilerange_bytes, use_input);
-    let tilerange_query_gpu = create_gpu_buffer("tilerange_query_gpu", interleaved_tilerange_words * word_bytes, wgpu::BufferUsages::STORAGE);
-    let tilerange_ref_gpu = create_gpu_buffer("tilerange_ref_gpu", interleaved_tilerange_words * word_bytes, wgpu::BufferUsages::STORAGE);
+    // The tile's query tile range as stored (the CUDA code's h2d() of query_bins), and
+    // interleaved by interleave_sketches.wgsl. The ref side's are created further down
+    let tilerange_query_raw_gpu = create_gpu_buffer("tilerange_query_raw_gpu", raw_bytes(&tileranges_query), use_input);
+    let tilerange_query_gpu = create_gpu_buffer("tilerange_query_gpu", interleaved_words(&query_strides) * word_bytes, wgpu::BufferUsages::STORAGE);
 
     // the k values
     let input_kmers_gpu = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -414,7 +470,17 @@ pub async fn get_distances_wgpu(
         })
     };
     let interleave_query_bg = create_interleave_bind_group(&interleave_query_params_gpu, &tilerange_query_raw_gpu, &tilerange_query_gpu);
-    let interleave_ref_bg = create_interleave_bind_group(&interleave_ref_params_gpu, &tilerange_ref_raw_gpu, &tilerange_ref_gpu);
+
+    // The ref side only exists if some tile compares two tile ranges: always query vs ref,
+    // and in self mode only with more than one tile range. pp-sketchlib's DeviceMemory
+    // skips its query arrays in self mode the same way
+    let ref_side: Option<RefSideBuffers> = tiles.iter().any(|tile| !tile.diagonal).then(|| {
+        let params = create_gpu_buffer("interleave_ref_params_gpu", std::mem::size_of::<InterleaveParams>() as u64, use_uniform);
+        let raw = create_gpu_buffer("tilerange_ref_raw_gpu", raw_bytes(&tileranges_ref), use_input);
+        let interleaved = create_gpu_buffer("tilerange_ref_gpu", interleaved_words(&ref_strides) * word_bytes, wgpu::BufferUsages::STORAGE);
+        let interleave_bg = create_interleave_bind_group(&params, &raw, &interleaved);
+        RefSideBuffers { raw, interleaved, params, interleave_bg }
+    });
 
     // One distance pipeline per workgroup size in use. WGSL fixes the workgroup size when
     // the pipeline is created, as CUDA does at each launch
@@ -427,7 +493,7 @@ pub async fn get_distances_wgpu(
             // Every loader must be inside the workgroup, or some words would never be copied
             ("QUERY_LOADERS", f64::from(QUERY_LOADERS.min(workgroup_size))),
             ("ANI", f64::from(u8::from(ani))),
-            ("USE_COMPLETENESS", f64::from(u8::from(completeness_vec.is_some()))),
+            ("USE_COMPLETENESS", f64::from(u8::from(use_completeness))),
             ("COMPLETENESS_CUTOFF", completeness_cutoff),
         ];
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -441,7 +507,7 @@ pub async fn get_distances_wgpu(
             },
             cache: Default::default(),
         });
-        let create_dists_bind_group = |ref_sketches: &wgpu::Buffer| {
+        let create_dists_bind_group = |ref_sketches: &wgpu::Buffer, ref_sketches_offset: u64| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &pipeline.get_bind_group_layout(0),
@@ -455,7 +521,7 @@ pub async fn get_distances_wgpu(
                         // The host-side pointer arithmetic: start at the selected k-mer
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: ref_sketches,
-                            offset: kmer_offset_bytes, // This is for ONLY Jaccard distances. For when we implement core/acc, we'd need to go over all kmers, but not yet.
+                            offset: ref_sketches_offset, // This is for ONLY Jaccard distances. For when we implement core/acc, we'd need to go over all kmers, but not yet.
                             size: None,
                         }),
                     },
@@ -472,7 +538,7 @@ pub async fn get_distances_wgpu(
                         binding: 5,
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer: &tilerange_query_gpu,
-                            offset: kmer_offset_bytes,
+                            offset: query_kmer_offset,
                             size: None,
                         }),
                     },
@@ -480,8 +546,11 @@ pub async fn get_distances_wgpu(
             })
         };
         DistsPipeline {
-            off_diagonal_bg: create_dists_bind_group(&tilerange_ref_gpu),
-            diagonal_bg: create_dists_bind_group(&tilerange_query_gpu),
+            off_diagonal_bg: ref_side
+                .as_ref()
+                .map(|ref_side| create_dists_bind_group(&ref_side.interleaved, ref_kmer_offset)),
+            // Self mode only: the one tile range, through both bindings
+            diagonal_bg: create_dists_bind_group(&tilerange_query_gpu, query_kmer_offset),
             pipeline,
         }
     };
@@ -490,11 +559,7 @@ pub async fn get_distances_wgpu(
         .map(|&size| (size, create_dists_pipeline(size)))
         .collect();
 
-    // The words of a tile range as stored, the CUDA code's query_bins and ref_bins
-    let raw_words = |tilerange: &Range<usize>| {
-        &all_sketches[tilerange.start * words_per_sample..tilerange.end * words_per_sample]
-    };
-    let interleave_params = |tilerange: &Range<usize>| -> anyhow::Result<InterleaveParams> {
+    let interleave_params = |tilerange: &Range<usize>, strides: &SketchStrides| -> anyhow::Result<InterleaveParams> {
         Ok(InterleaveParams {
             n_samples: u32::try_from(tilerange.len())?,
             n_kmers: u32::try_from(n_kmers)?,
@@ -503,9 +568,11 @@ pub async fn get_distances_wgpu(
         })
     };
     // The shader loops over its own invocations, so this stays within the workgroup limit
-    let interleave_workgroups = interleaved_tilerange_words
-        .div_ceil(u64::from(default_workgroup_size))
-        .min(max_workgroups) as u32;
+    let interleave_workgroups = |strides: &SketchStrides| {
+        interleaved_words(strides)
+            .div_ceil(u64::from(default_workgroup_size))
+            .min(max_workgroups) as u32
+    };
 
     // The CUDA code's loop over tiles (src/gpu/mod.rs:635-712), without streams: up to
     // n_slots tiles queued on the GPU, each handed to on_tile once read back. The queue runs
@@ -518,18 +585,25 @@ pub async fn get_distances_wgpu(
             let Some((tile, &workgroup_size)) = tiles_left.next() else { break };
             let staging = free_staging.pop().unwrap();
 
+            // The ref side, for an off-diagonal tile
+            let tile_ref_side = if tile.diagonal {
+                None
+            } else {
+                Some(ref_side.as_ref().context("Off-diagonal tile without ref-side buffers")?)
+            };
+
             // Upload the tile ranges (the CUDA code's h2d()); a diagonal tile has just one
-            queue.write_buffer(&tilerange_query_raw_gpu, 0, bytemuck::cast_slice(raw_words(&tile.tilerange_query)));
-            queue.write_buffer(&interleave_query_params_gpu, 0, bytemuck::bytes_of(&interleave_params(&tile.tilerange_query)?));
-            if !tile.diagonal {
-                queue.write_buffer(&tilerange_ref_raw_gpu, 0, bytemuck::cast_slice(raw_words(&tile.tilerange_ref)));
-                queue.write_buffer(&interleave_ref_params_gpu, 0, bytemuck::bytes_of(&interleave_params(&tile.tilerange_ref)?));
+            queue.write_buffer(&tilerange_query_raw_gpu, 0, bytemuck::cast_slice(tilerange_words(query_sketches, &tile.tilerange_query, words_per_sample)));
+            queue.write_buffer(&interleave_query_params_gpu, 0, bytemuck::bytes_of(&interleave_params(&tile.tilerange_query, &query_strides)?));
+            if let Some(ref_side) = tile_ref_side {
+                queue.write_buffer(&ref_side.raw, 0, bytemuck::cast_slice(tilerange_words(ref_sketches, &tile.tilerange_ref, words_per_sample)));
+                queue.write_buffer(&ref_side.params, 0, bytemuck::bytes_of(&interleave_params(&tile.tilerange_ref, &ref_strides)?));
             }
 
             let n_distances = tile.n_distances();
             let params = DistanceParams {
-                ref_strides:     strides,
-                query_strides:   strides,
+                ref_strides,     // the same as query_strides in self mode, so diagonal tiles can use either
+                query_strides,
                 ref_n:           u32::try_from(tile.tilerange_ref.len())?,
                 query_n:         u32::try_from(tile.tilerange_query.len())?,
                 kmer_n:          1, // single k-mer, selected by the binding offset
@@ -537,7 +611,7 @@ pub async fn get_distances_wgpu(
                 self_comparison: u32::from(tile.diagonal), // bools are not supported in structs to parse them to wgsl
                 use_shared:      u32::from(use_shared),
                 tilerange_ref_offset:   u32::try_from(tile.tilerange_ref.start)?,
-                tilerange_query_offset: u32::try_from(tile.tilerange_query.start)?,
+                tilerange_query_offset: u32::try_from(query_completeness_start + tile.tilerange_query.start)?,
             };
             queue.write_buffer(&input_parameters_gpu, 0, bytemuck::bytes_of(&params));
 
@@ -547,15 +621,22 @@ pub async fn get_distances_wgpu(
                 // Reorder on the GPU, as the CUDA code's interleave_sketches
                 pass.set_pipeline(&interleave_pipeline);
                 pass.set_bind_group(0, &interleave_query_bg, &[]);
-                pass.dispatch_workgroups(interleave_workgroups, 1, 1);
-                if !tile.diagonal {
-                    pass.set_bind_group(0, &interleave_ref_bg, &[]);
-                    pass.dispatch_workgroups(interleave_workgroups, 1, 1);
+                pass.dispatch_workgroups(interleave_workgroups(&query_strides), 1, 1);
+                if let Some(ref_side) = tile_ref_side {
+                    pass.set_bind_group(0, &ref_side.interleave_bg, &[]);
+                    pass.dispatch_workgroups(interleave_workgroups(&ref_strides), 1, 1);
                 }
                 // Distances, with this tile's workgroup size
                 let dists = &dists_pipelines[&workgroup_size];
                 pass.set_pipeline(&dists.pipeline);
-                pass.set_bind_group(0, if tile.diagonal { &dists.diagonal_bg } else { &dists.off_diagonal_bg }, &[]);
+                let dists_bg = match tile_ref_side {
+                    None => &dists.diagonal_bg,
+                    Some(_) => dists
+                        .off_diagonal_bg
+                        .as_ref()
+                        .context("Off-diagonal tile without its bind group")?,
+                };
+                pass.set_bind_group(0, dists_bg, &[]);
                 pass.dispatch_workgroups(u32::try_from(tile_workgroups(tile, workgroup_size)?)?, 1, 1);
             } // THis scope is needed because we need to drop pass. We could also drop pass manually
             // Only this tile's distances go back through its staging/intermediate buffer
@@ -621,21 +702,32 @@ fn max_tilerange_size(
         .context("This device can't fit a tile of two samples")
 }
 
-// Tile ranges of tilerange_size samples (the last may be smaller). Tiles are the pairs of
-// tile ranges i <= j in row-major order, as the CUDA code's tile index; tiles without pairs
-// (a tile range of one sample against itself) are dropped, as CUDA does
-fn make_tiles(n: usize, tilerange_size: usize) -> Vec<DistTile> {
-    let tileranges: Vec<Range<usize>> = (0..n)
+// Tile ranges of at most max_size samples, balanced: ceil(n / max_size) ranges, all the same
+// size but the last, which may be smaller
+fn balanced_tileranges(n: usize, max_size: usize) -> Vec<Range<usize>> {
+    let tilerange_size = n.div_ceil(n.div_ceil(max_size));
+    (0..n)
         .step_by(tilerange_size)
         .map(|start| start..n.min(start + tilerange_size))
-        .collect();
+        .collect()
+}
+
+// Tiles in row-major order, as the CUDA code's tile index: in self mode the pairs of tile
+// ranges i <= j (the others mirror them), and query vs ref every pair. Tiles without pairs
+// (a tile range of one sample against itself) are dropped, as CUDA does
+fn make_tiles(
+    tileranges_query: &[Range<usize>],
+    tileranges_ref: &[Range<usize>],
+    self_mode: bool,
+) -> Vec<DistTile> {
     let mut tiles = Vec::new();
-    for (i, tilerange_query) in tileranges.iter().enumerate() {
-        for (j, tilerange_ref) in tileranges.iter().enumerate().skip(i) {
+    for (i, tilerange_query) in tileranges_query.iter().enumerate() {
+        let first_ref = if self_mode { i } else { 0 };
+        for (j, tilerange_ref) in tileranges_ref.iter().enumerate().skip(first_ref) {
             let tile = DistTile {
                 tilerange_query: tilerange_query.clone(),
                 tilerange_ref: tilerange_ref.clone(),
-                diagonal: i == j,
+                diagonal: self_mode && i == j,
             };
             if tile.n_distances() > 0 {
                 tiles.push(tile);
@@ -643,6 +735,15 @@ fn make_tiles(n: usize, tilerange_size: usize) -> Vec<DistTile> {
         }
     }
     tiles
+}
+
+// The words of a tile range as stored, the CUDA code's query_bins and ref_bins
+fn tilerange_words<'a>(
+    sketches: &'a MultiSketch,
+    tilerange: &Range<usize>,
+    words_per_sample: usize,
+) -> &'a [u64] {
+    &sketches.get_sketch_all()[tilerange.start * words_per_sample..tilerange.end * words_per_sample]
 }
 
 // Workgroups for one tile: CUDA's getBlockSize() (dist.cu:326-347)
