@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Sequential CUDA smoke/CPU comparisons, run remotely as a non-root user.
+"""Sequential local CUDA smoke/CPU comparisons, run as a non-root user.
 
-Build first with CUDA_HOME=/usr/local/cuda-13.4 cargo oxide build, then run:
+Build first with CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build, then run:
   python3 scripts/validate_gpu_distances.py --dataset 1k_subset --gpu 0
 
 Outputs, fixtures, command logs and report.json stay in the printed temporary
 directory. No Cargo test harness, progress/quiet checks or precision-boundary
-checks are used. Remote commands require the user's approval before launch.
+checks are used.
 """
 
 import argparse
@@ -133,9 +133,10 @@ def main():
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--dataset", default="1k_subset")
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--kmer", type=int, default=21)
     args = parser.parse_args()
     if os.geteuid() == 0:
-        raise RuntimeError("Run this validation as jlees, never root")
+        raise RuntimeError("Run this validation as a non-root user")
     repo = args.repo.resolve()
     binary = repo / "target/release/sketchlib"
     work = Path(tempfile.mkdtemp(prefix="sketchlib-cuda-async-"))
@@ -145,7 +146,7 @@ def main():
     def distance_run(label, subset=None, ani=False, sparse=False, mixed=False,
                      gpu=False, batch=None, threads=1, expected_failure=False):
         output = Path("/dev/full") if expected_failure else work / f"{label}.tsv"
-        command = [binary, "dist", "-o", output, "-k", "21", "-v",
+        command = [binary, "dist", "-o", output, "-k", str(args.kmer), "-v",
                    "--threads", str(threads)]
         if sparse:
             command += ["--knn", str(KNN)]

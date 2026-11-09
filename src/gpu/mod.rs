@@ -492,6 +492,8 @@ impl DistTile {
 /// Direct callers must configure Rayon as for CPU streaming: dense mode needs
 /// at least two workers, with one reserved for the writer; kNN needs no reservation.
 /// CPU tasks within and across tiles share that pool independently of the tile limit.
+/// Sketches must be loaded with `MultiSketch::read_sketch_data_pinned()` or
+/// `MultiSketch::read_sketch_data_block_pinned()`; ordinary host storage is rejected.
 pub fn self_dists_stream<W: IoWrite + Send>(
     writer: &mut W,
     sketches: &MultiSketch,
@@ -526,16 +528,14 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         return Err(anyhow!("GPU dense streaming requires a Rayon producer and writer; configure the pool with set_threads_with_writer()"));
     }
 
+    let pinned_sketches = Arc::clone(sketches.pinned_sketches().context(
+        "GPU distances require pinned sketches; use read_sketch_data_pinned() or read_sketch_data_block_pinned()",
+    )?);
+
     init_device_contexts(gpu_device_id, 1)?;
     // SAFETY: this crate owns the embedded bundle for the kernels above.
     let module = unsafe { kernels::load_async(gpu_device_id)? };
     let kmers_dev = h2d(sketches.kmer_lengths()).arc().sync()?;
-
-    // This full pinned copy could be replaced by a reusable copy buffer in future
-    // to reduce host memory use, at the cost of staging sketch blocks repeatedly.
-    let pinned_sketches = Arc::new(with_cuda_context(gpu_device_id, |ctx| {
-        PinnedHostBuffer::from_slice(ctx, sketches.get_sketch_all())
-    })??);
 
     // A disabled correction still passes a valid buffer to the typed launch;
     // its single placeholder value is never indexed by the kernel.

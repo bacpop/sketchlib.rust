@@ -6,6 +6,13 @@ use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::mem;
+#[cfg(feature = "gpu")]
+use std::sync::Arc;
+
+#[cfg(feature = "gpu")]
+use cuda_async::device_context::with_cuda_context;
+#[cfg(feature = "gpu")]
+use cuda_core::PinnedHostBuffer;
 
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
@@ -20,6 +27,30 @@ use super::sketch_datafile::append_batch;
 /// Minimum supported .skd/.skm format version. The on-disk `MultiSketch` layout
 /// changed as of v0.4, so files written by older versions cannot be loaded.
 pub const MIN_SKETCH_VERSION: (u64, u64, u64) = (0, 4, 0);
+
+/// Final host allocation, selected before reading sketch data.
+#[derive(Debug)]
+enum SketchStorage {
+    Cpu(SketchVec),
+    #[cfg(feature = "gpu")]
+    Pinned(Arc<PinnedHostBuffer<u64>>),
+}
+
+impl Default for SketchStorage {
+    fn default() -> Self {
+        Self::Cpu(aligned_sketch_vec())
+    }
+}
+
+impl SketchStorage {
+    fn as_slice(&self) -> &[u64] {
+        match self {
+            Self::Cpu(words) => words,
+            #[cfg(feature = "gpu")]
+            Self::Pinned(words) => words,
+        }
+    }
+}
 
 /// Parses a `major.minor.patch` version string, returning `None` if it is
 /// missing or malformed (which covers files predating the `sketch_version` field).
@@ -47,8 +78,8 @@ pub struct MultiSketch {
     // NB: another way to do this is with the ouroboros crate, which allows this to reference self
     // But this requires manual impl for ser and deser, and does the same indirection as an index anyway so not worth it
     block_reindex: Option<Vec<usize>>,
-    #[serde(skip, default = "aligned_sketch_vec")]
-    sketch_bins: SketchVec,
+    #[serde(skip)]
+    sketch_bins: SketchStorage,
     bin_stride: usize,
     kmer_stride: usize,
     sample_stride: usize,
@@ -82,7 +113,7 @@ impl MultiSketch {
             sketch_metadata: mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins: aligned_sketch_vec(),
+            sketch_bins: SketchStorage::default(),
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
@@ -125,7 +156,7 @@ impl MultiSketch {
             sketch_metadata: std::mem::take(sketches),
             name_map,
             block_reindex: None,
-            sketch_bins,
+            sketch_bins: SketchStorage::Cpu(sketch_bins),
             bin_stride: 1,
             kmer_stride,
             sample_stride: kmer_stride * kmer_lengths.len(),
@@ -275,24 +306,17 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride,
         );
-        self.sketch_bins =
-            sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len());
+        self.sketch_bins = SketchStorage::Cpu(
+            sketch_reader.read_all_from_skd(self.sample_stride * self.sketch_metadata.len()),
+        );
+        self.block_reindex = None;
     }
 
     /// Read a subset of the bins from an .skd file, in a memory efficient manner
     pub fn read_sketch_data_block(&mut self, file_prefix: &str, names: &[String]) {
-        // Find the given names in the sketch metadata
-        let mut block_reindex = Vec::with_capacity(names.len());
-        let mut read_indices = Vec::with_capacity(names.len());
-        for name in names {
-            if let Some(sketch_idx) = self.name_map.get(name) {
-                read_indices.push(self.sketch_metadata[*sketch_idx].get_index());
-                block_reindex.push(*sketch_idx);
-            } else {
-                panic!("Could not find requested sample {name} in sketch metadata");
-            }
-        }
-        self.block_reindex = Some(block_reindex);
+        let (block_reindex, read_indices) = self
+            .subset_indices(names)
+            .expect("Could not resolve selected sketch names");
 
         let filename = format!("{file_prefix}.skd");
         let sketch_reader = SketchArrayReader::open(
@@ -302,21 +326,93 @@ impl MultiSketch {
             self.kmer_stride,
             self.sample_stride,
         );
-        self.sketch_bins = sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride);
+        self.sketch_bins = SketchStorage::Cpu(
+            sketch_reader.read_batch_from_skd(&read_indices, self.sample_stride),
+        );
+        self.block_reindex = Some(block_reindex);
+    }
+
+    fn subset_indices(&self, names: &[String]) -> Result<(Vec<usize>, Vec<usize>)> {
+        // Find the given names in the sketch metadata
+        let mut block_reindex = Vec::with_capacity(names.len());
+        let mut read_indices = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(sketch_idx) = self.name_map.get(name) {
+                read_indices.push(self.sketch_metadata[*sketch_idx].get_index());
+                block_reindex.push(*sketch_idx);
+            } else {
+                bail!("Could not find requested sample {name} in sketch metadata");
+            }
+        }
+        Ok((block_reindex, read_indices))
+    }
+
+    /// Read all sketch data directly into pinned memory for GPU distances.
+    #[cfg(feature = "gpu")]
+    pub fn read_sketch_data_pinned(&mut self, file_prefix: &str, device_id: usize) -> Result<()> {
+        let mut words = with_cuda_context(device_id, |ctx| {
+            PinnedHostBuffer::zeroed(ctx, self.sample_stride * self.sketch_metadata.len())
+        })??;
+        let mut reader = SketchArrayReader::try_open(
+            &format!("{file_prefix}.skd"),
+            false,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        )?;
+        reader.read_all_into(&mut words)?;
+        self.sketch_bins = SketchStorage::Pinned(Arc::new(words));
+        self.block_reindex = None;
+        Ok(())
+    }
+
+    /// Read selected sketches directly into pinned memory, preserving name order.
+    #[cfg(feature = "gpu")]
+    pub fn read_sketch_data_block_pinned(
+        &mut self,
+        file_prefix: &str,
+        names: &[String],
+        device_id: usize,
+    ) -> Result<()> {
+        let (block_reindex, read_indices) = self.subset_indices(names)?;
+        let mut words = with_cuda_context(device_id, |ctx| {
+            PinnedHostBuffer::zeroed(ctx, self.sample_stride * read_indices.len())
+        })??;
+
+        let filename = format!("{file_prefix}.skd");
+        let sketch_reader = SketchArrayReader::try_open(
+            &filename,
+            true,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        )?;
+        sketch_reader.read_batch_into(&read_indices, self.sample_stride, &mut words)?;
+        self.sketch_bins = SketchStorage::Pinned(Arc::new(words));
+        self.block_reindex = Some(block_reindex);
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    pub(crate) fn pinned_sketches(&self) -> Option<&Arc<PinnedHostBuffer<u64>>> {
+        match &self.sketch_bins {
+            SketchStorage::Pinned(words) => Some(words),
+            SketchStorage::Cpu(_) => None,
+        }
     }
 
     /// Get the bins for a given sketch index at a given k-mer index
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
         let s1_offset = sketch_idx * self.sample_stride + k_idx * self.kmer_stride;
-        let s1_slice = &self.sketch_bins[s1_offset..(s1_offset + self.kmer_stride)];
+        let s1_slice = &self.sketch_bins.as_slice()[s1_offset..(s1_offset + self.kmer_stride)];
         log::trace!("s1_start:{s1_offset} s1_end:{}", s1_offset + s1_slice.len(),);
         s1_slice
     }
 
     /// Get the bins for a all sketches. For GPU
     pub fn get_sketch_all(&self) -> &[u64] {
-        &self.sketch_bins[..]
+        self.sketch_bins.as_slice()
     }
 
     /// Checks for query compatibility with another [`MultiSketch`] object
@@ -531,7 +627,7 @@ impl PartialEq for MultiSketch {
             );
         }
 
-        if self.sketch_bins != other.sketch_bins {
+        if self.sketch_bins.as_slice() != other.sketch_bins.as_slice() {
             metadata_match = false;
             eprintln!(
                 "Sketch bins are mismatching. Self: {:?}, Other: {:?}",

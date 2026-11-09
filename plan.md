@@ -1,6 +1,69 @@
 # CUDA self-distance planning
 
-## Current round: finish GPU distance progress before sparse output
+## Current round: read directly into final host sketch storage
+
+Status: implementation, local CUDA validation and independent reviews complete.
+
+### Current validation policy
+
+The user explicitly superseded the historical remote-only instructions below:
+build and test locally on this machine using CUDA 13.5, for example
+`CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build`. Use
+`CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release` for the existing
+test suite and run the CLI validation runner locally.
+The earlier remote host, account and per-command approval requirements are
+historical, not instructions for this round. No new Cargo harness tests are
+required for this refactor.
+
+### Agreed implementation
+
+- Select one final host allocation before loading: aligned `SketchVec` for CPU
+  use, or `Arc<PinnedHostBuffer<u64>>` for GPU self-distances. A private storage
+  enum preserves the existing borrowed slice accessors and metadata file format.
+- Keep existing CPU loading APIs. Add fallible `read_sketch_data_pinned(prefix,
+  device_id)` and `read_sketch_data_block_pinned(prefix, names, device_id)` APIs.
+  Both allocate and fill pinned memory before sharing it. The CLI selects these
+  automatically for GPU self-distances, including subsets.
+- Bulk-read full `.skd` files directly into initialized destination slices;
+  subset loading copies sample byte ranges from the mmap into the final buffer.
+  Decode little-endian words in place on big-endian hosts. Validate full-file
+  length and subset ranges; propagate failures from the new pinned APIs.
+- The public GPU distance API requires pinned-loaded sketches and returns an
+  explanatory error for ordinary storage. There is no fallback host copy.
+  Existing CPU APIs and CLI arguments remain available as before.
+- GPU tiles clone the existing pinned owner and retain it through completion
+  and cancellation. This supersedes the previous full host-copy decision.
+  Kernel code, transposition, device allocations and tile scheduling are unchanged.
+- Keep initialized allocations and their initial zero-fill. Add no allocator
+  framework, uninitialized-memory API, registration bindings or new dependency.
+
+### Validation record
+
+- Local release build passed with `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build`.
+  Existing compiler/documentation warnings remain; no build errors occurred.
+- Focused existing reader and sketch integration tests passed, followed by the
+  full existing suite via `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release`:
+  76 tests and one doctest passed. No Cargo harness tests were added.
+- On local GPU 0 (RTX 3090), `scripts/validate_gpu_distances.py --dataset
+  /tmp/sketchlib-pinned-fixture-mbbd2_1a/small --kmer 31 --gpu 0` passed its
+  full-loading smoke run, 33 CPU/GPU comparisons and two writer-failure cases.
+  This covers reordered subsets, dense/kNN output, ANI, completeness correction,
+  multiple tile layouts, singleton remainder and concurrent CPU consumption.
+  The largest measured distance difference was approximately 1e-7 (within the
+  existing 1e-6 tolerance). Report: `/tmp/sketchlib-cuda-async-je9wbdol/report.json`.
+- A temporary 257-sample fixture containing both k=21 and k=31 passed eight
+  additional dense/kNN CPU/GPU comparisons across full and reordered subset
+  loading. Distances matched exactly; cutoff ties used the existing validation
+  policy. Truncated/oversized full files were rejected on CPU and GPU, and a
+  truncated selected sample returned a range error.
+- A temporary external Rust API probe passed full/subset content and name-order
+  equality, failed-load state preservation, full reload after subsetting, and
+  rejection of ordinary host storage by the GPU API. Temporary fixtures/probe
+  remain under `/tmp`; no benchmark or speedup claim is made.
+- Independent standards and spec reviews found no issues. Formatting checks for
+  edited reader/storage files, Python syntax and `git diff --check` passed.
+
+## Completed round: finish GPU distance progress before sparse output
 
 Status: implementation, remote release build and GPU kNN smoke run complete.
 The user approved the minimal fix with "Great, implement that minimal fix".
