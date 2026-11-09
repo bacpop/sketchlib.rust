@@ -34,7 +34,6 @@ use crate::sketch::BIN_BITS;
 use crate::utils::get_progress_bar;
 
 const BBITS: u64 = BIN_BITS as u64;
-const MAX_IN_FLIGHT_TILES: usize = 4;
 const DENSE_CHUNK_SIZE: usize = 1000;
 
 /// Keep the async boundary here; callers do not need a runtime or async API.
@@ -485,8 +484,11 @@ impl DistTile {
     }
 }
 
-/// Write GPU self-distances using at most four concurrent tiles. `None` streams every
-/// unordered pair without a global ordering guarantee; `Some(k)` selects kNN.
+/// Write GPU self-distances using at most `max_in_flight_tiles` concurrent tiles.
+/// Slots remain occupied through CPU consumption; larger limits can increase
+/// pinned host and device memory use. This limit does not set the CUDA stream count.
+/// `None` streams every unordered pair without a global ordering guarantee;
+/// `Some(k)` selects kNN.
 /// Completeness correction uses f32, including its pair-product cutoff test;
 /// values very close to the cutoff can take a different branch from CPU f64.
 /// Direct callers must configure Rayon as for CPU streaming: dense mode needs
@@ -505,7 +507,11 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     completeness_cutoff: f64,
     gpu_device_id: usize,
     max_sketch_batch: usize,
+    max_in_flight_tiles: usize,
 ) -> Result<(), Error> {
+    if max_in_flight_tiles == 0 {
+        return Err(anyhow!("max_in_flight_tiles must be at least 1"));
+    }
     if sketches.is_legacy_format() {
         return Err(anyhow!(
             "GPU dists supports only new-format sketches with BIN_BITS={BIN_BITS}"
@@ -565,7 +571,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
             )
         })
         .filter(|tile| tile.n_distances != 0);
-    let initial_tiles: Vec<_> = tiles.by_ref().take(MAX_IN_FLIGHT_TILES).collect();
+    let initial_tiles: Vec<_> = tiles.by_ref().take(max_in_flight_tiles).collect();
     let n_slots = initial_tiles.len();
     let mut tiles = initial_tiles.into_iter().chain(tiles);
     let block_size = n.min(max_sketch_batch);

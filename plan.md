@@ -1,6 +1,40 @@
 # CUDA self-distance planning
 
-## Current round: read directly into final host sketch storage
+## Current round: configurable in-flight tile limit
+
+Status: implementation and local CUDA validation complete.
+
+- Add `dist --max-in-flight-tiles <N>`, defaulting to 4 and accepting positive
+  integers. CPU paths accept the option without effect, like `--max-sketch-batch`.
+- Append `max_in_flight_tiles: usize` to the public GPU `self_dists_stream()`
+  arguments. Direct callers must supply the limit; zero returns an error before
+  CUDA initialization. This supersedes the historical fixed-four-tile decision.
+- Use the argument for the initial tile window. Allocate no more output slots
+  than the number of nonempty tiles; retain slots through CPU consumption and
+  preserve existing cancellation cleanup. Larger limits may increase pinned host
+  and device memory use.
+- Keep the separate CUDA stream pool at four streams with round-robin assignment.
+  Increasing the tile limit does not create additional streams.
+- Validate locally using CUDA 13.5: CLI defaults and invalid values, dense/kNN
+  results for omitted/1/4/8 limits, window refills, fewer tiles than slots, writer
+  failure at a nondefault limit, and direct API zero rejection.
+
+Validation results:
+
+- `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build` passed. Help displays the
+  default of 4; zero and negative CLI values are rejected during parsing.
+- `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release --test distance`
+  passed all 22 existing tests. No Cargo harness tests were added.
+- On the 257-sample two-k-mer fixture, ten dense/kNN GPU comparisons against CPU
+  output passed: omitted/1/4/8 limits with block size 64, and limit 8 with block
+  size 128 (fewer nonempty tiles than slots). Existing cutoff-tie rules were used.
+- Writer failure with limit 8 exited correctly. An external API probe confirmed
+  zero is rejected before CUDA initialization, even with an invalid device ID.
+  Logs and the temporary probe are in `/tmp/sketchlib-tile-limit-gt4oq3ss`.
+- Manual diff review and `git diff --check` passed. The stream policy and tile
+  resource ownership mechanisms were not changed.
+
+## Completed round: read directly into final host sketch storage
 
 Status: implementation, local CUDA validation and independent reviews complete.
 
