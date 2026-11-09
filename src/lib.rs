@@ -336,11 +336,16 @@ pub fn main() -> Result<(), Error> {
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             log::info!("Loading sketch data from {ref_db_name}.skd");
-            if let Some(subset_file) = subset {
-                let subset_names = read_subset_names(subset_file);
-                references.read_sketch_data_block(ref_db_name, &subset_names);
-            } else {
-                references.read_sketch_data(ref_db_name);
+            let subset_names = subset.as_ref().map(|file| read_subset_names(file));
+            match (*gpu, query_db.is_none(), subset_names.as_deref()) {
+                (Some(device), true, Some(names)) => {
+                    references.read_sketch_data_block_pinned(ref_db_name, names, device)?;
+                }
+                (Some(device), true, None) => {
+                    references.read_sketch_data_pinned(ref_db_name, device)?;
+                }
+                (_, _, Some(names)) => references.read_sketch_data_block(ref_db_name, names),
+                (_, _, None) => references.read_sketch_data(ref_db_name),
             }
             log::info!("Read reference sketches:\n{references:?}");
             let n = references.number_samples_loaded();
