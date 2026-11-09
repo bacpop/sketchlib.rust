@@ -63,6 +63,38 @@ required for this refactor.
 - Independent standards and spec reviews found no issues. Formatting checks for
   edited reader/storage files, Python syntax and `git diff --check` passed.
 
+## Memory optimisation backlog
+
+The host-loading changes above are complete. The remaining items below are
+proposals for later work, prioritising small changes; their speed benefits have
+not been benchmarked.
+
+- [x] **Bulk-read sketch data.** Replace per-word reads/pushes with direct bulk
+  reads into the final destination; copy subset samples as mmap byte ranges.
+- [x] **Eliminate the full host-to-host pinned copy.** Read directly into pinned
+  storage for GPU use, while retaining aligned ordinary storage for CPU use.
+  Registering the existing allocation with CUDA was considered as an alternative;
+  direct pinned loading was chosen instead.
+- [ ] **Remove unnecessary device zero-fills.** The transpose and distance
+  kernels overwrite every valid output element, so their destination buffers
+  can be allocated without a preceding device memset. Preserve initialized host
+  buffers and verify that every device element is written before it is read.
+  This is the smallest suggested next change.
+- [ ] **Reuse diagonal-tile sketch storage.** Upload and transpose a diagonal
+  tile's sketch block once, then share that read-only device allocation between
+  the reference and query inputs. This avoids preparing the same block twice.
+- [ ] **Transfer only the selected k-mer.** The implemented GPU distance path
+  uses one k-mer, but currently transfers and transposes all stored k-mers.
+  Packing only the selected k-mer would reduce pinned storage, transfer volume
+  and transpose work for databases containing multiple k-mers.
+- [ ] **Cache uploaded/transposed sketch blocks.** Reuse blocks across distance
+  tiles to avoid repeated transfers and transpositions. This needs more ownership
+  and scheduling changes than the preceding proposals; keep any cache bounded.
+- [ ] **Consider bounded pinned staging buffers.** Use a few reusable pinned
+  buffers instead of pinning all loaded sketches when host memory is limiting.
+  This reintroduces repeated host copies for reused blocks, so it is primarily
+  a memory-footprint tradeoff whose speed impact needs measurement.
+
 ## Completed round: finish GPU distance progress before sparse output
 
 Status: implementation, remote release build and GPU kNN smoke run complete.
