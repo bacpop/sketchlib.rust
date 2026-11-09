@@ -1,6 +1,56 @@
 # CUDA self-distance planning
 
-## Current round: configurable in-flight tile limit
+## Current round: preallocate global GPU kNN heaps
+
+Status: implementation, correctness checks and paired profiling complete.
+
+- Construct all global per-sample heaps individually using
+  `(0..n).map(|_| BinaryHeap::with_capacity(knn + 1)).collect::<Vec<_>>()`.
+  Repeating an empty heap with `vec![heap; n]` clones it without preserving its
+  reserved capacity. The extra element accommodates the temporary insertion in
+  `push_heap()` before the worst candidate is removed.
+- This reserves storage before tile processing and removes global heap-growth
+  allocations from serial merging. For n=100,000 and k=50, candidate capacity is
+  about 81.6 MB on this 64-bit machine, excluding heap/allocator metadata.
+- Tile-local heaps, ranking, scheduling, public APIs and dense output are unchanged.
+  CUB tile selection remains separate future work.
+- Local CUDA 13.5 builds and all 22 existing distance integration tests passed.
+  Four CPU/GPU kNN comparisons (Jaccard/ANI, k=1/50) across multiple tiles passed
+  with zero distance difference, using the existing cutoff-tie validation policy.
+- CPU sampling is unavailable to this user: `nsys status --environment` reports
+  `perf_event_open` denied, and `sudo -n` requires a password. Paired profiles use
+  CUDA/NVTX/OSRT tracing with sampling and CPU context-switch tracing disabled.
+  This permits GPU timeline and elapsed-time comparison, but not a new CPU
+  allocation breakdown comparable to report4's privileged sampling.
+- The pre-change executable and validation/profile artifacts are preserved in
+  `/tmp/sketchlib-global-prealloc-4o9j43vn`. Both profile runs use CUDA device 1
+  (RTX 3090),
+  `100k_subset`, k-mer 31, block size 5,000, four tiles in flight, 16 CPU threads,
+  k=50, ANI, stdout redirected to `/dev/null`, and the default completion reactor.
+- GPU identity was verified from the CUDA-device mapping in report4 and both
+  paired traces: all use UUID `4b643a37-e171-2c2f-5e65-4abde7aca8c8` (RTX 3090).
+  The earlier RTX 5090 label was incorrect: CUDA ordinal 1 maps to GPU inventory
+  ID / `nvidia-smi` index 0 here, while CUDA ordinal 0 maps to the RTX 5090.
+  Compare physical UUIDs rather than assuming these numeric IDs are interchangeable.
+- One paired profile measured logged application time of 10.269 s before versus
+  9.563 s after. The tile phase (first `dists()` start to last D2H completion)
+  decreased from 8.253 s to 7.484 s. Intervals without traced kernels, copies or
+  memsets within that phase totalled 3.073 s before versus 2.372 s after; the
+  longest such gap decreased from 92.209 ms to 63.921 ms.
+- The CPU setup interval between the last initialization stream synchronization
+  and the first output-buffer allocation increased from 2.561 ms to 40.381 ms.
+  That interval includes global heap construction and sample-name preparation,
+  not an isolated measurement of heap allocation alone.
+- Profiles are `before.nsys-rep` and `after.nsys-rep` in the artifact directory,
+  with exported SQLite traces, correctness logs, `measurements.json` (commands
+  and profiler wall times), and `summary.json` (application/timeline metrics).
+  Profiler wall times include collection/export overhead. The logged application
+  interval was used above. These single-run results indicate improvement but
+  are not a repeated benchmark or evidence that all host-side gaps are resolved.
+- Manual review confirmed only the global heap constructor changed; final
+  `git diff --check` passed. No Cargo harness tests were added.
+
+## Completed round: configurable in-flight tile limit
 
 Status: implementation and local CUDA validation complete.
 

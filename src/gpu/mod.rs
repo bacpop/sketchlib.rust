@@ -553,7 +553,11 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let correct_completeness = completeness_vec.is_some();
     let mut heaps = if let Some(knn) = knn {
         log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours (GPU)");
-        vec![BinaryHeap::with_capacity(knn + 1); n]
+        // Construct individually: cloning an empty heap loses its reserved capacity.
+        // push_heap temporarily needs one spare element before removing the worst.
+        (0..n)
+            .map(|_| BinaryHeap::with_capacity(knn + 1))
+            .collect::<Vec<_>>()
     } else {
         log::info!("Calculating all ref vs ref distances (GPU)");
         Vec::new()
