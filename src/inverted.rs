@@ -6,6 +6,8 @@ use std::fmt;
 use std::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{cmp, fmt};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fmt::Write as FmtWrite, io::Write as IoWrite};
 
 #[cfg(not(target_arch = "wasm32"))]
 extern crate needletail;
@@ -25,14 +27,19 @@ use super::hashing::{
     bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
 };
 use crate::distances::distance_matrix::square_to_condensed;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::io::InputFastx;
 use crate::sketch::multisketch::{parse_version, MIN_SKETCH_VERSION};
 #[cfg(target_arch = "wasm32")]
 use crate::sketch::Sketch;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sketch::{sketch_datafile::SketchArrayWriter, Sketch};
 use crate::utils::get_progress_bar;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{
+    cli::InvertedQueryType,
+    io::{normalise_metadata, warn_missing_metadata, InputFastx, SampleMetadata},
+};
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::Context;
 use anyhow::{bail, Error};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -43,6 +50,15 @@ use crate::logw;
 use wasm_bindgen_file_reader::WebSysFile;
 
 type InvSketches = (Vec<Vec<u16>>, Vec<String>);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn append_sample(output: &mut String, name: &str, metadata: Option<&str>) {
+    output.push_str(name);
+    if let Some(metadata) = metadata {
+        output.push(';');
+        output.push_str(metadata);
+    }
+}
 
 /// Fails if a loaded .ski index was built with a sketchlib version older
 /// than the current minimum sketch format version.
@@ -201,6 +217,108 @@ impl Inverted {
     /// Sample name at the given index
     pub fn sample_at(&self, idx: usize) -> &str {
         &self.sample_names[idx]
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn metadata_at(&self, idx: usize) -> Option<&str> {
+        self.metadata.as_ref().map(|values| values[idx].as_str())
+    }
+
+    // Only changes the loaded object, preserving the serialized index format.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn prepare_metadata_for_output(&mut self, suppress: bool) -> Result<(), Error> {
+        if suppress {
+            self.metadata = None;
+        }
+        if let Some(values) = &mut self.metadata {
+            if values.len() != self.sample_names.len() {
+                bail!("Index metadata length does not match the number of samples");
+            }
+            let mut missing = 0;
+            for (name, value) in self.sample_names.iter().zip(values) {
+                missing += usize::from(
+                    normalise_metadata(value)
+                        .with_context(|| format!("Invalid index metadata for sample {name}"))?,
+                );
+            }
+            warn_missing_metadata(missing, 0);
+        }
+        Ok(())
+    }
+
+    /// Compute and format query rows in parallel while the caller writes them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn query_stream<W: IoWrite + Send>(
+        &self,
+        writer: &mut W,
+        queries: &[Vec<u16>],
+        query_names: &[String],
+        query_metadata: &SampleMetadata,
+        query_type: &InvertedQueryType,
+        threads: usize,
+        quiet: bool,
+    ) -> Result<(), Error> {
+        let mut header = String::from("Query");
+        if *query_type == InvertedQueryType::MatchCount {
+            for (idx, name) in self.sample_names.iter().enumerate() {
+                header.push('\t');
+                append_sample(&mut header, name, self.metadata_at(idx));
+            }
+        } else {
+            header.push_str("\tMatches");
+        }
+        header.push('\n');
+        writer.write_all(header.as_bytes())?;
+
+        let (tx, rx) = mpsc::sync_channel::<String>(threads.max(1) * 2);
+        let progress_bar = get_progress_bar(queries.len(), false, quiet);
+        rayon::scope(|s| -> Result<(), Error> {
+            s.spawn(move |_| {
+                queries
+                    .par_iter()
+                    .zip(query_names)
+                    .progress_with(progress_bar)
+                    .for_each_with(tx, |tx, (query, name)| {
+                        let results = match query_type {
+                            InvertedQueryType::MatchCount => {
+                                self.query_against_inverted_index(query)
+                            }
+                            InvertedQueryType::AllBins => self.all_shared_bins(query),
+                            InvertedQueryType::AnyBins => self.any_shared_bins(query),
+                        };
+                        let mut row = String::new();
+                        append_sample(&mut row, name, query_metadata.get(name));
+                        if *query_type == InvertedQueryType::MatchCount {
+                            for count in results {
+                                let _ = write!(row, "\t{count}");
+                            }
+                        } else {
+                            for (match_idx, sample_idx) in results.into_iter().enumerate() {
+                                row.push(if match_idx == 0 { '\t' } else { ',' });
+                                let sample_idx = sample_idx as usize;
+                                append_sample(
+                                    &mut row,
+                                    self.sample_at(sample_idx),
+                                    self.metadata_at(sample_idx),
+                                );
+                            }
+                        }
+                        row.push('\n');
+                        let _ = tx.send(row);
+                    });
+            });
+
+            // Consuming rx here also disconnects blocked senders on a write error.
+            for row in rx {
+                writer
+                    .write_all(row.as_bytes())
+                    .context("Error writing streamed inverted query output")?;
+            }
+            writer
+                .flush()
+                .context("Error flushing inverted query output")?;
+            Ok(())
+        })
     }
 
     /// K-mer length used for the index
@@ -433,13 +551,15 @@ impl Inverted {
                     // We'll need to densify afterwards, let's save the index
                     indexes.insert(genome_idx);
                 }
-                sketch_results[genome_idx] = sketch.as_ref().unwrap().iter().map(|h| *h as u16).collect();
+                sketch_results[genome_idx] =
+                    sketch.as_ref().unwrap().iter().map(|h| *h as u16).collect();
                 differentsamples.remove(name);
             } else {
                 // already written! We have to merge
                 for bin in 0..sketch_size {
                     let saved_sketch = &mut sketch_results[genome_idx][bin as usize];
-                    *saved_sketch = cmp::min(*saved_sketch, sketch.as_ref().unwrap()[bin as usize] as u16);
+                    *saved_sketch =
+                        cmp::min(*saved_sketch, sketch.as_ref().unwrap()[bin as usize] as u16);
                 }
             }
         }
@@ -549,7 +669,6 @@ impl Inverted {
     }
 
     /// Get the metadata, with the same order as in the index
-    #[cfg(target_arch = "wasm32")]
     pub fn get_metadata(&self) -> &Option<Vec<String>> {
         &self.metadata
     }
@@ -594,5 +713,174 @@ impl fmt::Display for Inverted {
             writeln!(f, "{sketch}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::io::parse_metadata_info;
+    use std::io;
+
+    fn index() -> Inverted {
+        Inverted {
+            index: Inverted::build_inverted_index(&[vec![1, 2], vec![1, 3]], 2),
+            n_samples: 2,
+            sample_names: vec!["refA".to_owned(), "refB".to_owned()],
+            metadata: Some(vec!["description A".to_owned(), "description B".to_owned()]),
+            sketch_version: env!("CARGO_PKG_VERSION").to_owned(),
+            ..Inverted::default()
+        }
+    }
+
+    #[test]
+    fn loaded_metadata_is_validated_and_normalised_before_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().join("legacy");
+        let prefix = prefix.to_str().unwrap();
+        for separator in ['\t', ',', ';'] {
+            let mut original = index();
+            original.metadata.as_mut().unwrap()[0] = format!("old{separator}metadata");
+            original.save(prefix).unwrap();
+            let mut loaded = Inverted::load(prefix).unwrap();
+            assert!(loaded.prepare_metadata_for_output(false).is_err());
+            loaded.prepare_metadata_for_output(true).unwrap();
+            assert_eq!(loaded.metadata_at(0), None);
+            // Suppression affects the loaded object, not the stored metadata.
+            assert_eq!(Inverted::load(prefix).unwrap(), original);
+        }
+        let mut loaded = index();
+        loaded.metadata = Some(vec![String::new(), "  ".to_owned()]);
+        loaded.prepare_metadata_for_output(false).unwrap();
+        assert_eq!(loaded.metadata_at(0), Some("NA"));
+        assert_eq!(loaded.metadata_at(1), Some("NA"));
+    }
+
+    #[test]
+    fn streaming_preserves_rows_and_no_match_output() {
+        let mut metadata_file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(metadata_file, "query\tquery description").unwrap();
+        let metadata = parse_metadata_info(metadata_file.path().to_str(), ["query"]).unwrap();
+        let index = index();
+        for (query_type, expected) in [
+            (
+                InvertedQueryType::MatchCount,
+                "Query\trefA;description A\trefB;description B\nquery;query description\t2\t1\n",
+            ),
+            (
+                InvertedQueryType::AllBins,
+                "Query\tMatches\nquery;query description\trefA;description A\n",
+            ),
+            (
+                InvertedQueryType::AnyBins,
+                "Query\tMatches\nquery;query description\trefA;description A,refB;description B\n",
+            ),
+        ] {
+            let mut output = Vec::new();
+            index
+                .query_stream(
+                    &mut output,
+                    &[vec![1, 2]],
+                    &["query".to_owned()],
+                    &metadata,
+                    &query_type,
+                    1,
+                    true,
+                )
+                .unwrap();
+            assert_eq!(String::from_utf8(output).unwrap(), expected);
+        }
+        for query_type in [InvertedQueryType::AllBins, InvertedQueryType::AnyBins] {
+            let mut output = Vec::new();
+            index
+                .query_stream(
+                    &mut output,
+                    &[vec![9, 9]],
+                    &["query".to_owned()],
+                    &metadata,
+                    &query_type,
+                    1,
+                    true,
+                )
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                "Query\tMatches\nquery;query description\n"
+            );
+        }
+    }
+
+    struct RowWriter {
+        rows: usize,
+        fail_rows: bool,
+        fail_flush: bool,
+    }
+
+    impl IoWrite for RowWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            // Header and query rows arrive as complete, already formatted strings.
+            assert!(bytes.ends_with(b"\n"));
+            assert_eq!(bytes.iter().filter(|&&b| b == b'\n').count(), 1);
+            if self.fail_rows && self.rows > 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "row write failed",
+                ));
+            }
+            self.rows += 1;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_flush {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_streaming_completes_and_propagates_write_errors() {
+        let index = index();
+        let queries = vec![vec![1, 2]; 100];
+        let names: Vec<String> = (0..queries.len()).map(|i| format!("q{i}")).collect();
+        for threads in [1, 2] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads + 1)
+                .build()
+                .unwrap();
+            for (fail_rows, fail_flush) in [(false, false), (true, false), (false, true)] {
+                let mut writer = RowWriter {
+                    rows: 0,
+                    fail_rows,
+                    fail_flush,
+                };
+                let result = pool.install(|| {
+                    index.query_stream(
+                        &mut writer,
+                        &queries,
+                        &names,
+                        &SampleMetadata::default(),
+                        &InvertedQueryType::AnyBins,
+                        threads,
+                        true,
+                    )
+                });
+                if fail_rows || fail_flush {
+                    assert_eq!(
+                        result
+                            .unwrap_err()
+                            .downcast_ref::<io::Error>()
+                            .unwrap()
+                            .kind(),
+                        io::ErrorKind::BrokenPipe
+                    );
+                } else {
+                    result.unwrap();
+                    assert_eq!(writer.rows, queries.len() + 1);
+                }
+            }
+        }
     }
 }

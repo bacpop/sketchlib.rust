@@ -88,7 +88,7 @@
 //! ```bash
 //! sketchlib inverted build -o inverted -v -k 21 -s 10 -f rfile.txt
 //! ```
-//! Provide sample labels (for example species, or clusters) with `--species-names`,
+//! Provide sample labels (for example species, or clusters) with `--phylo-clusters`,
 //! tab separated sample and label. These do not need to totally overlap with the samples in
 //! the database. Samples will be reordered so that clustered samples are next to each
 //! other in the index, reducing size and increasing efficiency.
@@ -100,6 +100,17 @@
 //! sketchlib inverted query -v -f qfile.txt --query-type match-count inverted.ski
 //! ```
 //! Queries will be sketched anew each time, we do not yet support saving these sketches.
+//!
+//! Attach metadata to references with `inverted build --metadata reference_metadata.tsv`,
+//! and to queries with `inverted query --metadata query_metadata.tsv`. Both files are
+//! headerless, with `sample_name<TAB>metadata` records. Missing or empty values become
+//! `NA`; blank lines are ignored and records without sample names are skipped, with
+//! one aggregate warning per source. Metadata cannot contain tabs, commas, or semicolons.
+//!
+//! Names are printed as `name;metadata` when metadata is available. Match lists remain
+//! comma-separated, for example `query;description<TAB>refA;description,refB;description`.
+//! In `match-count`, reference metadata appears in the header and query metadata in
+//! the first field of each row. Use `--suppress-metadata` to output names alone.
 //!
 //! Three query types are supported:
 //! - `match-count` (default). Gives the count of bins matching between samples and queries.
@@ -146,18 +157,12 @@
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
 #[macro_use]
 extern crate arrayref;
 extern crate num_cpus;
 use anyhow::{bail, Error};
-#[cfg(not(target_arch = "wasm32"))]
-use indicatif::ParallelProgressIterator;
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
 
 pub mod cli;
 #[cfg(not(target_arch = "wasm32"))]
@@ -506,8 +511,8 @@ pub fn main() -> Result<(), Error> {
                 seq_files,
                 file_list,
                 output,
-                write_skq,
-                species_names,
+                no_write_skq,
+                phylo_clusters,
                 metadata,
                 single_strand,
                 min_count,
@@ -529,36 +534,36 @@ pub fn main() -> Result<(), Error> {
                     differentsamples.insert(i.0.clone());
                 }
 
-                // Reordering by species, or default
-                let (file_order, map_names_labels) = if let Some(species_name_file) = species_names
-                {
-                    reorder_input_files(&input_files, species_name_file)
-                } else {
-                    // Check first if there are repeated samples
-
-                    let tmpnamesset = input_files
-                        .iter()
-                        .map(|x| x.0.clone())
-                        .collect::<HashSet<String>>();
-                    if tmpnamesset.len() == input_files.len() {
-                        ((0..input_files.len()).collect(), None)
+                // Reordering by phylogenetic cluster, or default
+                let (file_order, map_names_labels) =
+                    if let Some(phylo_clusters_file) = phylo_clusters {
+                        reorder_input_files(&input_files, phylo_clusters_file)
                     } else {
-                        let mut tmpoutvec: Vec<usize> = vec![0; input_files.len()];
-                        let mut tmpmap: HashMap<String, usize> = HashMap::new();
+                        // Check first if there are repeated samples
 
-                        for (i, name) in tmpnamesset.iter().enumerate() {
-                            tmpmap.insert(name.clone(), i);
+                        let tmpnamesset = input_files
+                            .iter()
+                            .map(|x| x.0.clone())
+                            .collect::<HashSet<String>>();
+                        if tmpnamesset.len() == input_files.len() {
+                            ((0..input_files.len()).collect(), None)
+                        } else {
+                            let mut tmpoutvec: Vec<usize> = vec![0; input_files.len()];
+                            let mut tmpmap: HashMap<String, usize> = HashMap::new();
+
+                            for (i, name) in tmpnamesset.iter().enumerate() {
+                                tmpmap.insert(name.clone(), i);
+                            }
+                            for i in 0..tmpoutvec.len() {
+                                tmpoutvec[i] = tmpmap[&input_files[i].0];
+                            }
+
+                            (tmpoutvec, None)
                         }
-                        for i in 0..tmpoutvec.len() {
-                            tmpoutvec[i] = tmpmap[&input_files[i].0];
-                        }
+                    };
 
-                        (tmpoutvec, None)
-                    }
-                };
-
-                // If species labels were provided, create the list of them
-                let species_labels_vec = if let Some(themaplabels) = map_names_labels {
+                // If phylogenetic cluster labels were provided, create the list of them
+                let phylo_cluster_labels = if let Some(themaplabels) = map_names_labels {
                     let mut tmpvec: Vec<String> = vec!["".to_string(); differentsamples.len()];
                     file_order
                         .iter()
@@ -572,24 +577,26 @@ pub fn main() -> Result<(), Error> {
                     None
                 };
 
-                // Parse metadata, if any
-                let metadata_vec;
-                if let Some(metadata_file) = metadata {
-                    let tmpdict = parse_metadata_info(metadata_file);
+                // Align metadata with the same sample order as the index.
+                let sample_metadata = parse_metadata_info(
+                    metadata.as_deref(),
+                    input_files.iter().map(|(name, _)| name.as_str()),
+                )?;
+                let metadata_vec = metadata.as_ref().map(|_| {
                     let mut tmpvec: Vec<String> = vec!["".to_string(); differentsamples.len()];
                     file_order
                         .iter()
                         .zip(&input_files)
-                        .for_each(|(idx, (name, _))| tmpvec[*idx] = tmpdict[name].clone());
-                    metadata_vec = Some(tmpvec);
-                } else {
-                    metadata_vec = None;
-                };
+                        .for_each(|(idx, (name, _))| {
+                            tmpvec[*idx] = sample_metadata.get(name).unwrap().to_owned();
+                        });
+                    tmpvec
+                });
 
-                let skq_file = if *write_skq {
-                    Some(format!("{output}.skq"))
-                } else {
+                let skq_file = if *no_write_skq {
                     None
+                } else {
+                    Some(format!("{output}.skq"))
                 };
 
                 let rc = !*single_strand;
@@ -606,7 +613,7 @@ pub fn main() -> Result<(), Error> {
                     *min_qual,
                     args.quiet,
                     &metadata_vec,
-                    &species_labels_vec,
+                    &phylo_cluster_labels,
                 );
                 inverted.save(output)?;
                 log::info!("Index info:\n{inverted:?}");
@@ -618,18 +625,28 @@ pub fn main() -> Result<(), Error> {
                 file_list,
                 output,
                 query_type,
+                metadata,
+                suppress_metadata,
                 min_count,
                 min_qual,
                 threads,
             } => {
                 let mut output_file = set_ostream(output);
-                let inverted_index = Inverted::load(strip_sketch_extension(ski))?;
+                let mut inverted_index = Inverted::load(strip_sketch_extension(ski))?;
                 log::info!("Read inverted index:\n{inverted_index:?}");
+                inverted_index.prepare_metadata_for_output(*suppress_metadata)?;
 
                 // Get input files
                 log::info!("Getting input queries");
                 let input_files: Vec<(String, Vec<String>)> = get_input_list(file_list, seq_files);
                 log::info!("Parsed {} samples in input query list", input_files.len());
+                let mut query_metadata = parse_metadata_info(
+                    metadata.as_deref(),
+                    input_files.iter().map(|(name, _)| name.as_str()),
+                )?;
+                if *suppress_metadata {
+                    query_metadata.suppress();
+                }
 
                 log::info!("Sketching input queries");
                 set_threads_with_writer(*threads); // Writer thread
@@ -637,66 +654,15 @@ pub fn main() -> Result<(), Error> {
                     inverted_index.sketch_queries(&input_files, *min_count, *min_qual, args.quiet);
 
                 log::info!("Running queries in mode: {query_type}");
-                // Header
-                write!(output_file, "Query")?;
-                if *query_type == InvertedQueryType::MatchCount {
-                    for name in inverted_index.sample_names() {
-                        write!(output_file, "\t{name}")?;
-                    }
-                    writeln!(output_file)?;
-                } else {
-                    writeln!(output_file, "\tMatches")?;
-                }
-
-                // Query loop (parallelised)
-                let (tx, rx) = mpsc::channel();
-                let percent = false;
-                let progress_bar = get_progress_bar(queries.len(), percent, args.quiet);
-                rayon::scope(|s| {
-                    s.spawn(|_| {
-                        queries
-                            .par_iter()
-                            .progress_with(progress_bar)
-                            .zip(query_names)
-                            .map(|(q, q_name)| match query_type {
-                                InvertedQueryType::MatchCount => {
-                                    (q_name, inverted_index.query_against_inverted_index(q))
-                                }
-                                InvertedQueryType::AllBins => {
-                                    (q_name, inverted_index.all_shared_bins(q))
-                                }
-                                InvertedQueryType::AnyBins => {
-                                    (q_name, inverted_index.any_shared_bins(q))
-                                }
-                            })
-                            .for_each_with(tx, |tx, dists| {
-                                let _ = tx.send(dists);
-                            });
-                    });
-                });
-                for (q_name, dist) in rx {
-                    write!(output_file, "{q_name}")?;
-                    if *query_type == InvertedQueryType::MatchCount {
-                        for distance in dist {
-                            write!(output_file, "\t{distance}")?;
-                        }
-                    } else if !dist.is_empty() {
-                        write!(
-                            output_file,
-                            "\t{}",
-                            inverted_index.sample_at(dist[0] as usize)
-                        )?;
-                        for r_name in dist
-                            .iter()
-                            .skip(1)
-                            .map(|idx| inverted_index.sample_at(*idx as usize))
-                        {
-                            write!(output_file, ",{r_name}")?;
-                        }
-                    }
-                    writeln!(output_file)?;
-                }
-                Ok(())
+                inverted_index.query_stream(
+                    &mut output_file,
+                    &queries,
+                    &query_names,
+                    &query_metadata,
+                    query_type,
+                    *threads,
+                    args.quiet,
+                )
             }
             InvertedCommands::Precluster {
                 ski,

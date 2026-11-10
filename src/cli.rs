@@ -351,15 +351,17 @@ pub enum InvertedCommands {
         #[arg(required = true, short)]
         output: String,
 
-        /// Also write an .skq file, which is needed by 'precluster' mode
+        /// Don't write the .skq file (needed by 'precluster' mode, not 'query' mode)
         #[arg(long)]
-        write_skq: bool,
+        no_write_skq: bool,
 
-        /// File listing species names, or clusters, for phylogenetic ordering
+        /// Phylogenetic cluster labels used to order related samples together
+        /// No header, tab-separated: sample name \t cluster
         #[arg(long)]
-        species_names: Option<String>,
+        phylo_clusters: Option<String>,
 
-        /// File listing species names, or clusters, for phylogenetic ordering
+        /// Additional data to attach to sample names, usable in outputs
+        /// No header, tab-separated: sample name \t metadata
         #[arg(long)]
         metadata: Option<String>,
 
@@ -409,6 +411,14 @@ pub enum InvertedCommands {
         /// Type of query to perform
         #[arg(long, value_enum, default_value_t = InvertedQueryType::MatchCount)]
         query_type: InvertedQueryType,
+
+        /// Query metadata: no header, tab-separated sample name and metadata
+        #[arg(long)]
+        metadata: Option<String>,
+
+        /// Omit query and reference metadata from output
+        #[arg(long)]
+        suppress_metadata: bool,
 
         /// Minimum k-mer count (with reads)
         #[arg(long, default_value_t = DEFAULT_MINCOUNT)]
