@@ -1,5 +1,6 @@
 // CUB host dispatch through a C ABI. All work uses caller-owned storage/stream.
 #include <cuda_runtime.h>
+#include <math_constants.h>
 #include <cub/version.cuh>
 #include <cub/device/device_batched_topk.cuh>
 #include <cub/device/device_topk.cuh>
@@ -199,4 +200,91 @@ extern "C" int sketchlib_tile_topk(void* workspace, size_t* bytes, const float* 
 
 extern "C" const char* sketchlib_topk_error_string(int status) noexcept {
     return cudaGetErrorString(static_cast<cudaError_t>(status));
+}
+
+namespace {
+// A row reserves min(k, block_size) entries for each neighbour block. Its own
+// block contributes one fewer entry when block_size <= k; only that slot needs
+// initialisation. All other entries are written exactly once by tile scatters.
+__device__ size_t device_min(size_t a, size_t b) { return a < b ? a : b; }
+__global__ void pad_candidates(float* keys, uint32_t* ids, size_t n, size_t block,
+                               size_t k, size_t width) {
+    size_t row = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (row >= n) return;
+    size_t owner = row / block;
+    size_t samples = device_min(block, n - owner * block);
+    if (samples <= k) {
+        size_t offset = row * width + owner * device_min(k, block) + samples - 1;
+        keys[offset] = CUDART_INF_F;
+        ids[offset] = UINT32_MAX;
+    }
+}
+
+__global__ void scatter_candidates(const float* keys, const uint32_t* ids,
+    float* all_keys, uint32_t* all_ids, size_t nr, size_t ref_k, size_t query_k,
+    size_t ref_start, size_t query_start, size_t block, size_t k, size_t width,
+    size_t count) {
+    size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    // Grid-stride iteration also handles candidate counts larger than a grid.
+    for (; i < count; i += size_t(blockDim.x) * gridDim.x) {
+        size_t refs = nr * ref_k;
+        bool reference = i < refs;
+        size_t local = reference ? i : i - refs;
+        size_t row_k = reference ? ref_k : query_k;
+        size_t start = reference ? ref_start : query_start;
+        size_t neighbour = reference ? query_start : ref_start;
+        size_t offset = (start + local / row_k) * width
+            + (neighbour / block) * device_min(k, block) + local % row_k;
+        all_keys[offset] = keys[i];
+        all_ids[offset] = uint32_t(neighbour + ids[i]);
+    }
+}
+} // namespace
+
+extern "C" int sketchlib_init_candidates(float* keys, uint32_t* ids, size_t n,
+    size_t block, size_t k, size_t width, void* raw_stream) noexcept {
+    if (!keys || !ids || !n || !block || !k || !width) return cudaErrorInvalidValue;
+    pad_candidates<<<(n + 255) / 256, 256, 0, static_cast<cudaStream_t>(raw_stream)>>>(
+        keys, ids, n, block, k, width);
+    return cudaGetLastError();
+}
+
+extern "C" int sketchlib_scatter_candidates(const float* keys, const uint32_t* ids,
+    float* all_keys, uint32_t* all_ids, size_t nr, size_t nq, size_t k,
+    size_t ref_start, size_t query_start, size_t block, size_t width,
+    void* raw_stream) noexcept {
+    try {
+        if (!keys || !ids || !all_keys || !all_ids || !nr || !nq || !k || !block || !width)
+            return cudaErrorInvalidValue;
+        bool diagonal = ref_start == query_start;
+        size_t ref_k = std::min(k, diagonal ? nr - 1 : nq);
+        size_t query_k = diagonal ? 0 : std::min(k, nr);
+        size_t count = add(mul(nr, ref_k), mul(nq, query_k));
+        if (!count) return cudaSuccess;
+        unsigned grid = unsigned(std::min(size_t(65535), (count - 1) / 256 + 1));
+        scatter_candidates<<<grid, 256, 0, static_cast<cudaStream_t>(raw_stream)>>>(
+            keys, ids, all_keys, all_ids, nr, ref_k, query_k, ref_start, query_start,
+            block, k, width, count);
+        return cudaGetLastError();
+    } catch (...) { return cudaErrorInvalidValue; }
+}
+
+extern "C" int sketchlib_global_topk(void* workspace, size_t* bytes,
+    const float* keys, const uint32_t* ids, float* out_keys, uint32_t* out_ids,
+    size_t rows, size_t width, size_t k, void* raw_stream) noexcept {
+    try {
+        if (!bytes || !rows || !k || k > width) return cudaErrorInvalidValue;
+        mul(rows, width);
+        mul(rows, k);
+        View view{keys, ids, width, 0, 0, 3};
+        size_t needed = 0;
+        auto stream = static_cast<cudaStream_t>(raw_stream);
+        auto status = direction(nullptr, needed, view, rows, k, nullptr, nullptr, stream);
+        if (status != cudaSuccess) return status;
+        if (!workspace) { *bytes = needed; return cudaSuccess; }
+        if (*bytes < needed || !keys || !ids || !out_keys || !out_ids)
+            return cudaErrorInvalidValue;
+        return direction(workspace, needed, view, rows, k, out_keys, out_ids, stream);
+    } catch (const std::overflow_error&) { return cudaErrorInvalidValue; }
+      catch (...) { return cudaErrorUnknown; }
 }

@@ -63,6 +63,12 @@ compiles the CUB kNN wrapper with `nvcc` and links the CUDA runtime statically;
 no separate CUB installation or manual linking step is needed. The `gpu` feature
 is currently enabled by default in this branch.
 
+GPU kNN retains tile candidates in device memory until a final GPU selection.
+Candidate storage requires approximately `8 * n_samples * n_blocks * k` bytes
+(less for blocks smaller than `k`), plus tile buffers and selection scratch.
+Smaller `--max-sketch-batch` values can therefore increase memory use. An
+allocation failure reports the requested size; there is no automatic CPU fallback.
+
 ## Citation
 
 Please cite:

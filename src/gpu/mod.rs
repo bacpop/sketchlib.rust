@@ -1,4 +1,3 @@
-use std::collections::BinaryHeap;
 use std::fmt::Write as FmtWrite;
 use std::future::Future;
 use std::io::Write as IoWrite;
@@ -26,13 +25,12 @@ use tokio::task::JoinSet;
 
 use crate::distances::distance_matrix::*;
 use crate::distances::jaccard::ani_pois;
-use crate::distances::{push_heap, write_jaccard_heap};
 use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BIN_BITS;
 use crate::utils::get_progress_bar;
 
 mod topk;
-use topk::HostOutput;
+use topk::TileOutput;
 
 const BBITS: u64 = BIN_BITS as u64;
 const DENSE_CHUNK_SIZE: usize = 1000;
@@ -267,8 +265,8 @@ impl DistTile {
         completeness: Arc<DeviceBox<[f32]>>,
         correct_completeness: bool,
         completeness_cutoff: f32,
-        host_output: HostOutput,
-    ) -> Result<impl DeviceOperation<Output = (HostOutput, impl Send), IntoFuture: Send> + '_, Error>
+        tile_output: TileOutput,
+    ) -> Result<impl DeviceOperation<Output = (TileOutput, impl Send), IntoFuture: Send> + '_, Error>
     {
         // Prepare contracts before any device work is submitted, so failures
         // propagate normally rather than panicking inside a pipeline closure.
@@ -371,8 +369,9 @@ impl DistTile {
                                     )| {
                                         topk::Finish {
                                             distances: output,
-                                            host: host_output,
+                                            target: tile_output,
                                             selection,
+                                            sample_offsets,
                                         }
                                         .and_then(
                                             move |(host, output)| {
@@ -400,52 +399,6 @@ impl DistTile {
                     },
                 ),
         )
-    }
-
-    fn merge_candidates(
-        &self,
-        host: &HostOutput,
-        k: usize,
-        heaps: &mut [BinaryHeap<SparseJaccard>],
-    ) -> Result<(), Error> {
-        let shape = topk::Shape::new(
-            self.ref_samples.len(),
-            self.query_samples.len(),
-            k,
-            self.diagonal,
-        )?;
-        let HostOutput::Candidates { keys, ids } = host else {
-            return Err(anyhow!("Expected CUB candidates"));
-        };
-        let ref_count = self.ref_samples.len() * shape.ref_k;
-        for (offset, (&distance, &id)) in keys[..shape.count]
-            .iter()
-            .zip(&ids[..shape.count])
-            .enumerate()
-        {
-            let (row, neighbour, limit) = if offset < ref_count {
-                (
-                    self.ref_samples.start + offset / shape.ref_k,
-                    self.query_samples.start,
-                    self.query_samples.len(),
-                )
-            } else {
-                (
-                    self.query_samples.start + (offset - ref_count) / shape.query_k,
-                    self.ref_samples.start,
-                    self.ref_samples.len(),
-                )
-            };
-            if id as usize >= limit {
-                return Err(anyhow!("CUB returned an invalid neighbour ID"));
-            }
-            push_heap(
-                &mut heaps[row],
-                SparseJaccard(neighbour + id as usize, distance),
-                k,
-            );
-        }
-        Ok(())
     }
 
     fn consume_dense(
@@ -496,8 +449,9 @@ impl DistTile {
 }
 
 /// Write GPU self-distances using at most `max_in_flight_tiles` concurrent tiles.
-/// Slots remain occupied through CPU consumption; larger limits can increase
-/// pinned host and device memory use. This limit does not set the CUDA stream count.
+/// Dense slots remain occupied through CPU consumption; kNN slots return after
+/// device selection/scatter. kNN retains all tile candidates on the device until
+/// final selection. This limit does not set the CUDA stream count.
 /// `None` streams every unordered pair without a global ordering guarantee;
 /// `Some(k)` selects kNN.
 /// Completeness correction uses f32, including its pair-product cutoff test;
@@ -562,16 +516,19 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     );
     let completeness_dev = h2d(&completeness).arc().sync()?;
     let correct_completeness = completeness_vec.is_some();
-    let mut heaps = if let Some(knn) = knn {
-        log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours (GPU)");
-        // Construct individually: cloning an empty heap loses its reserved capacity.
-        // push_heap temporarily needs one spare element before removing the worst.
-        (0..n)
-            .map(|_| BinaryHeap::with_capacity(knn + 1))
-            .collect::<Vec<_>>()
+    let candidates = if let Some(k) = knn {
+        log::info!("Calculating sparse ref vs ref distances with {k} nearest neighbours (GPU)");
+        let layout = topk::Layout::new(n, max_sketch_batch, k)?;
+        log::info!("Retaining GPU tile candidates: {} bytes", layout.bytes);
+        Some(topk::Prepare(layout).sync().with_context(|| {
+            format!(
+                "Unable to allocate/initialise {} bytes of GPU tile candidates",
+                layout.bytes
+            )
+        })?)
     } else {
         log::info!("Calculating all ref vs ref distances (GPU)");
-        Vec::new()
+        None
     };
     let names = <DistanceMatrix as Distances>::sketch_names(sketches);
     let n_blocks = n.div_ceil(max_sketch_batch);
@@ -592,22 +549,10 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let block_size = n.min(max_sketch_batch);
     let max_distances =
         (block_size * (block_size - 1) / 2).max(block_size * (n - block_size).min(block_size));
-    let max_candidates = knn
-        .map(|k| {
-            let diagonal = topk::Shape::new(block_size, block_size, k, true)?.count;
-            let query_size = (n - block_size).min(block_size);
-            let rectangular = if query_size == 0 {
-                0
-            } else {
-                topk::Shape::new(block_size, query_size, k, false)?.count
-            };
-            Ok::<_, Error>(diagonal.max(rectangular))
-        })
-        .transpose()?;
     // Allocate before concurrent dispatch: pinned allocations can synchronize.
-    let mut host_outputs = with_cuda_context(gpu_device_id, |ctx| {
+    let mut tile_outputs = with_cuda_context(gpu_device_id, |ctx| {
         (0..n_slots)
-            .map(|_| HostOutput::new(ctx, max_distances, max_candidates))
+            .map(|_| TileOutput::new(ctx, max_distances, candidates.as_ref()))
             .collect::<Result<Vec<_>, _>>()
     })??;
     let progress = get_progress_bar(n * (n - 1) / 2, true, quiet);
@@ -615,8 +560,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let dense = knn.is_none();
     let consumer_threads = if dense { pool_size - 1 } else { pool_size };
 
-    let mut merge_time = std::time::Duration::ZERO;
-    let result = rayon::in_place_scope(|scope| {
+    rayon::in_place_scope(|scope| {
         let (text_tx, text_rx) = mpsc::sync_channel::<(
             String, usize, Option<oneshot::Sender<()>>,
         )>(2 * consumer_threads);
@@ -661,8 +605,8 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                 // on the bounded channel, including with --threads 1.
                 writer_started_rx.await.context("GPU distance writer failed to start")?;
             }
-            let mut gpu_jobs = JoinSet::<Result<(DistTile, HostOutput), Error>>::new();
-            let mut consumers = JoinSet::<Result<HostOutput, Error>>::new();
+            let mut gpu_jobs = JoinSet::<Result<(DistTile, TileOutput), Error>>::new();
+            let mut consumers = JoinSet::<Result<TileOutput, Error>>::new();
             let result = async {
                 loop {
                     if cancelled.load(Ordering::Relaxed) {
@@ -670,9 +614,9 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                         return Err(anyhow!("GPU distance calculation cancelled"));
                     }
                     // A buffer returns only after consumption, not merely GPU completion.
-                    while !host_outputs.is_empty() {
+                    while !tile_outputs.is_empty() {
                         let Some(tile) = tiles.next() else { break };
-                        let host_output = host_outputs.pop().unwrap();
+                        let tile_output = tile_outputs.pop().unwrap();
                         let module = module.clone();
                         let kmers = Arc::clone(&kmers_dev);
                         let completeness = Arc::clone(&completeness_dev);
@@ -680,7 +624,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                             let (host, device_buffers) = tile.pipeline(
                                 module, kmers, dist_type, k_vals, ani, knn,
                                 completeness, correct_completeness, completeness_cutoff as f32,
-                                host_output,
+                                tile_output,
                             )?.await?;
                             // DeviceBox cleanup remains on the GPU dispatch thread.
                             drop(device_buffers);
@@ -699,16 +643,13 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                         Some(completed) = consumers.join_next(), if !consumers.is_empty() => {
                             let host = completed
                                 .context("GPU tile consumer task failed")??;
-                            host_outputs.push(host);
+                            tile_outputs.push(host);
                         }
                         Some(completed) = gpu_jobs.join_next(), if !gpu_jobs.is_empty() => {
                             let (tile, host) = completed.context("GPU tile task failed")??;
-                            if let Some(k) = knn {
-                                let start = std::time::Instant::now();
-                                tile.merge_candidates(&host, k, &mut heaps)?;
-                                merge_time += start.elapsed();
+                            if knn.is_some() {
                                 progress.inc(tile.n_distances as u64);
-                                host_outputs.push(host);
+                                tile_outputs.push(host);
                                 continue;
                             }
                             let (done_tx, done_rx) = oneshot::channel();
@@ -751,30 +692,52 @@ pub fn self_dists_stream<W: IoWrite + Send>(
             if dense {
                 writer_done_rx.await.context("GPU distance writer stopped")??;
             }
-            Ok(())
+            if let Some(candidates) = candidates {
+                // Slot tickets no longer need to retain the candidate arrays.
+                // The final operation owns them until its download completes.
+                tile_outputs.clear();
+                let selection = with_cuda_context(gpu_device_id, |ctx| {
+                    topk::Select::new(candidates, ctx)
+                })??;
+                let start = std::time::Instant::now();
+                let selected = selection.await.context("Final GPU kNN selection/download failed")?;
+                log::info!("Final GPU kNN selection/download: {:.3}s", start.elapsed().as_secs_f64());
+                Ok(Some(selected))
+            } else {
+                Ok(None)
+            }
         })
     }).inspect(|_| {
         // Close the distance bar before sparse output moves stderr's cursor.
         progress.finish_and_clear();
     }).inspect_err(|_| {
         progress.abandon();
-    }).and_then(|()| {
+    }).and_then(|selected| {
         if let Some(knn) = knn {
+            let (keys, ids) = selected.context("Missing final GPU kNN results")?;
             let mut distances = SparseDistanceMatrix::new(sketches, knn, dist_type);
             if let DistVec::Jaccard(rows) = distances.dists_mut() {
-                for (heap, row) in heaps.into_iter().zip(rows.chunks_mut(knn)) {
-                    write_jaccard_heap(heap, row, ani);
+                for (sample, row) in rows.chunks_mut(knn).enumerate() {
+                    for (j, output) in row.iter_mut().enumerate() {
+                        let i = sample * knn + j;
+                        let neighbour = ids[i] as usize;
+                        anyhow::ensure!(neighbour < n && neighbour != sample,
+                            "CUB returned an invalid global neighbour ID");
+                        *output = SparseJaccard(neighbour, keys[i]);
+                    }
+                    row.sort_unstable();
+                    if ani {
+                        for output in row {
+                            output.1 = 1.0_f32 - output.1;
+                        }
+                    }
                 }
             }
             log::info!("Writing out in sparse matrix form");
             write!(writer, "{distances}")?;
         }
         Ok(())
-    });
-    if knn.is_some() {
-        log::info!("Host global kNN merging: {:.3}s", merge_time.as_secs_f64());
-    }
-    result
+    })
 }
 
 #[allow(dead_code)] // Retain the canonical u64 implementation for reference.

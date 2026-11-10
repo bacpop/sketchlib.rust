@@ -1,6 +1,134 @@
 # CUDA self-distance planning
 
-## Current round: CUB tile-level kNN with host global selection
+## Current round: retain tile candidates for device-only global kNN selection
+
+Status: implementation, local correctness validation and paired profiling complete.
+
+### Implementation
+
+- Keep the existing CUB tile selection. A small kernel scatters its results into
+  persistent device distance/ID arrays, converting local neighbour IDs to global
+  u32 IDs. Every tile writes disjoint regions; no atomics or merge stream are
+  needed, and tile scheduling/round-robin stream assignment is preserved.
+- Each sample has a contiguous candidate row, with `min(k, block_size)` entries
+  per neighbour block. If `W` is the sum of these capacities, storage is
+  `8 * n_samples * W` bytes. Initialise only the single unused own-block entry
+  when a block has at most k samples, using infinity and an invalid ID; this also
+  handles skipped singleton diagonal tiles. Check sizes/offsets through the
+  layout and reject global IDs exceeding u32. Log required storage and fail
+  clearly on allocation errors, with no automatic host fallback or new CLI flag.
+- Remove GPU-path host heaps, per-tile pinned candidate buffers, host merging
+  and per-tile candidate downloads. kNN slots return after selection/scatter.
+  Dense pinned buffers, formatting, writing and slot release remain unchanged.
+- After all tile futures succeed, reuse the CUB wrapper's existing staged
+  contiguous-row reduction for final per-sample top-k, including the large-k
+  fallback. Allocate separate output arrays and scratch after tile completion;
+  download only `n_samples * k` distance/ID pairs. CPU code validates IDs, sorts
+  the final rows by ranking distance, converts inverse ANI, and writes the
+  existing sparse format. Cutoff ties remain unspecified.
+- Completion leases retain arrays, scratch and pinned destinations through GPU
+  completion/cancellation. Raw scatter accesses retain the persistent owner
+  without a conflicting whole-array write lease; final selection starts only
+  after every tile completes. Release slot owners before final selection so
+  persistent storage can be freed after download, before text output.
+- New private C ABI functions initialise padding, scatter and select global
+  candidates; the C++ wrapper still performs no allocations/frees or stream
+  synchronisation. Public Rust APIs, CUDA requirements and compilation targets
+  are unchanged. README documents the device-memory tradeoff. Replace host merge
+  timing with final selection/download timing; finish progress before sparse output.
+
+### Local validation
+
+- `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build` passed, as did the release
+  suite via `cargo oxide test -- --release`: 79 tests plus one doctest, including
+  three new layout tests for short blocks, padding, invalid sizes and overflow.
+- The existing validator passed its smoke run, 33 CPU/GPU comparisons and both
+  dense writer-failure checks on the RTX 3090 (CUDA ordinal 1). Maximum absolute
+  error was 1.57e-7. Report: `/tmp/sketchlib-cuda-async-i7c8zyq0/report.json`.
+- Six additional 257-sample comparisons passed on the RTX 3090 and RTX 5090
+  (CUDA ordinal 0), covering both stored k-mers, reordered subsets, Jaccard/ANI,
+  k=1/50/256, blocks smaller than k, one block, singleton remainders and in-flight
+  limits 1/4/8. A final smoke comparison after the ownership cleanup also passed.
+- Twelve temporary ABI checks passed for shuffled tile order, exact scatter/ID
+  mapping, singleton padding, ties, 4096/4097-wide rows, recursive reduction
+  (3 x 20000, k=2048), and the large-k fallback (3 x 5003, k=2500). The isolated
+  ABI checks passed CUDA 13.5 Compute Sanitizer initcheck with zero errors.
+- Full-application initcheck is not clean: it reports uninitialised reads in
+  `interleave_sketches`, also reproduced with the rebuilt previous commit.
+  This existing finding needs separate investigation; it was not changed here.
+  Source review verified that failed tile batches cancel/join outstanding jobs
+  before returning and skip global selection; retained owners protect submitted
+  work. No separate injected tile-failure test was added.
+- An 80 GB candidate request failed before tile dispatch, reporting both the
+  total requested bytes and CUDA's out-of-memory error. Rust formatting and
+  `git diff --check` passed.
+
+### Paired performance and memory
+
+- Rebuilt the previous commit with the same CUDA 13.5 toolkit and dependency
+  lockfile because the initially saved executable could not load its PTX locally.
+  Three alternating runs per implementation on the RTX 5090, UUID
+  `7d7167cd-2271-ca80-1c88-bbab76b0be44` (CUDA ordinal 0), used `100k_subset`,
+  k-mer 31, ANI, k=50, batch size 5000, four in-flight tiles, 16 CPU threads,
+  default completion reactor and output redirected to `/dev/null`.
+- Median process wall time decreased **5.435 s -> 5.032 s (7.4%)**. Individual
+  before runs were 5.487/5.435/5.385 s; after runs were 5.032/4.984/5.035 s.
+  These measurements are specific to this machine/workload, not H200 results.
+- Paired CUDA/NVTX/OSRT traces with memory tracking confirm **800 MB -> 40 MB**
+  D2H volume: 420 per-tile copies are replaced by two final 20 MB copies. Both
+  traces show work overlapping across four streams. All three synchronisation
+  calls in the new trace precede the first distance kernel (previously two);
+  the extra call completes candidate allocation/padding at startup. Final CUB
+  selection follows every scatter, and both persistent arrays are freed after
+  the final D2H completes.
+- The retained candidate arrays require **800 MB**. Peak tracked device
+  allocations rose **611,844,104 -> 1,499,794,104 bytes**; maximum recorded pool
+  reservation rose **939,524,096 -> 1,845,493,760 bytes**. These exclude CUDA
+  context/driver overhead and are not total GPU VRAM usage.
+- In the profiled GPU phase (first dists start to final D2H completion), elapsed
+  time was 3.719 -> 3.451 s and summed idle gaps 0.419 -> 0.032 s. Distance kernel
+  totals were essentially unchanged (2.592 -> 2.598 s); 210 scatter kernels
+  totalled 1.14 ms. The final selection/download took about 13 ms in an unprofiled
+  run, excluding workspace query and pinned allocation. Trace memory tracking
+  adds overhead, so use the unprofiled runs for the wall-time comparison.
+- An earlier RTX 3090 comparison was contaminated by another GPU workload and
+  active thermal throttling; retain its logs but do not use it for speed claims.
+  Binaries, checks, logs and measurements are under
+  `/tmp/sketchlib-device-global-topk`; RTX 5090 traces, SQLite exports and
+  `summary.json` are in its `gpu0` subdirectory. CPU sampling remains unavailable
+  under current permissions, so traces disable sampling/context-switch tracing.
+
+### Follow-up: comparisons with idle GPUs
+
+These rerun wall times supersede the earlier timing comparison above; the
+earlier traces remain the evidence for transfer volume and memory use.
+
+- Reused the same baseline/new executables, dataset, flags and output destination.
+  After warming both implementations, measured three runs each in alternating
+  order, with GPUs tested sequentially and no profiler. One-second `nvidia-smi`
+  sampling found no other compute processes in either reported set.
+- The first 3090 rerun caught one thermal-throttling sample as heat accumulated.
+  Repeated that card's measurements with 20-second cooling intervals. The final
+  3090 set had no thermal throttling observed and reached at most 66 C; the 5090
+  reached 58 C with no thermal throttling observed.
+
+| GPU | Baseline median | Device-only median | Runtime change |
+| --- | ---: | ---: | ---: |
+| RTX 3090 (CUDA ordinal 1) | 7.042 s | 7.143 s | 1.4% slower |
+| RTX 5090 (CUDA ordinal 0) | 5.534 s | 5.235 s | 5.4% faster |
+
+- Individual 3090 runs: baseline 6.942/7.093/7.042 s; device-only
+  7.292/7.143/7.093 s. Individual 5090 runs: baseline 5.583/5.431/5.534 s;
+  device-only 5.232/5.332/5.235 s. The small 3090 difference is comparable to
+  run-to-run variation; these results show no speed benefit on that card for
+  this workload. Three runs per implementation do not establish statistical
+  significance or performance on other workloads/devices.
+- Raw logs, binary hashes, commands and monitoring samples are in
+  `/tmp/sketchlib-device-global-topk/rerun-cooled-20261110T130728Z` (3090) and
+  `/tmp/sketchlib-device-global-topk/rerun-20261110T130451Z` (5090). Combined
+  results: `/tmp/sketchlib-device-global-topk/rerun-summary.json`.
+
+## Completed round: CUB tile-level kNN with host global selection
 
 Status: implementation, local validation and paired profiling complete.
 
