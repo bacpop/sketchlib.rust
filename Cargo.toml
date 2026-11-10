@@ -16,6 +16,7 @@ homepage = "https://bacpop.org/software/"
 license = "Apache-2.0"
 readme = "README.md"
 include = [
+    "/build.rs",
     "/Cargo.toml",
     "/LICENSE",
     "/NOTICE",
@@ -32,6 +33,7 @@ crate-type = ["cdylib", "lib"]
 # TODO remove default gpu
 default = ["gpu"]
 gpu = [
+    "dep:cc",
     "dep:cuda-device",
     "dep:cuda-host",
     "dep:cuda-core",
@@ -131,6 +133,7 @@ js-sys = {version = "0.3.51" }
 
 
 [build-dependencies]
+cc = { version = "1", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # testing

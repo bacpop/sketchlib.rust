@@ -51,6 +51,18 @@ xattr -d "com.apple.quarantine" ./sketchlib
 1. Clone the repository with git clone.
 2. Run `cargo install --path .` or `RUSTFLAGS="-C target-cpu=native" cargo install --path .` to optimise for your machine.
 
+GPU builds use `cargo-oxide` and require CUDA Toolkit 13.5 or newer, including
+CCCL/CUB 3.5+ and `nvcc`. Select the toolkit explicitly, for example:
+
+```bash
+CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build
+```
+
+`CUDA_TOOLKIT_PATH` takes precedence over `CUDA_HOME` when both are set. Cargo
+compiles the CUB kNN wrapper with `nvcc` and links the CUDA runtime statically;
+no separate CUB installation or manual linking step is needed. The `gpu` feature
+is currently enabled by default in this branch.
+
 ## Citation
 
 Please cite:
