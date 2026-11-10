@@ -1,6 +1,87 @@
 # CUDA self-distance planning
 
-## Current round: preallocate global GPU kNN heaps
+## Current round: CUB tile-level kNN with host global selection
+
+Status: implementation, local validation and paired profiling complete.
+
+### Implementation and build
+
+- A private CUDA C++ wrapper dispatches CUB through two C ABI functions: a
+  workspace-query/execution entry point and runtime error-string lookup. Cargo's
+  GPU-feature-gated build script uses `cc`/`nvcc` and the static CUDA runtime.
+  The wrapper never allocates/frees GPU memory or synchronizes streams.
+- GPU builds explicitly select `CUDA_TOOLKIT_PATH` (first) or `CUDA_HOME` and
+  require CUDA 13.5+ with CCCL/CUB 3.5+. The build script reports missing/older
+  toolkits clearly. The wrapper and build script are included in source packages.
+- Native SM80 and SM120 code plus compute_80 PTX support the local Ampere and
+  Blackwell devices. The extra native SM120 image avoids requiring newer-PTX JIT
+  support from a driver operating under CUDA minor-version compatibility.
+- CUB `DeviceBatchedTopK::MinPairs` reads logical reference rows, query columns
+  and self-excluding condensed diagonal rows through device iterators, without
+  another full matrix allocation. It uses float distances and u32 block-local IDs.
+- Effective k is clamped per row. For k <= 2,048, 4,096-item chunks are reduced
+  repeatedly on the GPU until each tile row has at most k candidates. Larger
+  effective k uses `DeviceTopK::MinPairs` per row with reusable scratch. Output
+  is unsorted and may choose different valid cutoff ties, matching the existing
+  validation contract. Existing distance/inverse-ANI ranking is preserved.
+- Selection and compact candidate D2H copies run on the tile's stream after
+  `dists()`. Raw CUDA accesses retain scratch, device results, pinned transfer
+  buffers and source owners in submission leases through completion/cancellation.
+  Pinned outputs remain reusable per-slot allocations.
+- The GPU kNN path no longer scans full matrices or builds tile-local CPU heaps.
+  It merges candidates directly into the preallocated global host heaps, logs
+  aggregate host merge time at verbose level, and preserves final sorting/output.
+  Global merging stays on the dispatch thread; tile independence, stream policy,
+  admission limits and dense-distance behaviour are preserved. Zero GPU k is
+  rejected explicitly; public signatures and CLI arguments are unchanged.
+
+### Validation
+
+- `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build` passed, followed by the full
+  existing suite via `cargo oxide test -- --release`: 76 tests and one doctest
+  passed. No Cargo harness tests were added.
+- The existing CLI runner passed its smoke run, 33 CPU/GPU comparisons and two
+  writer-failure cases. These cover dense/kNN, ANI, completeness correction,
+  reordered subsets, multiple layouts and worker counts. Maximum distance error
+  remained approximately 1e-7 within the existing 1e-6 tolerance. Report:
+  `/tmp/sketchlib-cuda-async-lx932h47/report.json`.
+- Four additional end-to-end comparisons passed for both stored k-mers, k=1/50/256,
+  reversed subsets, singleton remainders and in-flight limits 1/4/8. Both local
+  CUDA ordinals 0 (RTX 5090) and 1 (RTX 3090) were exercised. Zero k rejection passed.
+- Temporary ABI checks passed for rectangular rows/columns, condensed diagonals,
+  ties, singleton endpoints, segment lengths 4,096/4,097, multi-row recursive
+  reduction (3 x 20,000, k=2,048), and the large-k fallback (3 x 5,003, k=2,500).
+  Probe: `/tmp/sketchlib-cub-abi.py`; packaged source listing contains all new files.
+- Build-script checks passed for missing toolkit selection and precedence/version
+  rejection using a synthetic older-version header. Manual ownership/diff review,
+  Rust formatting and `git diff --check` passed.
+
+### Paired performance profile
+
+- The baseline was saved after global heap preallocation. Both runs use the
+  RTX 3090 UUID `4b643a37-e171-2c2f-5e65-4abde7aca8c8` (CUDA ordinal 1), verified
+  from trace metadata, with `100k_subset`, k-mer 31, 5,000-sample blocks, k=50,
+  ANI, 16 CPU threads, four in-flight tiles and the default completion reactor.
+- Logged application time: **10.051 s before, 6.606 s after**. Tile-phase duration
+  (first `dists()` start to final D2H completion): **8.065 s to 4.946 s**.
+- D2H volume fell from **19,999,800,000 bytes to 800,000,000 bytes**, approximately
+  25-fold. Each off-diagonal tile transfers two 2 MB arrays instead of 100 MB of
+  distances; each diagonal tile transfers two 1 MB arrays instead of 49.99 MB.
+- Time with no traced kernels/copies/memsets during the tile phase decreased
+  from **2.895 s to 0.000461 s**; the longest such gap fell from 85.615 ms to
+  0.345 ms. The 800 CUB selection kernels totalled 0.370 s of kernel duration;
+  `dists()` kernel durations totalled 4.556 s versus 4.279 s before. These are
+  summed kernel durations, not isolated exclusive GPU times. Host global merging
+  was 1.349 s and remains a potential future optimisation.
+- Both traces contain only the two startup `cuStreamSynchronize` calls. CPU
+  sampling remains unavailable under current user permissions, so profiles use
+  CUDA/NVTX/OSRT tracing without sampling or CPU context-switch tracing. These
+  measurements are one paired run, not a repeated benchmark or a hardware SM
+  utilisation measurement.
+- Baseline executable, logs, traces, exported SQLite, command measurements and
+  metric summary are in `/tmp/sketchlib-cub-p02qvhml`.
+
+## Completed round: preallocate global GPU kNN heaps
 
 Status: implementation, correctness checks and paired profiling complete.
 

@@ -17,9 +17,7 @@ use cuda_async::device_context::{init_device_contexts, with_cuda_context};
 use cuda_async::device_operation::{self, value, DeviceOperation, Zippable};
 use cuda_async::zip;
 use cuda_core::device_buffer::DeviceCopy;
-use cuda_core::memory::{
-    malloc_async, memcpy_dtoh_async, memcpy_htod_async, memset_d8_async,
-};
+use cuda_core::memory::{malloc_async, memcpy_htod_async, memset_d8_async};
 use cuda_core::{LaunchConfig1D, PinnedHostBuffer};
 use cuda_device::{device, kernel, launch_bounds, launch_contract, thread, DisjointSlice};
 use cuda_host::cuda_module;
@@ -32,6 +30,9 @@ use crate::distances::{push_heap, write_jaccard_heap};
 use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BIN_BITS;
 use crate::utils::get_progress_bar;
+
+mod topk;
+use topk::HostOutput;
 
 const BBITS: u64 = BIN_BITS as u64;
 const DENSE_CHUNK_SIZE: usize = 1000;
@@ -262,15 +263,13 @@ impl DistTile {
         dist_type: DistType,
         k_vals: Option<(usize, f64)>,
         ani: bool,
-        inverse_ani: bool,
+        knn: Option<usize>,
         completeness: Arc<DeviceBox<[f32]>>,
         correct_completeness: bool,
         completeness_cutoff: f32,
-        host_output: PinnedHostBuffer<f32>,
-    ) -> Result<
-        impl DeviceOperation<Output = (PinnedHostBuffer<f32>, impl Send), IntoFuture: Send> + '_,
-        Error,
-    > {
+        host_output: HostOutput,
+    ) -> Result<impl DeviceOperation<Output = (HostOutput, impl Send), IntoFuture: Send> + '_, Error>
+    {
         // Prepare contracts before any device work is submitted, so failures
         // propagate normally rather than panicking inside a pipeline closure.
         let prepared_ref = module.prepare_interleave_sketches(self.interleave_ref_cfg)?;
@@ -287,200 +286,212 @@ impl DistTile {
         let query_slice = &self.sketches[self.query_bins.clone()];
         let host_sketches = Arc::clone(&self.sketches);
         let module_owner = module.clone();
+        let inverse_ani = knn.is_some();
+        let selection = knn
+            .map(|k| topk::Shape::new(n_ref, n_query, k, diagonal)?.query())
+            .transpose()?;
 
         // https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html
-        Ok(zip!(
-            h2d(&self.sketches[self.ref_bins.clone()]),
-            zeros_u64(self.ref_bins.len())
-        )
-        .and_then(move |(input, interleaved)| {
-            module
-                .interleave_sketches_async_owned(
-                    &prepared_ref,
-                    input,
-                    n_ref,
-                    n_kmers,
-                    n_bins,
-                    interleaved,
-                )
-                .and_then(move |(input, interleaved)| value((input, interleaved, module)))
-        })
-        .and_then(move |(ref_input, ref_interleaved, module)| {
-            zip!(h2d(query_slice), zeros_u64(query_slice.len())).and_then(
-                move |(input, interleaved)| {
+        Ok(
+            topk::KeepAlive((Arc::clone(&host_sketches), module_owner.clone()))
+                .and_then(move |_| {
+                    zip!(
+                        h2d(&self.sketches[self.ref_bins.clone()]),
+                        zeros_u64(self.ref_bins.len())
+                    )
+                })
+                .and_then(move |(input, interleaved)| {
                     module
                         .interleave_sketches_async_owned(
-                            &prepared_query,
+                            &prepared_ref,
                             input,
-                            n_query,
+                            n_ref,
                             n_kmers,
                             n_bins,
                             interleaved,
                         )
-                        .and_then(move |(query_input, query_interleaved)| {
-                            value((
-                                ref_input,
-                                ref_interleaved,
-                                query_input,
-                                query_interleaved,
-                                module,
-                            ))
-                        })
-                },
-            )
-        })
-        .and_then(
-            move |(ref_input, ref_interleaved, query_input, query_interleaved, module)| {
-                zeros(n_distances).and_then(move |output| {
-                    module
-                        .dists_async_owned(
-                            &prepared_dist,
-                            ref_interleaved,
-                            query_interleaved,
-                            n_ref,
-                            n_query,
-                            (n_ref, n_ref * n_bins, 1),
-                            (n_query, n_query * n_bins, 1),
-                            sketchsize64,
-                            kmers,
-                            dist_type,
-                            k_vals,
-                            ani,
-                            inverse_ani,
-                            diagonal,
-                            completeness,
-                            correct_completeness,
-                            completeness_cutoff,
-                            sample_offsets,
-                            output,
-                        )
-                        .and_then(
-                            move |(
-                                ref_interleaved,
-                                query_interleaved,
-                                kmers,
-                                completeness,
-                                output,
-                            )| {
-                                d2h(output, host_output).and_then(move |(host, output)| {
-                                    // DeviceBox frees on a separate stream. Retain every
-                                    // allocation through completion or SDK reclamation.
+                        .and_then(move |(input, interleaved)| value((input, interleaved, module)))
+                })
+                .and_then(move |(ref_input, ref_interleaved, module)| {
+                    zip!(h2d(query_slice), zeros_u64(query_slice.len())).and_then(
+                        move |(input, interleaved)| {
+                            module
+                                .interleave_sketches_async_owned(
+                                    &prepared_query,
+                                    input,
+                                    n_query,
+                                    n_kmers,
+                                    n_bins,
+                                    interleaved,
+                                )
+                                .and_then(move |(query_input, query_interleaved)| {
                                     value((
-                                        host,
-                                        (
-                                            ref_input,
-                                            ref_interleaved,
-                                            query_input,
-                                            query_interleaved,
-                                            kmers,
-                                            completeness,
-                                            output,
-                                            host_sketches,
-                                            module_owner,
-                                        ),
+                                        ref_input,
+                                        ref_interleaved,
+                                        query_input,
+                                        query_interleaved,
+                                        module,
                                     ))
                                 })
-                            },
-                        )
+                        },
+                    )
                 })
-            },
-        ))
+                .and_then(
+                    move |(ref_input, ref_interleaved, query_input, query_interleaved, module)| {
+                        zeros(n_distances).and_then(move |output| {
+                            module
+                                .dists_async_owned(
+                                    &prepared_dist,
+                                    ref_interleaved,
+                                    query_interleaved,
+                                    n_ref,
+                                    n_query,
+                                    (n_ref, n_ref * n_bins, 1),
+                                    (n_query, n_query * n_bins, 1),
+                                    sketchsize64,
+                                    kmers,
+                                    dist_type,
+                                    k_vals,
+                                    ani,
+                                    inverse_ani,
+                                    diagonal,
+                                    completeness,
+                                    correct_completeness,
+                                    completeness_cutoff,
+                                    sample_offsets,
+                                    output,
+                                )
+                                .and_then(
+                                    move |(
+                                        ref_interleaved,
+                                        query_interleaved,
+                                        kmers,
+                                        completeness,
+                                        output,
+                                    )| {
+                                        topk::Finish {
+                                            distances: output,
+                                            host: host_output,
+                                            selection,
+                                        }
+                                        .and_then(
+                                            move |(host, output)| {
+                                                // Submission leases independently retain these
+                                                // resources through completion or cancellation.
+                                                value((
+                                                    host,
+                                                    (
+                                                        ref_input,
+                                                        ref_interleaved,
+                                                        query_input,
+                                                        query_interleaved,
+                                                        kmers,
+                                                        completeness,
+                                                        output,
+                                                        host_sketches,
+                                                        module_owner,
+                                                    ),
+                                                ))
+                                            },
+                                        )
+                                    },
+                                )
+                        })
+                    },
+                ),
+        )
     }
 
-    // Parallel kNN tasks own one sample row's heap each, sharing the Rayon pool.
-    // Read each stored pair for both endpoints, avoiding locks, extra partial
-    // heaps, and distance copies. Future: benchmark shared heaps protected by
-    // locks, or a suitable atomic heap design, with partitions that keep
-    // collisions rare; that could make a single pass over distances worthwhile.
-    fn consume(
+    fn merge_candidates(
+        &self,
+        host: &HostOutput,
+        k: usize,
+        heaps: &mut [BinaryHeap<SparseJaccard>],
+    ) -> Result<(), Error> {
+        let shape = topk::Shape::new(
+            self.ref_samples.len(),
+            self.query_samples.len(),
+            k,
+            self.diagonal,
+        )?;
+        let HostOutput::Candidates { keys, ids } = host else {
+            return Err(anyhow!("Expected CUB candidates"));
+        };
+        let ref_count = self.ref_samples.len() * shape.ref_k;
+        for (offset, (&distance, &id)) in keys[..shape.count]
+            .iter()
+            .zip(&ids[..shape.count])
+            .enumerate()
+        {
+            let (row, neighbour, limit) = if offset < ref_count {
+                (
+                    self.ref_samples.start + offset / shape.ref_k,
+                    self.query_samples.start,
+                    self.query_samples.len(),
+                )
+            } else {
+                (
+                    self.query_samples.start + (offset - ref_count) / shape.query_k,
+                    self.ref_samples.start,
+                    self.ref_samples.len(),
+                )
+            };
+            if id as usize >= limit {
+                return Err(anyhow!("CUB returned an invalid neighbour ID"));
+            }
+            push_heap(
+                &mut heaps[row],
+                SparseJaccard(neighbour + id as usize, distance),
+                k,
+            );
+        }
+        Ok(())
+    }
+
+    fn consume_dense(
         &self,
         distances: &[f32],
-        knn: Option<usize>,
         names: &[&str],
         text_tx: &SyncSender<(String, usize, Option<oneshot::Sender<()>>)>,
         written: oneshot::Sender<()>,
         cancelled: &AtomicBool,
-    ) -> Result<Vec<BinaryHeap<SparseJaccard>>, Error> {
+    ) -> Result<(), Error> {
         let n_ref = self.ref_samples.len();
         let n_query = self.query_samples.len();
-        if let Some(knn) = knn {
-            let n_rows = n_ref + if self.diagonal { 0 } else { n_query };
-            let mut heaps = vec![BinaryHeap::new(); n_rows];
-            heaps
-                .par_iter_mut()
-                .enumerate()
-                .try_for_each(|(row, heap)| -> Result<(), Error> {
-                    let (n_neighbours, sample_start) = if self.diagonal || row < n_ref {
-                        (n_query, self.query_samples.start)
-                    } else {
-                        (n_ref, self.ref_samples.start)
-                    };
-                    // Keep cancellation checks coarse, as in dense formatting.
-                    for start in (0..n_neighbours).step_by(DENSE_CHUNK_SIZE) {
-                        if cancelled.load(Ordering::Relaxed) {
-                            return Err(anyhow!("GPU distance calculation cancelled"));
-                        }
-                        for neighbour in start..n_neighbours.min(start + DENSE_CHUNK_SIZE) {
-                            let idx = if self.diagonal {
-                                if row == neighbour {
-                                    continue;
-                                }
-                                square_to_condensed(row.min(neighbour), row.max(neighbour), n_ref)
-                            } else if row < n_ref {
-                                row * n_query + neighbour
-                            } else {
-                                neighbour * n_query + row - n_ref
-                            };
-                            push_heap(
-                                heap,
-                                SparseJaccard(sample_start + neighbour, distances[idx]),
-                                knn,
-                            );
-                        }
+        distances
+            .par_chunks(DENSE_CHUNK_SIZE)
+            .enumerate()
+            .try_for_each(|(chunk_idx, chunk)| -> Result<(), Error> {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(anyhow!("GPU distance calculation cancelled"));
+                }
+                let (mut i, mut j) =
+                    dist_pair_indices(chunk_idx * DENSE_CHUNK_SIZE, n_ref, n_query, self.diagonal);
+                let mut text = String::with_capacity(chunk.len() * 24);
+                for &distance in chunk {
+                    writeln!(
+                        text,
+                        "{}\t{}\t{distance}",
+                        names[self.ref_samples.start + i],
+                        names[self.query_samples.start + j]
+                    )?;
+                    j += 1;
+                    if j == n_query {
+                        i += 1;
+                        j = if self.diagonal { i + 1 } else { 0 };
                     }
-                    Ok(())
-                })?;
-            Ok(heaps)
-        } else {
-            distances
-                .par_chunks(DENSE_CHUNK_SIZE)
-                .enumerate()
-                .try_for_each(|(chunk_idx, chunk)| -> Result<(), Error> {
-                    if cancelled.load(Ordering::Relaxed) {
-                        return Err(anyhow!("GPU distance calculation cancelled"));
-                    }
-                    let (mut i, mut j) = dist_pair_indices(
-                        chunk_idx * DENSE_CHUNK_SIZE,
-                        n_ref,
-                        n_query,
-                        self.diagonal,
-                    );
-                    let mut text = String::with_capacity(chunk.len() * 24);
-                    for &distance in chunk {
-                        writeln!(
-                            text,
-                            "{}\t{}\t{distance}",
-                            names[self.ref_samples.start + i],
-                            names[self.query_samples.start + j]
-                        )?;
-                        j += 1;
-                        if j == n_query {
-                            i += 1;
-                            j = if self.diagonal { i + 1 } else { 0 };
-                        }
-                    }
-                    text_tx
-                        .send((text, chunk.len(), None))
-                        .context("GPU distance writer stopped")?;
-                    Ok(())
-                })?;
-            // All parallel sends have completed, so the marker follows every
-            // chunk of this tile even though producers use different threads.
-            text_tx
-                .send((String::new(), 0, Some(written)))
-                .context("GPU distance writer stopped")?;
-            Ok(Vec::new())
-        }
+                }
+                text_tx
+                    .send((text, chunk.len(), None))
+                    .context("GPU distance writer stopped")?;
+                Ok(())
+            })?;
+        // All parallel sends have completed, so the marker follows every
+        // chunk of this tile even though producers use different threads.
+        text_tx
+            .send((String::new(), 0, Some(written)))
+            .context("GPU distance writer stopped")?;
+        Ok(())
     }
 }
 
@@ -522,8 +533,8 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     if n < 256 {
         return Err(anyhow!("GPU self-distances require at least 256 samples"));
     }
-    if knn.is_some_and(|knn| knn >= n) {
-        return Err(anyhow!("GPU kNN requires knn to be smaller than n"));
+    if knn.is_some_and(|knn| knn == 0 || knn >= n) {
+        return Err(anyhow!("GPU kNN requires 1 <= knn < n"));
     }
     let (k_vals, ani) = match dist_type {
         DistType::Jaccard(k_idx, k_val, ani) => (Some((k_idx, k_val)), ani),
@@ -581,10 +592,22 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let block_size = n.min(max_sketch_batch);
     let max_distances =
         (block_size * (block_size - 1) / 2).max(block_size * (n - block_size).min(block_size));
+    let max_candidates = knn
+        .map(|k| {
+            let diagonal = topk::Shape::new(block_size, block_size, k, true)?.count;
+            let query_size = (n - block_size).min(block_size);
+            let rectangular = if query_size == 0 {
+                0
+            } else {
+                topk::Shape::new(block_size, query_size, k, false)?.count
+            };
+            Ok::<_, Error>(diagonal.max(rectangular))
+        })
+        .transpose()?;
     // Allocate before concurrent dispatch: pinned allocations can synchronize.
     let mut host_outputs = with_cuda_context(gpu_device_id, |ctx| {
         (0..n_slots)
-            .map(|_| PinnedHostBuffer::<f32>::zeroed(ctx, max_distances))
+            .map(|_| HostOutput::new(ctx, max_distances, max_candidates))
             .collect::<Result<Vec<_>, _>>()
     })??;
     let progress = get_progress_bar(n * (n - 1) / 2, true, quiet);
@@ -592,6 +615,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     let dense = knn.is_none();
     let consumer_threads = if dense { pool_size - 1 } else { pool_size };
 
+    let mut merge_time = std::time::Duration::ZERO;
     let result = rayon::in_place_scope(|scope| {
         let (text_tx, text_rx) = mpsc::sync_channel::<(
             String, usize, Option<oneshot::Sender<()>>,
@@ -637,10 +661,8 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                 // on the bounded channel, including with --threads 1.
                 writer_started_rx.await.context("GPU distance writer failed to start")?;
             }
-            let mut gpu_jobs = JoinSet::<Result<(DistTile, PinnedHostBuffer<f32>), Error>>::new();
-            let mut consumers = JoinSet::<Result<
-                (DistTile, PinnedHostBuffer<f32>, Vec<BinaryHeap<SparseJaccard>>), Error,
-            >>::new();
+            let mut gpu_jobs = JoinSet::<Result<(DistTile, HostOutput), Error>>::new();
+            let mut consumers = JoinSet::<Result<HostOutput, Error>>::new();
             let result = async {
                 loop {
                     if cancelled.load(Ordering::Relaxed) {
@@ -656,7 +678,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                         let completeness = Arc::clone(&completeness_dev);
                         gpu_jobs.spawn(async move {
                             let (host, device_buffers) = tile.pipeline(
-                                module, kmers, dist_type, k_vals, ani, knn.is_some(),
+                                module, kmers, dist_type, k_vals, ani, knn,
                                 completeness, correct_completeness, completeness_cutoff as f32,
                                 host_output,
                             )?.await?;
@@ -675,26 +697,20 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                             return Err(anyhow!("GPU distance writer stopped before all tiles were consumed"));
                         }
                         Some(completed) = consumers.join_next(), if !consumers.is_empty() => {
-                            let (tile, host, local_heaps) = completed
+                            let host = completed
                                 .context("GPU tile consumer task failed")??;
-                            if let Some(knn) = knn {
-                                let n_ref = tile.ref_samples.len();
-                                for (row, local_heap) in local_heaps.into_iter().enumerate() {
-                                    let global_row = if row < n_ref {
-                                        tile.ref_samples.start + row
-                                    } else {
-                                        tile.query_samples.start + row - n_ref
-                                    };
-                                    for candidate in local_heap {
-                                        push_heap(&mut heaps[global_row], candidate, knn);
-                                    }
-                                }
-                                progress.inc(tile.n_distances as u64);
-                            }
                             host_outputs.push(host);
                         }
                         Some(completed) = gpu_jobs.join_next(), if !gpu_jobs.is_empty() => {
                             let (tile, host) = completed.context("GPU tile task failed")??;
+                            if let Some(k) = knn {
+                                let start = std::time::Instant::now();
+                                tile.merge_candidates(&host, k, &mut heaps)?;
+                                merge_time += start.elapsed();
+                                progress.inc(tile.n_distances as u64);
+                                host_outputs.push(host);
+                                continue;
+                            }
                             let (done_tx, done_rx) = oneshot::channel();
                             let (written_tx, written_rx) = oneshot::channel();
                             let text_tx = text_tx.clone();
@@ -702,19 +718,17 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                             let cancelled = &cancelled;
                             scope.spawn(move |_| {
                                 let result = catch_unwind(AssertUnwindSafe(|| {
-                                    let local_heaps = tile.consume(
-                                        &host[..tile.n_distances], knn, names,
+                                    tile.consume_dense(
+                                        &host.dense()[..tile.n_distances], names,
                                         &text_tx, written_tx, cancelled,
                                     )?;
-                                    Ok((tile, host, local_heaps))
+                                    Ok(host)
                                 })).unwrap_or_else(|_| Err(anyhow!("GPU tile consumer panicked")));
                                 let _ = done_tx.send(result);
                             });
                             consumers.spawn(async move {
                                 let result = done_rx.await.context("GPU tile consumer stopped")??;
-                                if dense {
-                                    written_rx.await.context("GPU distance writer stopped")?;
-                                }
+                                written_rx.await.context("GPU distance writer stopped")?;
                                 Ok::<_, Error>(result)
                             });
                         }
@@ -757,6 +771,9 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         }
         Ok(())
     });
+    if knn.is_some() {
+        log::info!("Host global kNN merging: {:.3}s", merge_time.as_secs_f64());
+    }
     result
 }
 
@@ -814,29 +831,5 @@ fn zeros(n: usize) -> impl DeviceOperation<Output = DeviceBox<[f32]>> {
             memset_d8_async(dptr, 0, num_bytes, stream.cu_stream()).unwrap();
             value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
         }
-    })
-}
-
-/// Copies device memory back to host (D2H).
-/// `ctx` is provided by the scheduler at execution time.
-fn d2h(
-    dev: DeviceBox<[f32]>,
-    mut host: PinnedHostBuffer<f32>,
-) -> impl DeviceOperation<Output = (PinnedHostBuffer<f32>, DeviceBox<[f32]>)> {
-    device_operation::with_context(move |ctx| {
-        let stream = ctx.get_cuda_stream();
-        let n = dev.len();
-        let num_bytes = n * mem::size_of::<f32>();
-        unsafe {
-            memcpy_dtoh_async(
-                host.as_mut_ptr(),
-                dev.cu_deviceptr(),
-                num_bytes,
-                stream.cu_stream(),
-            )
-            .unwrap();
-        }
-        // Keep both owners through async completion (or SDK cancellation cleanup).
-        value((host, dev))
     })
 }
