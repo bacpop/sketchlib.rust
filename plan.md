@@ -259,6 +259,22 @@ not been benchmarked.
   buffers instead of pinning all loaded sketches when host memory is limiting.
   This reintroduces repeated host copies for reused blocks, so it is primarily
   a memory-footprint tradeoff whose speed impact needs measurement.
+- [ ] **Measure and optimise dense host formatting/writing.** On an H200, the
+  user reports GPU transfers and kernels finishing within about 4.1 s with
+  `--max-sketch-batch 100000 --max-in-flight-tiles 1`, while total execution
+  exceeds 30 s. Smaller tiles and more in-flight tiles distribute the CPU work
+  across execution but still leave substantial accumulated host time. These
+  are user observations; the split between formatting, channel overhead and
+  output I/O has not yet been measured. Dense consumption formats every pair
+  into 1000-record text chunks using Rayon, feeds a bounded channel to one
+  writer, and retains each tile's slot until writing is acknowledged. With one
+  slot, successive tiles cannot overlap GPU work with host consumption.
+  Compare the normal output destination with `/dev/null` (which still performs
+  all formatting) and time host consumption/writing before choosing changes.
+  Start with small improvements to formatting, allocation and chunk/channel
+  overhead; preserve bounded memory and the existing output contract. This
+  host bottleneck predates CUB selection; dense mode does not run CUB or reduce
+  the number of output records.
 
 ## Completed round: finish GPU distance progress before sparse output
 
