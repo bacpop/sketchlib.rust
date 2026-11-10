@@ -2,11 +2,9 @@
 //! index of multiple sketches
 #[cfg(target_arch = "wasm32")]
 use std::fmt;
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{cmp, fmt};
-#[cfg(not(target_arch = "wasm32"))]
 use std::{fmt::Write as FmtWrite, io::Write as IoWrite};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,7 +14,6 @@ extern crate needletail;
 use hashbrown::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use hashbrown::{HashMap, HashSet};
-#[cfg(not(target_arch = "wasm32"))]
 use indicatif::ParallelProgressIterator;
 use indicatif::ProgressIterator;
 use rayon::prelude::*;
@@ -27,20 +24,16 @@ use super::hashing::{
     bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
 };
 use crate::distances::distance_matrix::square_to_condensed;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::io::InputFastx;
 use crate::sketch::multisketch::{parse_version, MIN_SKETCH_VERSION};
 #[cfg(target_arch = "wasm32")]
 use crate::sketch::Sketch;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sketch::{sketch_datafile::SketchArrayWriter, Sketch};
 use crate::utils::get_progress_bar;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{
-    cli::InvertedQueryType,
-    io::{normalise_metadata, warn_missing_metadata, InputFastx, SampleMetadata},
-};
-#[cfg(not(target_arch = "wasm32"))]
-use anyhow::Context;
-use anyhow::{bail, Error};
+use crate::{cli::InvertedQueryType, io::normalise_metadata};
+use anyhow::{bail, Context, Error};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
@@ -51,7 +44,6 @@ use wasm_bindgen_file_reader::WebSysFile;
 
 type InvSketches = (Vec<Vec<u16>>, Vec<String>);
 
-#[cfg(not(target_arch = "wasm32"))]
 fn append_sample(output: &mut String, name: &str, metadata: Option<&str>) {
     output.push_str(name);
     if let Some(metadata) = metadata {
@@ -94,6 +86,8 @@ pub struct Inverted {
     sketch_version: String,
     rc: bool,
     hash_type: HashType,
+    #[serde(skip)]
+    query_metadata: Option<HashMap<String, String>>,
 }
 
 impl Inverted {
@@ -148,6 +142,7 @@ impl Inverted {
             sketch_version: env!("CARGO_PKG_VERSION").to_string(),
             rc,
             hash_type: seq_type.clone(),
+            query_metadata: None,
         }
     }
 
@@ -219,41 +214,27 @@ impl Inverted {
         &self.sample_names[idx]
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn metadata_at(&self, idx: usize) -> Option<&str> {
         self.metadata.as_ref().map(|values| values[idx].as_str())
     }
 
-    // Only changes the loaded object, preserving the serialized index format.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn prepare_metadata_for_output(&mut self, suppress: bool) -> Result<(), Error> {
-        if suppress {
-            self.metadata = None;
-        }
-        if let Some(values) = &mut self.metadata {
-            if values.len() != self.sample_names.len() {
-                bail!("Index metadata length does not match the number of samples");
-            }
-            let mut missing = 0;
-            for (name, value) in self.sample_names.iter().zip(values) {
-                missing += usize::from(
-                    normalise_metadata(value)
-                        .with_context(|| format!("Invalid index metadata for sample {name}"))?,
-                );
-            }
-            warn_missing_metadata(missing, 0);
-        }
-        Ok(())
+    /// Metadata for a named query, or `None` when unavailable or suppressed.
+    pub fn get_query_metadata(&self, name: &str) -> Option<&str> {
+        self.query_metadata.as_ref()?.get(name).map(String::as_str)
+    }
+
+    /// Disable query and reference metadata output for this loaded index.
+    pub fn suppress_metadata(&mut self) {
+        self.metadata = None;
+        self.query_metadata = None;
     }
 
     /// Compute and format query rows in parallel while the caller writes them.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn query_stream<W: IoWrite + Send>(
         &self,
         writer: &mut W,
         queries: &[Vec<u16>],
         query_names: &[String],
-        query_metadata: &SampleMetadata,
         query_type: &InvertedQueryType,
         threads: usize,
         quiet: bool,
@@ -287,7 +268,7 @@ impl Inverted {
                             InvertedQueryType::AnyBins => self.any_shared_bins(query),
                         };
                         let mut row = String::new();
-                        append_sample(&mut row, name, query_metadata.get(name));
+                        append_sample(&mut row, name, self.get_query_metadata(name));
                         if *query_type == InvertedQueryType::MatchCount {
                             for count in results {
                                 let _ = write!(row, "\t{count}");
@@ -341,29 +322,51 @@ impl Inverted {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Loads from `file_prefix.ski`, using MessagePack as the serialisation format
+    /// Load a MessagePack index and initialize query metadata and output suppression.
+    /// Accepts a file prefix on native targets or a browser file on WebAssembly.
     // NB MessagePack rather the CBOR uses here because of
     // https://github.com/enarx/ciborium/issues/96
-    pub fn load(file_prefix: &str) -> Result<Self, Error> {
-        let filename = format!("{file_prefix}.ski");
-        log::info!("Loading inverted index from {filename}");
-        let ski_file = BufReader::new(File::open(filename)?);
+    pub fn load(
+        #[cfg(not(target_arch = "wasm32"))] file_prefix: &str,
+        #[cfg(target_arch = "wasm32")] file: &web_sys::File,
+        query_metadata: Option<HashMap<String, String>>,
+        suppress_metadata: bool,
+    ) -> Result<Self, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let ski_file = {
+            let filename = format!("{file_prefix}.ski");
+            log::info!("Loading inverted index from {filename}");
+            BufReader::new(File::open(filename)?)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let ski_file = {
+            logw("Loading inverted index", Some("info"));
+            BufReader::new(WebSysFile::new(file.clone()))
+        };
         let decompress_reader = snap::read::FrameDecoder::new(ski_file);
-        let ski_obj: Self = rmp_serde::decode::from_read(decompress_reader)?;
+        let mut ski_obj: Self = rmp_serde::decode::from_read(decompress_reader)?;
         check_version(&ski_obj.sketch_version)?;
-        Ok(ski_obj)
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    /// Loads from a web_sys file object. Designed for WebAssembly
-    pub fn load(file: &web_sys::File) -> Result<Self, Error> {
-        logw("Loading inverted index", Some("info"));
-
-        let ski_file = BufReader::new(WebSysFile::new(file.clone()));
-        let decompress_reader = snap::read::FrameDecoder::new(ski_file);
-        let ski_obj: Self = rmp_serde::decode::from_read(decompress_reader)?;
-        check_version(&ski_obj.sketch_version)?;
+        ski_obj.query_metadata = query_metadata;
+        if suppress_metadata {
+            ski_obj.suppress_metadata();
+        }
+        if let Some(values) = &mut ski_obj.metadata {
+            if values.len() != ski_obj.sample_names.len() {
+                bail!("Index metadata length does not match the number of samples");
+            }
+            let mut missing = 0;
+            for (name, value) in ski_obj.sample_names.iter().zip(values) {
+                missing += usize::from(
+                    normalise_metadata(value)
+                        .with_context(|| format!("Invalid index metadata for sample {name}"))?,
+                );
+            }
+            if missing > 0 {
+                log::warn!(
+                    "Metadata: {missing} missing values set to NA; 0 records without sample names ignored"
+                );
+            }
+        }
         Ok(ski_obj)
     }
 
@@ -734,34 +737,12 @@ mod tests {
     }
 
     #[test]
-    fn loaded_metadata_is_validated_and_normalised_before_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let prefix = dir.path().join("legacy");
-        let prefix = prefix.to_str().unwrap();
-        for separator in ['\t', ',', ';'] {
-            let mut original = index();
-            original.metadata.as_mut().unwrap()[0] = format!("old{separator}metadata");
-            original.save(prefix).unwrap();
-            let mut loaded = Inverted::load(prefix).unwrap();
-            assert!(loaded.prepare_metadata_for_output(false).is_err());
-            loaded.prepare_metadata_for_output(true).unwrap();
-            assert_eq!(loaded.metadata_at(0), None);
-            // Suppression affects the loaded object, not the stored metadata.
-            assert_eq!(Inverted::load(prefix).unwrap(), original);
-        }
-        let mut loaded = index();
-        loaded.metadata = Some(vec![String::new(), "  ".to_owned()]);
-        loaded.prepare_metadata_for_output(false).unwrap();
-        assert_eq!(loaded.metadata_at(0), Some("NA"));
-        assert_eq!(loaded.metadata_at(1), Some("NA"));
-    }
-
-    #[test]
     fn streaming_preserves_rows_and_no_match_output() {
         let mut metadata_file = tempfile::NamedTempFile::new().unwrap();
         writeln!(metadata_file, "query\tquery description").unwrap();
-        let metadata = parse_metadata_info(metadata_file.path().to_str(), ["query"]).unwrap();
-        let index = index();
+        let mut index = index();
+        index.query_metadata =
+            parse_metadata_info(metadata_file.path().to_str(), ["query"]).unwrap();
         for (query_type, expected) in [
             (
                 InvertedQueryType::MatchCount,
@@ -782,7 +763,6 @@ mod tests {
                     &mut output,
                     &[vec![1, 2]],
                     &["query".to_owned()],
-                    &metadata,
                     &query_type,
                     1,
                     true,
@@ -797,7 +777,6 @@ mod tests {
                     &mut output,
                     &[vec![9, 9]],
                     &["query".to_owned()],
-                    &metadata,
                     &query_type,
                     1,
                     true,
@@ -861,7 +840,6 @@ mod tests {
                         &mut writer,
                         &queries,
                         &names,
-                        &SampleMetadata::default(),
                         &InvertedQueryType::AnyBins,
                         threads,
                         true,

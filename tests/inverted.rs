@@ -198,6 +198,26 @@ mod tests {
                 &reference_only,
             );
         }
+        // Query metadata belongs to the loaded index, but is never saved in .ski files.
+        let query_metadata = sketchlib::io::parse_metadata_info(
+            Some(&sandbox.file_string("queries.tsv", TestDir::Output)),
+            METADATA_SAMPLES,
+        )
+        .unwrap();
+        let prefix = sandbox.file_string("reference", TestDir::Output);
+        let index =
+            sketchlib::inverted::Inverted::load(&prefix, query_metadata.clone(), false).unwrap();
+        assert_eq!(index.get_query_metadata(tigr), Some("query 0"));
+        let saved_prefix = sandbox.file_string("saved", TestDir::Output);
+        index.save(&saved_prefix).unwrap();
+        let reloaded = sketchlib::inverted::Inverted::load(&saved_prefix, None, false).unwrap();
+        assert_eq!(reloaded.get_query_metadata(tigr), None);
+        assert_eq!(reloaded.get_metadata(), index.get_metadata());
+        let suppressed =
+            sketchlib::inverted::Inverted::load(&prefix, query_metadata, true).unwrap();
+        assert_eq!(suppressed.get_query_metadata(tigr), None);
+        assert_eq!(suppressed.get_metadata(), &None);
+
         // Rebuild without reference metadata: query metadata remains independently usable.
         successful_stdout(metadata_build_command(&sandbox).output().unwrap());
         for (mode, expected) in &expectations {
@@ -336,7 +356,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "64"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -599,7 +618,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -707,7 +725,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .arg("--phylo-clusters")
             .arg(sandbox.file_string("phylo_clusters.txt", TestDir::Input))
             .assert()
@@ -823,7 +840,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg(&reversed_rfile)
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -893,7 +909,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .assert()
             .success();
 

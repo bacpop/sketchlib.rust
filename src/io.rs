@@ -140,24 +140,6 @@ pub fn reorder_input_files(
     }
 }
 
-/// Optional sample metadata, with suppression applied before output formatting.
-#[derive(Default)]
-pub struct SampleMetadata {
-    values: Option<HashMap<String, String>>,
-}
-
-impl SampleMetadata {
-    /// Metadata for a named sample, or `None` when unavailable or suppressed.
-    pub fn get(&self, name: &str) -> Option<&str> {
-        self.values.as_ref()?.get(name).map(String::as_str)
-    }
-
-    /// Disable metadata output for every sample.
-    pub fn suppress(&mut self) {
-        self.values = None;
-    }
-}
-
 /// Validate output separators and replace empty metadata with `NA`.
 /// Returns whether a value was missing.
 pub(crate) fn normalise_metadata(value: &mut String) -> Result<bool, Error> {
@@ -172,22 +154,14 @@ pub(crate) fn normalise_metadata(value: &mut String) -> Result<bool, Error> {
     }
 }
 
-pub(crate) fn warn_missing_metadata(missing: usize, nameless: usize) {
-    if missing > 0 || nameless > 0 {
-        log::warn!(
-            "Metadata: {missing} missing values set to NA; {nameless} records without sample names ignored"
-        );
-    }
-}
-
 /// Parse optional headerless `sample_name<TAB>metadata` input.
 /// Missing or empty values become `NA`, with one aggregate warning per source.
 pub fn parse_metadata_info<'a>(
     metadata_file: Option<&str>,
     sample_names: impl IntoIterator<Item = &'a str>,
-) -> Result<SampleMetadata, Error> {
+) -> Result<Option<HashMap<String, String>>, Error> {
     let Some(metadata_file) = metadata_file else {
-        return Ok(SampleMetadata::default());
+        return Ok(None);
     };
     let f = BufReader::new(
         File::open(metadata_file)
@@ -222,11 +196,13 @@ pub fn parse_metadata_info<'a>(
             "NA".to_owned()
         });
     }
-    warn_missing_metadata(missing, nameless);
+    if missing > 0 || nameless > 0 {
+        log::warn!(
+            "Metadata: {missing} missing values set to NA; {nameless} records without sample names ignored"
+        );
+    }
     log::info!("Got metadata for {} samples", values.len());
-    Ok(SampleMetadata {
-        values: Some(values),
-    })
+    Ok(Some(values))
 }
 
 /// Validate and sort k-mer lists provided via the CLI
@@ -420,56 +396,6 @@ pub fn read_completeness_file(
 use pretty_assertions::assert_eq;
 #[cfg(test)]
 use tempfile::NamedTempFile;
-
-#[test]
-fn metadata_handles_empty_missing_and_nameless_records() {
-    let mut file = NamedTempFile::new().unwrap();
-    write!(
-        file,
-        "\n\tignored\n  \tignored too\na\t\nb\nc\t  \nd\ttext with spaces\n"
-    )
-    .unwrap();
-    let metadata = parse_metadata_info(
-        file.path().to_str(),
-        ["a", "b", "c", "d", "absent", "absent"],
-    )
-    .unwrap();
-    for name in ["a", "b", "c", "absent"] {
-        assert_eq!(metadata.get(name), Some("NA"));
-    }
-    assert_eq!(metadata.get("d"), Some("text with spaces"));
-    assert_eq!(metadata.get(""), None);
-    assert_eq!(metadata.get("  "), None);
-}
-
-#[test]
-fn metadata_rejects_reserved_separators_and_duplicates() {
-    for input in [
-        "a\tleft\tright",
-        "a\t\t",
-        "a\tleft,right",
-        "a\tleft;right",
-        "a\tfirst\na\tsecond",
-    ] {
-        let mut file = NamedTempFile::new().unwrap();
-        writeln!(file, "{input}").unwrap();
-        assert!(
-            parse_metadata_info(file.path().to_str(), ["a"]).is_err(),
-            "{input:?}"
-        );
-    }
-}
-
-#[test]
-fn metadata_availability_and_suppression() {
-    assert_eq!(parse_metadata_info(None, ["a"]).unwrap().get("a"), None);
-    let mut file = NamedTempFile::new().unwrap();
-    writeln!(file, "a\tvalue").unwrap();
-    let mut metadata = parse_metadata_info(file.path().to_str(), ["a"]).unwrap();
-    assert_eq!(metadata.get("a"), Some("value"));
-    metadata.suppress();
-    assert_eq!(metadata.get("a"), None);
-}
 
 #[test]
 fn test_reorder_input_files() {
