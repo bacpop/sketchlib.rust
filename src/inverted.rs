@@ -15,15 +15,13 @@ use hashbrown::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use hashbrown::{HashMap, HashSet};
 use indicatif::ParallelProgressIterator;
-use indicatif::ProgressIterator;
 use rayon::prelude::*;
-use roaring::{RoaringBitmap, RoaringTreemap};
+use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
 use super::hashing::{
     bloom_filter::KmerFilter, nthash_iterator::NtHashIterator, HashType, RollHash,
 };
-use crate::distances::distance_matrix::square_to_condensed;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::io::InputFastx;
 use crate::sketch::multisketch::{parse_version, MIN_SKETCH_VERSION};
@@ -413,36 +411,41 @@ impl Inverted {
         matching_bits.iter().collect()
     }
 
-    /// Get the pairwise comparison list used by prefiler
-    pub fn any_shared_bin_list(&self, quiet: bool) -> RoaringTreemap {
-        let percent = false;
-        let progress_bar = get_progress_bar(self.index.len(), percent, quiet);
-        self.index
-            .iter()
+    /// Count unique unordered pairs of distinct samples sharing at least one bin.
+    /// Reconstructs hashes using two bytes per sample per bin, then retains only
+    /// the matching-sample bitmap for each parallel query.
+    pub fn count_prefilter_pairs(&self, quiet: bool) -> u64 {
+        let n = self.n_samples();
+        let n_bins = self.index.len();
+        if n < 2 || n_bins == 0 {
+            return 0;
+        }
+
+        let mut sample_hashes = vec![0_u16; n * n_bins];
+        for (bin_idx, bin) in self.index.iter().enumerate() {
+            for (&hash, samples) in bin {
+                for sample_idx in samples {
+                    sample_hashes[sample_idx as usize * n_bins + bin_idx] = hash;
+                }
+            }
+        }
+
+        let progress_bar = get_progress_bar(n, false, quiet);
+        sample_hashes
+            .par_chunks(n_bins)
+            .enumerate()
             .progress_with(progress_bar)
-            .map(|bin| {
-                bin.par_values()
-                    .map(|hash_pres| {
-                        let mut pair_map_hash = RoaringTreemap::new();
-                        let samples_together: Vec<u32> = hash_pres.iter().collect();
-                        for (i, sample1_idx) in samples_together.iter().enumerate() {
-                            for sample2_idx in samples_together.iter().skip(i + 1) {
-                                pair_map_hash.insert(square_to_condensed(
-                                    *sample1_idx as usize,
-                                    *sample2_idx as usize,
-                                    self.n_samples,
-                                ) as u64);
-                            }
-                        }
-                        pair_map_hash
-                    })
-                    .reduce(RoaringTreemap::new, |pair_map_hash_a, pair_map_hash_b| {
-                        pair_map_hash_a | pair_map_hash_b
-                    }) // Reduction from pair_map_hash produces pair_map_bin
+            .map(|(sample_idx, query)| {
+                let mut matches = RoaringBitmap::new();
+                for (bin, hash) in self.index.iter().zip(query) {
+                    if let Some(samples) = bin.get(hash) {
+                        matches |= samples;
+                    }
+                }
+                // rank includes self and all lower indexes; count each pair once.
+                matches.len() - matches.rank(sample_idx as u32)
             })
-            .reduce(|pair_map_all, pair_map_bin| pair_map_all | pair_map_bin)
-            .unwrap()
-        // Reduction from pair_map_bin produces pair_map_all
+            .sum()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -733,6 +736,68 @@ mod tests {
             metadata: Some(vec!["description A".to_owned(), "description B".to_owned()]),
             sketch_version: env!("CARGO_PKG_VERSION").to_owned(),
             ..Inverted::default()
+        }
+    }
+
+    #[test]
+    fn prefilter_count_matches_unique_pair_oracle() {
+        let mut cases = vec![
+            Vec::<Vec<u16>>::new(),
+            vec![vec![]; 3],
+            vec![vec![0, u16::MAX]],
+            vec![vec![0, 0], vec![1, 1], vec![2, 2]],
+            vec![vec![3, 7]; 6],
+            vec![
+                vec![1, 11, 21],
+                vec![1, 12, 22],
+                vec![2, 12, 23],
+                vec![3, 13, 21],
+            ],
+        ];
+        for n in [2, 7, 40] {
+            for n_bins in [1, 4, 11] {
+                cases.push(
+                    (0..n)
+                        .map(|sample| {
+                            (0..n_bins)
+                                .map(|bin| ((sample * 17 + bin * 7 + sample * bin * 3) % 11) as u16)
+                                .collect()
+                        })
+                        .collect(),
+                );
+            }
+        }
+        for threads in [1, 2] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            for sketches in &cases {
+                let n_bins = sketches.first().map_or(0, Vec::len);
+                let index = Inverted {
+                    index: Inverted::build_inverted_index(sketches, n_bins as u64),
+                    sample_names: (0..sketches.len()).map(|i| format!("sample{i}")).collect(),
+                    n_samples: sketches.len(),
+                    ..Inverted::default()
+                };
+                // Independent oracle: inspect each distinct pair of input sketches once.
+                let expected = sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        sketches
+                            .iter()
+                            .skip(i + 1)
+                            .filter(|b| a.iter().zip(b.iter()).any(|(x, y)| x == y))
+                            .count() as u64
+                    })
+                    .sum::<u64>();
+                assert_eq!(
+                    pool.install(|| index.count_prefilter_pairs(true)),
+                    expected,
+                    "{sketches:?}"
+                );
+            }
         }
     }
 

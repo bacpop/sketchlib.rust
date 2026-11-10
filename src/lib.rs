@@ -683,15 +683,12 @@ pub fn main() -> Result<(), Error> {
 
                 // Two mutually exclusive modes
                 if *count {
-                    // For count, count the total number of pairs prefilter yields
-                    // Note this can be high memory and relatively long running (~90m and 50Gb for 661k samples, 32 threads)
-                    let prefilter_pairs = inverted_index.any_shared_bin_list(args.quiet);
+                    let prefilter_pairs = inverted_index.count_prefilter_pairs(args.quiet);
+                    let n_samples = inverted_index.n_samples() as u64;
                     println!(
                         "Identified {} prefilter pairs from a max of {}",
-                        prefilter_pairs.len(),
-                        inverted_index.sample_names().len()
-                            * (inverted_index.sample_names().len() - 1)
-                            / 2
+                        prefilter_pairs,
+                        n_samples * n_samples.saturating_sub(1) / 2
                     );
                 } else if let Some(ref_db_input) = skd {
                     let mut output_file = set_ostream(output);
