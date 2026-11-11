@@ -31,7 +31,7 @@ use crate::utils::get_progress_bar;
 mod distance_devices;
 mod operations;
 mod topk;
-use distance_devices::{DistanceDevice, Geometry, MemoryPlan, TileQueue};
+use distance_devices::{DistanceDevice, MemoryPlan, TileQueue};
 use operations::{h2d, retain, zeroed};
 use topk::HostOutput;
 
@@ -716,8 +716,9 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                         let device = &devices[device_index];
                         let id = device.id;
                         let ranges = (tile.ref_samples.clone(), tile.query_samples.clone());
-                        let selection = device.selection(Geometry { refs: tile.ref_samples.len(),
-                            queries: tile.query_samples.len(), diagonal: tile.diagonal }, knn);
+                        let selection = knn.map(|k| device.selections.get(
+                            tile.ref_samples.len(), tile.query_samples.len(), k, tile.diagonal,
+                        ));
                         let module = device.module.clone();
                         let policy = Arc::clone(&device.policy);
                         let kmers = Arc::clone(&device.kmers);
