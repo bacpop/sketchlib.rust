@@ -1,9 +1,7 @@
 use std::collections::{BinaryHeap, VecDeque};
 use std::fmt::Write as FmtWrite;
-use std::future::{Future, IntoFuture};
+use std::future::Future;
 use std::io::Write as IoWrite;
-use std::marker::PhantomData;
-use std::mem;
 use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,12 +12,9 @@ use anyhow::{anyhow, Context, Error};
 use rayon::prelude::*;
 
 use cuda_async::device_box::DeviceBox;
-use cuda_async::device_context::{init_device_contexts, with_default_device_policy};
-use cuda_async::device_operation::{value, DeviceOperation, ExecutionContext, Zippable};
+use cuda_async::device_context::init_device_contexts;
+use cuda_async::device_operation::{value, DeviceOperation, Zippable};
 use cuda_async::zip;
-use cuda_async::{device_future::DeviceFuture, error::DeviceError};
-use cuda_core::device_buffer::DeviceCopy;
-use cuda_core::memory::{memcpy_htod_async, memset_d8_async};
 use cuda_core::{LaunchConfig1D, PinnedHostBuffer};
 use cuda_device::{device, kernel, launch_bounds, launch_contract, thread, DisjointSlice};
 use cuda_host::cuda_module;
@@ -34,8 +29,10 @@ use crate::sketch::BIN_BITS;
 use crate::utils::get_progress_bar;
 
 mod distance_devices;
+mod operations;
 mod topk;
 use distance_devices::{DistanceDevice, Geometry, MemoryPlan, TileQueue};
+use operations::{h2d, retain, zeroed};
 use topk::HostOutput;
 
 const BBITS: u64 = BIN_BITS as u64;
@@ -294,11 +291,11 @@ impl DistTile {
 
         // https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html
         Ok(
-            topk::KeepAlive((Arc::clone(&host_sketches), module_owner.clone()))
+            retain((Arc::clone(&host_sketches), module_owner.clone()))
                 .and_then(move |_| {
                     zip!(
                         h2d(&self.sketches[self.ref_bins.clone()]),
-                        zeros_u64(self.ref_bins.len())
+                        zeroed::<u64>(self.ref_bins.len())
                     )
                 })
                 .and_then(move |(input, interleaved)| {
@@ -314,7 +311,7 @@ impl DistTile {
                         .and_then(move |(input, interleaved)| value((input, interleaved, module)))
                 })
                 .and_then(move |(ref_input, ref_interleaved, module)| {
-                    zip!(h2d(query_slice), zeros_u64(query_slice.len())).and_then(
+                    zip!(h2d(query_slice), zeroed::<u64>(query_slice.len())).and_then(
                         move |(input, interleaved)| {
                             module
                                 .interleave_sketches_async_owned(
@@ -339,7 +336,7 @@ impl DistTile {
                 })
                 .and_then(
                     move |(ref_input, ref_interleaved, query_input, query_interleaved, module)| {
-                        zeros(n_distances).and_then(move |output| {
+                        zeroed::<f32>(n_distances).and_then(move |output| {
                             module
                                 .dists_async_owned(
                                     &prepared_dist,
@@ -837,77 +834,4 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
         log::info!("Accumlated time for host global kNN merging: {:.3}s", merge_time.as_secs_f64());
     }
     result
-}
-
-/// Fallible custom operations avoid panics and bind their captured device at
-/// execution time. The closure is monomorphised; borrowed H2D inputs stay borrowed.
-struct RawOperation<O, F> {
-    run: F,
-    output: PhantomData<fn() -> O>,
-}
-fn raw_operation<O: Send, F: FnOnce(&ExecutionContext) -> Result<O, DeviceError> + Send>(
-    run: F,
-) -> RawOperation<O, F> {
-    RawOperation {
-        run,
-        output: PhantomData,
-    }
-}
-impl<O: Send, F: FnOnce(&ExecutionContext) -> Result<O, DeviceError> + Send> DeviceOperation
-    for RawOperation<O, F>
-{
-    type Output = O;
-    unsafe fn execute(self, ctx: &ExecutionContext) -> Result<O, DeviceError> {
-        ctx.context().bind_to_thread()?;
-        (self.run)(ctx)
-    }
-}
-impl<O: Send, F: FnOnce(&ExecutionContext) -> Result<O, DeviceError> + Send> IntoFuture
-    for RawOperation<O, F>
-{
-    type Output = Result<O, DeviceError>;
-    type IntoFuture = DeviceFuture<O, Self>;
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|policy| self.schedule(policy.as_ref())) {
-            Ok(Ok(future)) => future,
-            Ok(Err(error)) | Err(error) => DeviceFuture::failed(error),
-        }
-    }
-}
-
-fn h2d<T: DeviceCopy + Send + Sync + 'static>(
-    host_data: &[T],
-) -> impl DeviceOperation<Output = DeviceBox<[T]>> + '_ {
-    raw_operation(move |ctx| {
-        let buffer = unsafe { topk::allocate::<T>(ctx, host_data.len())? };
-        unsafe {
-            memcpy_htod_async(
-                buffer.cu_deviceptr(),
-                host_data.as_ptr(),
-                std::mem::size_of_val(host_data),
-                ctx.get_cuda_stream().cu_stream(),
-            )?;
-        }
-        Ok(buffer)
-    })
-}
-fn zeros_u64(n: usize) -> impl DeviceOperation<Output = DeviceBox<[u64]>> {
-    zeroed(n)
-}
-fn zeros(n: usize) -> impl DeviceOperation<Output = DeviceBox<[f32]>> {
-    zeroed(n)
-}
-fn zeroed<T: DeviceCopy + Send>(n: usize) -> impl DeviceOperation<Output = DeviceBox<[T]>> {
-    raw_operation(move |ctx| {
-        let buffer = unsafe { topk::allocate::<T>(ctx, n)? };
-        unsafe {
-            memset_d8_async(
-                buffer.cu_deviceptr(),
-                0,
-                n * mem::size_of::<T>(),
-                ctx.get_cuda_stream().cu_stream(),
-            )?;
-        }
-        Ok(buffer)
-    })
 }
