@@ -1,4 +1,6 @@
-//! Device setup, memory admission and the shared tile queue.
+//! Distance-specific device state, tile memory admission and scheduling.
+//! Kernel metadata and selection planning here belong to GPU self-distances;
+//! this module is not general device infrastructure.
 use super::{h2d, kernels, topk};
 use anyhow::{ensure, Context, Result};
 use cuda_async::{
@@ -62,7 +64,8 @@ pub(super) fn validate(ids: &[usize]) -> Result<()> {
     Ok(())
 }
 
-pub(super) struct DeviceState {
+/// Per-device distance kernels, sketch metadata, selection cache and counters.
+pub(super) struct DistanceDevice {
     pub id: usize,
     pub context: Arc<CudaContext>,
     pub policy: Arc<dyn SchedulingPolicy>,
@@ -73,7 +76,7 @@ pub(super) struct DeviceState {
     pub tiles: usize,
     pub pairs: usize,
 }
-impl DeviceState {
+impl DistanceDevice {
     pub fn new(id: usize, kmers: &[usize], completeness: &[f32]) -> Result<Self> {
         let context = with_cuda_context(id, Arc::clone)?;
         context.bind_to_thread()?;
@@ -217,7 +220,7 @@ impl MemoryPlan {
         requested_slots: usize,
         sketch_words: usize,
         knn: Option<usize>,
-        devices: &mut [DeviceState],
+        devices: &mut [DistanceDevice],
     ) -> Result<Self> {
         ensure!(
             n >= 2 && requested_block > 0 && requested_slots > 0 && !devices.is_empty(),
