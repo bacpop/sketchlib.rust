@@ -534,14 +534,14 @@ pub fn sketch_data<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
     };
 
     let mut sketches: Vec<Sketch> = Vec::with_capacity(hash_its.len());
-    for(idx, hash_it) in hash_its.iter_mut().enumerate() {
+    for (idx, hash_it) in hash_its.iter_mut().enumerate() {
         let sample_name = if opts.concat_fasta {
             format!("{}_{}", opts.name, idx + 1)
         } else {
             opts.name.to_string()
         };
         if hash_it.seq_len() == 0 {
-            return Err(anyhow::anyhow!("{sample_name} has no valid sequence"))
+            return Err(anyhow::anyhow!("{sample_name} has no valid sequence"));
         }
         // Run the sketching
         let sketch = Sketch::new(

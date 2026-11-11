@@ -685,10 +685,12 @@ pub fn main() -> Result<(), Error> {
                 if *count {
                     let prefilter_pairs = inverted_index.count_prefilter_pairs(args.quiet);
                     let n_samples = inverted_index.n_samples() as u64;
+                    let maximum_pairs = n_samples * n_samples.saturating_sub(1) / 2;
                     println!(
-                        "Identified {} prefilter pairs from a max of {}",
+                        "Identified {} prefilter pairs from a max of {} ({})%",
                         prefilter_pairs,
-                        n_samples * n_samples.saturating_sub(1) / 2
+                        maximum_pairs,
+                        prefilter_pairs as f64 / maximum_pairs as f64,
                     );
                 } else if let Some(ref_db_input) = skd {
                     let mut output_file = set_ostream(output);
