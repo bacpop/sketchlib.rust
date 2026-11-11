@@ -70,7 +70,41 @@ regressions above 3%. Run GPU measurements only with the devices idle.
   `git diff --check` passes. The main module's pre-existing long timer log
   statement remains untouched. Inspection confirms no new synchronisation,
   GPU allocation, transfer or zeroing operation in the tile chain.
-- **Stage 2 complete; awaiting the user's review and commit. Stage 3 has not
+- Stage 2 reviewed and committed by the user as `a6e88ef`.
+
+### Stage 3 progress
+
+- Moved shape caching and workspace queries into `topk::SelectionCache`, owned
+  once per `DistanceDevice`. Cache keys use dimensions, k and diagonal status
+  without importing distance-device types into `topk`.
+- Memory planning prepares shapes with device-specific error context;
+  submission only retrieves prepared shapes, without CUDA calls. Cached
+  shapes remain available across block-reduction attempts.
+- `Shape::device_bytes()` now owns checked candidate-key, candidate-ID and
+  workspace accounting. Workspace bytes are private to `topk`; candidate
+  layout and pure unqueried shape construction remain available for merging.
+- Updated the existing multi-GPU context test to use cache preparation and
+  retrieval. Local CUDA 13.5 build, 81 release tests, one doctest and the
+  explicitly invoked three-GPU context test all passed.
+- The existing mixed-device validator passed 12 dense/kNN CPU comparisons
+  (maximum absolute error 1.554e-7), including single/reversed/mixed GPU lists,
+  singleton remainders, both k-mers, completeness correction, k=1/50/256 and
+  the 8,384-tile stress case. Seven invalid-argument cases and two multi-GPU
+  writer failures also passed. Results: `stage3-validation/multi-report.json`
+  under `/tmp/sketchlib-gpu-cleanup`.
+- Five baseline comparisons produced identical block sizes, estimated tile
+  bytes and slot limits: dense/kNN on one/three GPUs, plus 100k-sample kNN with
+  a requested 100k block. The latter reduced to block 25k, 2,864,800,767 bytes
+  per tile and 4/3/3 slots, completing all 4,999,950,000 pairs. Summary:
+  `/tmp/sketchlib-gpu-cleanup/stage3-memory.json`.
+- An initial CLI attempt during Cargo relinking failed CUDA artifact-file
+  discovery; rerunning after all linking finished passed. Its diagnostics are
+  preserved separately. Build/test/context/validation logs use the `stage3-`
+  prefix under `/tmp/sketchlib-gpu-cleanup`.
+- Updated helper modules pass rustfmt (edition 2021); `git diff --check`
+  passes. Existing compiler warnings and the main module's pre-existing timer
+  log formatting remain outside this stage.
+- **Stage 3 complete; awaiting the user's review and commit. Stage 4 has not
   started.**
 
 ## Current round: multi-device GPU self-distances

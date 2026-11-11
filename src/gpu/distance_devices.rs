@@ -11,7 +11,7 @@ use cuda_async::{
 };
 use cuda_core::{sys, Context as CudaContext, IntoResult};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     iter::Peekable,
     sync::Arc,
 };
@@ -72,7 +72,7 @@ pub(super) struct DistanceDevice {
     pub module: kernels::LoadedModule,
     pub kmers: Arc<DeviceBox<[usize]>>,
     pub completeness: Arc<DeviceBox<[f32]>>,
-    shapes: HashMap<(Geometry, usize), topk::Shape>,
+    pub selections: topk::SelectionCache,
     pub tiles: usize,
     pub pairs: usize,
 }
@@ -119,23 +119,10 @@ impl DistanceDevice {
             module,
             kmers,
             completeness,
-            shapes: HashMap::new(),
+            selections: topk::SelectionCache::default(),
             tiles: 0,
             pairs: 0,
         })
-    }
-    fn query(&mut self, geometry: Geometry, k: usize) -> Result<topk::Shape> {
-        if let Some(shape) = self.shapes.get(&(geometry, k)) {
-            return Ok(*shape);
-        }
-        let shape = topk::Shape::new(geometry.refs, geometry.queries, k, geometry.diagonal)?
-            .query_on(&self.context)
-            .with_context(|| format!("GPU {}: CUB workspace query failed", self.id))?;
-        self.shapes.insert((geometry, k), shape);
-        Ok(shape)
-    }
-    pub fn selection(&self, geometry: Geometry, k: Option<usize>) -> Option<topk::Shape> {
-        k.map(|k| self.shapes[&(geometry, k)])
     }
 }
 
@@ -193,11 +180,7 @@ fn footprint(geometry: Geometry, sketch_bytes: usize, shape: Option<topk::Shape>
         .checked_mul(4)
         .context("GPU distance byte size overflow")?;
     let selection = match shape {
-        Some(s) => s
-            .count
-            .checked_mul(8)
-            .and_then(|n| n.checked_add(s.bytes))
-            .context("GPU selection byte size overflow")?,
+        Some(s) => s.device_bytes()?,
         None => 0,
     };
     sketches
@@ -249,7 +232,22 @@ impl MemoryPlan {
             for device in devices.iter_mut() {
                 let mut worst = 0;
                 for &geometry in &geometries {
-                    let shape = knn.map(|k| device.query(geometry, k)).transpose()?;
+                    let shape = knn
+                        .map(|k| {
+                            device
+                                .selections
+                                .prepare(
+                                    &device.context,
+                                    geometry.refs,
+                                    geometry.queries,
+                                    k,
+                                    geometry.diagonal,
+                                )
+                                .with_context(|| {
+                                    format!("GPU {}: CUB workspace query failed", device.id)
+                                })
+                        })
+                        .transpose()?;
                     max_distances = max_distances.max(geometry.distances()?);
                     if let (Some(max), Some(s)) = (&mut max_candidates, shape) {
                         *max = (*max).max(s.count);

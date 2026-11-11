@@ -11,6 +11,7 @@ use cuda_core::memory::memcpy_dtoh_async;
 use cuda_core::{Context as CudaContext, DriverError, PinnedHostBuffer};
 use std::future::IntoFuture;
 use std::{
+    collections::HashMap,
     ffi::{c_char, c_int, c_void, CStr},
     mem, ptr,
     sync::Arc,
@@ -43,6 +44,37 @@ fn check(status: c_int) -> Result<(), DeviceError> {
     )))
 }
 
+/// Prepared selection shapes for one device, reused during planning and dispatch.
+#[derive(Default)]
+pub(super) struct SelectionCache {
+    shapes: HashMap<(usize, usize, usize, bool), Shape>,
+}
+
+impl SelectionCache {
+    /// Query on a cache miss. Each cache must be used with only one device.
+    pub fn prepare(
+        &mut self,
+        context: &CudaContext,
+        nr: usize,
+        nq: usize,
+        k: usize,
+        diagonal: bool,
+    ) -> Result<Shape> {
+        let key = (nr, nq, k, diagonal);
+        if let Some(shape) = self.shapes.get(&key) {
+            return Ok(*shape);
+        }
+        let shape = Shape::new(nr, nq, k, diagonal)?.query_on(context)?;
+        self.shapes.insert(key, shape);
+        Ok(shape)
+    }
+
+    /// Retrieve a shape prepared during memory planning; no CUDA calls occur here.
+    pub fn get(&self, nr: usize, nq: usize, k: usize, diagonal: bool) -> Shape {
+        self.shapes[&(nr, nq, k, diagonal)]
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Shape {
     nr: usize,
@@ -52,7 +84,7 @@ pub(super) struct Shape {
     pub ref_k: usize,
     pub query_k: usize,
     pub count: usize,
-    pub bytes: usize,
+    bytes: usize,
 }
 
 impl Shape {
@@ -86,6 +118,14 @@ impl Shape {
             count,
             bytes: 0,
         })
+    }
+
+    /// Device storage for candidate keys and IDs plus the queried CUB workspace.
+    pub fn device_bytes(self) -> Result<usize> {
+        self.count
+            .checked_mul(mem::size_of::<f32>() + mem::size_of::<u32>())
+            .and_then(|n| n.checked_add(self.bytes))
+            .context("GPU selection byte size overflow")
     }
 
     pub fn query_on(mut self, context: &CudaContext) -> Result<Self> {
@@ -253,10 +293,9 @@ mod tests {
             let foreign_buffer = PinnedHostBuffer::<u32>::zeroed(foreign, 1).unwrap();
             context.bind_to_thread().unwrap();
             drop(foreign_buffer); // Deliberately changes the current context.
-            let shape = Shape::new(5, 7, 3, false)
-                .unwrap()
-                .query_on(context)
-                .unwrap();
+            let mut selections = SelectionCache::default();
+            selections.prepare(context, 5, 7, 3, false).unwrap();
+            let shape = selections.get(5, 7, 3, false);
             let mut current = ptr::null_mut();
             unsafe {
                 cuda_core::sys::cuCtxGetCurrent(&mut current)
