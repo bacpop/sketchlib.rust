@@ -318,6 +318,7 @@ pub fn main() -> Result<(), Error> {
             completeness_cutoff,
             gpu,
             max_sketch_batch,
+            max_in_flight_tiles,
         } => {
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
@@ -336,11 +337,23 @@ pub fn main() -> Result<(), Error> {
                 .unwrap_or_else(|_| panic!("Could not read sketch metadata from {ref_db}.skm"));
 
             log::info!("Loading sketch data from {ref_db_name}.skd");
-            if let Some(subset_file) = subset {
-                let subset_names = read_subset_names(subset_file);
-                references.read_sketch_data_block(ref_db_name, &subset_names);
-            } else {
-                references.read_sketch_data(ref_db_name);
+            let subset_names = subset.as_ref().map(|file| read_subset_names(file));
+            if !gpu.is_empty() && query_db.is_none() {
+                gpu::validate_devices(gpu)?;
+            }
+            match (
+                gpu.first().copied(),
+                query_db.is_none(),
+                subset_names.as_deref(),
+            ) {
+                (Some(device), true, Some(names)) => {
+                    references.read_sketch_data_block_pinned(ref_db_name, names, device)?;
+                }
+                (Some(device), true, None) => {
+                    references.read_sketch_data_pinned(ref_db_name, device)?;
+                }
+                (_, _, Some(names)) => references.read_sketch_data_block(ref_db_name, names),
+                (_, _, None) => references.read_sketch_data(ref_db_name),
             }
             log::info!("Read reference sketches:\n{references:?}");
             let n = references.number_samples_loaded();
@@ -385,8 +398,8 @@ pub fn main() -> Result<(), Error> {
                             nn
                         }
                     });
-                    if let Some(gpu_device_id) = *gpu {
-                        gpu::self_dists_stream(
+                    if !gpu.is_empty() {
+                        gpu::self_dists_stream_multi(
                             &mut output_file,
                             &references,
                             n,
@@ -395,8 +408,9 @@ pub fn main() -> Result<(), Error> {
                             args.quiet,
                             ref_completeness_vec.as_ref(),
                             *completeness_cutoff,
-                            gpu_device_id,
+                            gpu,
                             *max_sketch_batch,
+                            *max_in_flight_tiles,
                         )?;
                     } else {
                         match knn {

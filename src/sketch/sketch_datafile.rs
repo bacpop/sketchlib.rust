@@ -6,9 +6,25 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{Error, Result};
+use anyhow::{ensure, Context, Error, Result};
 
-use super::{aligned_sketch_vec_with_capacity, SketchVec};
+use super::{aligned_sketch_vec_filled, aligned_sketch_vec_with_capacity, SketchVec};
+
+/// Mutable byte view of initialized words for reading the on-disk representation.
+fn sketch_bytes_mut(words: &mut [u64]) -> &mut [u8] {
+    // SAFETY: u64 has no padding or invalid bit patterns. The byte slice covers
+    // exactly the initialized allocation and exclusively borrows it.
+    unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), mem::size_of_val(words)) }
+}
+
+fn decode_little_endian(words: &mut [u64]) {
+    #[cfg(target_endian = "big")]
+    for word in words {
+        *word = u64::from_le(*word);
+    }
+    #[cfg(target_endian = "little")]
+    let _ = words;
+}
 
 /// Write to an .skd or .skq file
 /// This writer is not parallel safe, serial only!
@@ -121,24 +137,31 @@ impl SketchArrayReader {
         kmer_stride: usize,
         sample_stride: usize,
     ) -> Self {
-        let sketch_reader = BufReader::new(
-            File::open(filename).unwrap_or_else(|_| panic!("Could not read from {filename}")),
-        );
+        Self::try_open(filename, mmap, bin_stride, kmer_stride, sample_stride)
+            .unwrap_or_else(|err| panic!("Could not read from {filename}: {err}"))
+    }
+
+    /// Fallible opening for loaders that propagate I/O errors.
+    pub fn try_open(
+        filename: &str,
+        mmap: bool,
+        bin_stride: usize,
+        kmer_stride: usize,
+        sample_stride: usize,
+    ) -> Result<Self> {
+        let sketch_reader = BufReader::new(File::open(filename)?);
         let mmap_file = if mmap {
-            Some(
-                Self::memmap_file(filename)
-                    .unwrap_or_else(|_| panic!("Could not memory map {filename}")),
-            )
+            Some(Self::memmap_file(filename)?)
         } else {
             None
         };
-        Self {
+        Ok(Self {
             sketch_reader,
             mmap_file,
             sample_stride,
             _bin_stride: bin_stride,
             _kmer_stride: kmer_stride,
-        }
+        })
     }
 
     fn mmap_file(&self) -> Option<&Mmap> {
@@ -159,40 +182,70 @@ impl SketchArrayReader {
 
     /// Read all sketch data from an .skd into memory
     pub fn read_all_from_skd(&mut self, total_number_bins: usize) -> SketchVec {
-        // Fixed-size buffer for u64
-        let mut buffer = [0u8; std::mem::size_of::<u64>()];
-        // Stream the whole file and convert to u64 vec
-        let mut flat_sketch_array = aligned_sketch_vec_with_capacity(total_number_bins);
-        while let Ok(_read) = self.sketch_reader.read_exact(&mut buffer) {
-            flat_sketch_array.push(u64::from_le_bytes(buffer));
-        }
+        let mut flat_sketch_array = aligned_sketch_vec_filled(total_number_bins, 0);
+        self.read_all_into(&mut flat_sketch_array)
+            .expect("Could not read complete sketch data");
         flat_sketch_array
+    }
+
+    /// Read a complete .skd file directly into its final host allocation.
+    pub fn read_all_into(&mut self, destination: &mut [u64]) -> Result<()> {
+        ensure!(
+            self.sketch_reader.get_ref().metadata()?.len() == mem::size_of_val(destination) as u64,
+            "Sketch data size does not match metadata"
+        );
+        self.sketch_reader
+            .read_exact(sketch_bytes_mut(destination))?;
+        decode_little_endian(destination);
+        Ok(())
     }
 
     /// Read selected samples from an .skd into memory, providing the selected
     /// samples with `sample_indices`
     pub fn read_batch_from_skd(&self, sample_indices: &[usize], sample_stride: usize) -> SketchVec {
         let mut flat_sketch_array =
-            aligned_sketch_vec_with_capacity(sample_stride * sample_indices.len());
-        // TODO possible improvement would be to combine adjacent indices into ranges
-        if let Some(mmap_array) = &self.mmap_file {
-            for sample_idx in sample_indices {
-                for bin_idx in 0..sample_stride {
-                    let start_byte = (sample_idx * sample_stride + bin_idx) * mem::size_of::<u64>();
-                    let bin_val = u64::from_le_bytes(*array_ref![
-                        mmap_array,
-                        start_byte,
-                        mem::size_of::<u64>()
-                    ]);
-                    // let bin_val = u64::from_le_bytes(mmap[start_byte..(start_byte + mem::size_of::<u64>())].try_into().unwrap());
-                    flat_sketch_array.push(bin_val);
-                }
-            }
-        } else {
-            unimplemented!("Batch reading of non memmapped files unsupported");
-        }
-
+            aligned_sketch_vec_filled(sample_stride * sample_indices.len(), 0);
+        self.read_batch_into(sample_indices, sample_stride, &mut flat_sketch_array)
+            .expect("Could not read selected sketch data");
         flat_sketch_array
+    }
+
+    /// Copy selected samples from the mmap directly into the destination.
+    pub fn read_batch_into(
+        &self,
+        sample_indices: &[usize],
+        sample_stride: usize,
+        destination: &mut [u64],
+    ) -> Result<()> {
+        ensure!(sample_stride != 0, "Sketch sample stride must be nonzero");
+        ensure!(
+            sample_indices.len().checked_mul(sample_stride) == Some(destination.len()),
+            "Sketch destination size does not match selected samples"
+        );
+        let mmap = self
+            .mmap_file
+            .as_ref()
+            .context("Subset reading requires an mmap")?;
+        let sample_bytes = sample_stride
+            .checked_mul(mem::size_of::<u64>())
+            .context("Sketch sample size overflow")?;
+        for (&sample_idx, output) in sample_indices
+            .iter()
+            .zip(destination.chunks_mut(sample_stride))
+        {
+            let start = sample_idx
+                .checked_mul(sample_bytes)
+                .context("Sketch offset overflow")?;
+            let end = start
+                .checked_add(sample_bytes)
+                .context("Sketch offset overflow")?;
+            let source = mmap
+                .get(start..end)
+                .context("Selected sketch exceeds data file size")?;
+            sketch_bytes_mut(output).copy_from_slice(source);
+        }
+        decode_little_endian(destination);
+        Ok(())
     }
 
     // Memory maps a file
