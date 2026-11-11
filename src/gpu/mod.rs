@@ -834,7 +834,7 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
         );
     }
     if knn.is_some() {
-        log::info!("Host global kNN merging: {:.3}s", merge_time.as_secs_f64());
+        log::info!("Accumlated time for host global kNN merging: {:.3}s", merge_time.as_secs_f64());
     }
     result
 }
