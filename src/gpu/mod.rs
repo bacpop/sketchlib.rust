@@ -1,7 +1,8 @@
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use std::fmt::Write as FmtWrite;
-use std::future::Future;
+use std::future::{Future, IntoFuture};
 use std::io::Write as IoWrite;
+use std::marker::PhantomData;
 use std::mem;
 use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -13,11 +14,12 @@ use anyhow::{anyhow, Context, Error};
 use rayon::prelude::*;
 
 use cuda_async::device_box::DeviceBox;
-use cuda_async::device_context::{init_device_contexts, with_cuda_context};
-use cuda_async::device_operation::{self, value, DeviceOperation, Zippable};
+use cuda_async::device_context::{init_device_contexts, with_default_device_policy};
+use cuda_async::device_operation::{value, DeviceOperation, ExecutionContext, Zippable};
 use cuda_async::zip;
+use cuda_async::{device_future::DeviceFuture, error::DeviceError};
 use cuda_core::device_buffer::DeviceCopy;
-use cuda_core::memory::{malloc_async, memcpy_htod_async, memset_d8_async};
+use cuda_core::memory::{memcpy_htod_async, memset_d8_async};
 use cuda_core::{LaunchConfig1D, PinnedHostBuffer};
 use cuda_device::{device, kernel, launch_bounds, launch_contract, thread, DisjointSlice};
 use cuda_host::cuda_module;
@@ -31,7 +33,9 @@ use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BIN_BITS;
 use crate::utils::get_progress_bar;
 
+mod devices;
 mod topk;
+use devices::{DeviceState, Geometry, MemoryPlan, TileQueue};
 use topk::HostOutput;
 
 const BBITS: u64 = BIN_BITS as u64;
@@ -263,7 +267,7 @@ impl DistTile {
         dist_type: DistType,
         k_vals: Option<(usize, f64)>,
         ani: bool,
-        knn: Option<usize>,
+        selection: Option<topk::Shape>,
         completeness: Arc<DeviceBox<[f32]>>,
         correct_completeness: bool,
         completeness_cutoff: f32,
@@ -286,10 +290,7 @@ impl DistTile {
         let query_slice = &self.sketches[self.query_bins.clone()];
         let host_sketches = Arc::clone(&self.sketches);
         let module_owner = module.clone();
-        let inverse_ani = knn.is_some();
-        let selection = knn
-            .map(|k| topk::Shape::new(n_ref, n_query, k, diagonal)?.query())
-            .transpose()?;
+        let inverse_ani = selection.is_some();
 
         // https://nvidia.github.io/cuda-rust/cuda-oxide/async-programming/concurrent-execution.html
         Ok(
@@ -520,6 +521,48 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     max_sketch_batch: usize,
     max_in_flight_tiles: usize,
 ) -> Result<(), Error> {
+    self_dists_stream_multi(
+        writer,
+        sketches,
+        n,
+        knn,
+        dist_type,
+        quiet,
+        completeness_vec,
+        completeness_cutoff,
+        &[gpu_device_id],
+        max_sketch_batch,
+        max_in_flight_tiles,
+    )
+}
+
+/// Validate unique visible CUDA ordinals and shared pinned-memory support.
+/// Call before loading large sketch collections to report invalid devices early.
+pub fn validate_devices(device_ids: &[usize]) -> Result<(), Error> {
+    devices::validate(device_ids)
+}
+
+/// Process self-distance tiles across selected GPUs, with one stream pool per
+/// device. The in-flight limit is per GPU and includes host consumption. With
+/// multiple devices, a common block size and per-device admission limits may be
+/// reduced to fit 80% of currently free VRAM. Single-device limits are unchanged.
+/// Pinned input sharing requires unified addressing on all devices. The caller
+/// must configure Rayon as documented for `self_dists_stream`.
+pub fn self_dists_stream_multi<W: IoWrite + Send>(
+    writer: &mut W,
+    sketches: &MultiSketch,
+    n: usize,
+    knn: Option<usize>,
+    dist_type: DistType,
+    quiet: bool,
+    completeness_vec: Option<&Vec<f64>>,
+    completeness_cutoff: f64,
+    gpu_device_ids: &[usize],
+    max_sketch_batch: usize,
+    max_in_flight_tiles: usize,
+) -> Result<(), Error> {
+    validate_devices(gpu_device_ids)?;
+    anyhow::ensure!(max_sketch_batch > 0, "max_sketch_batch must be at least 1");
     if max_in_flight_tiles == 0 {
         return Err(anyhow!("max_in_flight_tiles must be at least 1"));
     }
@@ -538,7 +581,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
     }
     let (k_vals, ani) = match dist_type {
         DistType::Jaccard(k_idx, k_val, ani) => (Some((k_idx, k_val)), ani),
-        DistType::CoreAcc => todo!("GPU core/accessory regression is deferred"),
+        DistType::CoreAcc => return Err(anyhow!("GPU core/accessory regression is not supported")),
     };
     let pool_size = rayon::current_num_threads();
     if knn.is_none() && pool_size < 2 {
@@ -549,18 +592,28 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         "GPU distances require pinned sketches; use read_sketch_data_pinned() or read_sketch_data_block_pinned()",
     )?);
 
-    init_device_contexts(gpu_device_id, 1)?;
-    // SAFETY: this crate owns the embedded bundle for the kernels above.
-    let module = unsafe { kernels::load_async(gpu_device_id)? };
-    let kmers_dev = h2d(sketches.kmer_lengths()).arc().sync()?;
-
+    init_device_contexts(gpu_device_ids[0], gpu_device_ids.len())?;
     // A disabled correction still passes a valid buffer to the typed launch;
     // its single placeholder value is never indexed by the kernel.
     let completeness: Vec<f32> = completeness_vec.map_or_else(
         || vec![1.0],
         |values| values.iter().map(|&value| value as f32).collect(),
     );
-    let completeness_dev = h2d(&completeness).arc().sync()?;
+    let mut devices = gpu_device_ids
+        .iter()
+        .map(|&id| {
+            DeviceState::new(id, sketches.kmer_lengths(), &completeness)
+                .with_context(|| format!("Initialising GPU {id}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let layout = MemoryPlan::new(
+        n,
+        max_sketch_batch,
+        max_in_flight_tiles,
+        sketches.get_strides().2,
+        knn,
+        &mut devices,
+    )?;
     let correct_completeness = completeness_vec.is_some();
     let mut heaps = if let Some(knn) = knn {
         log::info!("Calculating sparse ref vs ref distances with {knn} nearest neighbours (GPU)");
@@ -574,42 +627,34 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         Vec::new()
     };
     let names = <DistanceMatrix as Distances>::sketch_names(sketches);
-    let n_blocks = n.div_ceil(max_sketch_batch);
-    let n_tiles = n_blocks * (n_blocks + 1) / 2;
-    let mut tiles = (0..n_tiles)
-        .map(|idx| {
-            DistTile::new(
-                idx,
-                sketches,
-                max_sketch_batch,
-                Arc::clone(&pinned_sketches),
-            )
-        })
+    let n_blocks = n.div_ceil(layout.block);
+    let n_tiles = n_blocks * (n_blocks + 1) / 2; // Checked by MemoryPlan.
+    let tile_iter = (0..n_tiles)
+        .map(|idx| DistTile::new(idx, sketches, layout.block, Arc::clone(&pinned_sketches)))
         .filter(|tile| tile.n_distances != 0);
-    let initial_tiles: Vec<_> = tiles.by_ref().take(max_in_flight_tiles).collect();
-    let n_slots = initial_tiles.len();
-    let mut tiles = initial_tiles.into_iter().chain(tiles);
-    let block_size = n.min(max_sketch_batch);
-    let max_distances =
-        (block_size * (block_size - 1) / 2).max(block_size * (n - block_size).min(block_size));
-    let max_candidates = knn
-        .map(|k| {
-            let diagonal = topk::Shape::new(block_size, block_size, k, true)?.count;
-            let query_size = (n - block_size).min(block_size);
-            let rectangular = if query_size == 0 {
-                0
-            } else {
-                topk::Shape::new(block_size, query_size, k, false)?.count
-            };
-            Ok::<_, Error>(diagonal.max(rectangular))
-        })
-        .transpose()?;
-    // Allocate before concurrent dispatch: pinned allocations can synchronize.
-    let mut host_outputs = with_cuda_context(gpu_device_id, |ctx| {
-        (0..n_slots)
-            .map(|_| HostOutput::new(ctx, max_distances, max_candidates))
-            .collect::<Result<Vec<_>, _>>()
-    })??;
+    // Allocate before dispatch: pinned allocations can synchronize. Interleave
+    // initial device slots, and retain each slot until CPU consumption completes.
+    let mut ready = VecDeque::new();
+    for slot in 0..layout.limits.iter().copied().max().unwrap_or(0) {
+        for (i, device) in devices.iter().enumerate() {
+            if slot < layout.limits[i] {
+                let output = HostOutput::new(
+                    &device.context,
+                    layout.max_distances,
+                    layout.max_candidates,
+                )
+                .with_context(|| format!("GPU {}: allocating pinned output slot", device.id))?;
+                ready.push_back((i, output));
+            }
+        }
+    }
+    log::info!(
+        "Distributing {} tiles across {} GPU(s), {} total slots",
+        layout.nonempty_tiles,
+        devices.len(),
+        ready.len()
+    );
+    let mut tiles = TileQueue::new(tile_iter, ready);
     let progress = get_progress_bar(n * (n - 1) / 2, true, quiet);
     let cancelled = AtomicBool::new(false);
     let dense = knn.is_none();
@@ -661,8 +706,8 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                 // on the bounded channel, including with --threads 1.
                 writer_started_rx.await.context("GPU distance writer failed to start")?;
             }
-            let mut gpu_jobs = JoinSet::<Result<(DistTile, HostOutput), Error>>::new();
-            let mut consumers = JoinSet::<Result<HostOutput, Error>>::new();
+            let mut gpu_jobs = JoinSet::<Result<(usize, DistTile, HostOutput), Error>>::new();
+            let mut consumers = JoinSet::<Result<(usize, HostOutput), Error>>::new();
             let result = async {
                 loop {
                     if cancelled.load(Ordering::Relaxed) {
@@ -670,21 +715,28 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                         return Err(anyhow!("GPU distance calculation cancelled"));
                     }
                     // A buffer returns only after consumption, not merely GPU completion.
-                    while !host_outputs.is_empty() {
-                        let Some(tile) = tiles.next() else { break };
-                        let host_output = host_outputs.pop().unwrap();
-                        let module = module.clone();
-                        let kmers = Arc::clone(&kmers_dev);
-                        let completeness = Arc::clone(&completeness_dev);
+                    while let Some((tile, device_index, host_output)) = tiles.take() {
+                        let device = &devices[device_index];
+                        let id = device.id;
+                        let ranges = (tile.ref_samples.clone(), tile.query_samples.clone());
+                        let selection = device.selection(Geometry { refs: tile.ref_samples.len(),
+                            queries: tile.query_samples.len(), diagonal: tile.diagonal }, knn);
+                        let module = device.module.clone();
+                        let policy = Arc::clone(&device.policy);
+                        let kmers = Arc::clone(&device.kmers);
+                        let completeness = Arc::clone(&device.completeness);
                         gpu_jobs.spawn(async move {
-                            let (host, device_buffers) = tile.pipeline(
-                                module, kmers, dist_type, k_vals, ani, knn,
-                                completeness, correct_completeness, completeness_cutoff as f32,
-                                host_output,
-                            )?.await?;
-                            // DeviceBox cleanup remains on the GPU dispatch thread.
-                            drop(device_buffers);
-                            Ok::<_, Error>((tile, host))
+                            async {
+                                let operation = tile.pipeline(
+                                    module, kmers, dist_type, k_vals, ani, selection,
+                                    completeness, correct_completeness, completeness_cutoff as f32,
+                                    host_output,
+                                )?;
+                                let (host, device_buffers) = operation.schedule(policy.as_ref())?.await?;
+                                // Device buffers are dropped on the GPU dispatch thread.
+                                drop(device_buffers);
+                                Ok::<_, Error>((device_index, tile, host))
+                            }.await.with_context(|| format!("GPU {id}, tile {:?} x {:?}", ranges.0, ranges.1))
                         });
                     }
                     if gpu_jobs.is_empty() && consumers.is_empty() {
@@ -697,18 +749,20 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                             return Err(anyhow!("GPU distance writer stopped before all tiles were consumed"));
                         }
                         Some(completed) = consumers.join_next(), if !consumers.is_empty() => {
-                            let host = completed
+                            let (device_index, host) = completed
                                 .context("GPU tile consumer task failed")??;
-                            host_outputs.push(host);
+                            tiles.release(device_index, host);
                         }
                         Some(completed) = gpu_jobs.join_next(), if !gpu_jobs.is_empty() => {
-                            let (tile, host) = completed.context("GPU tile task failed")??;
+                            let (device_index, tile, host) = completed.context("GPU tile task failed")??;
+                            devices[device_index].tiles += 1;
+                            devices[device_index].pairs += tile.n_distances;
                             if let Some(k) = knn {
                                 let start = std::time::Instant::now();
                                 tile.merge_candidates(&host, k, &mut heaps)?;
                                 merge_time += start.elapsed();
                                 progress.inc(tile.n_distances as u64);
-                                host_outputs.push(host);
+                                tiles.release(device_index, host);
                                 continue;
                             }
                             let (done_tx, done_rx) = oneshot::channel();
@@ -729,7 +783,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
                             consumers.spawn(async move {
                                 let result = done_rx.await.context("GPU tile consumer stopped")??;
                                 written_rx.await.context("GPU distance writer stopped")?;
-                                Ok::<_, Error>(result)
+                                Ok::<_, Error>((device_index, result))
                             });
                         }
                     }
@@ -771,65 +825,89 @@ pub fn self_dists_stream<W: IoWrite + Send>(
         }
         Ok(())
     });
+    for device in &devices {
+        log::info!(
+            "GPU {} completed {} tiles / {} sample pairs",
+            device.id,
+            device.tiles,
+            device.pairs
+        );
+    }
     if knn.is_some() {
         log::info!("Host global kNN merging: {:.3}s", merge_time.as_secs_f64());
     }
     result
 }
 
-#[allow(dead_code)] // Retain the canonical u64 implementation for reference.
-fn h2d_u64(host_data: &[u64]) -> impl DeviceOperation<Output = DeviceBox<[u64]>> + '_ {
-    device_operation::with_context(move |ctx| {
-        let stream = ctx.get_cuda_stream();
-        let n = host_data.len();
-        let num_bytes = n * mem::size_of::<u64>();
-        unsafe {
-            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
-            memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
+/// Fallible custom operations avoid panics and bind their captured device at
+/// execution time. The closure is monomorphised; borrowed H2D inputs stay borrowed.
+struct RawOperation<O, F> {
+    run: F,
+    output: PhantomData<fn() -> O>,
+}
+fn raw_operation<O: Send, F: FnOnce(&ExecutionContext) -> Result<O, DeviceError> + Send>(
+    run: F,
+) -> RawOperation<O, F> {
+    RawOperation {
+        run,
+        output: PhantomData,
+    }
+}
+impl<O: Send, F: FnOnce(&ExecutionContext) -> Result<O, DeviceError> + Send> DeviceOperation
+    for RawOperation<O, F>
+{
+    type Output = O;
+    unsafe fn execute(self, ctx: &ExecutionContext) -> Result<O, DeviceError> {
+        ctx.context().bind_to_thread()?;
+        (self.run)(ctx)
+    }
+}
+impl<O: Send, F: FnOnce(&ExecutionContext) -> Result<O, DeviceError> + Send> IntoFuture
+    for RawOperation<O, F>
+{
+    type Output = Result<O, DeviceError>;
+    type IntoFuture = DeviceFuture<O, Self>;
+    fn into_future(self) -> Self::IntoFuture {
+        match with_default_device_policy(|policy| self.schedule(policy.as_ref())) {
+            Ok(Ok(future)) => future,
+            Ok(Err(error)) | Err(error) => DeviceFuture::failed(error),
         }
-    })
+    }
 }
 
-/// Generic version of the canonical H2D helper for sketch bins and shared tables.
 fn h2d<T: DeviceCopy + Send + Sync + 'static>(
     host_data: &[T],
 ) -> impl DeviceOperation<Output = DeviceBox<[T]>> + '_ {
-    device_operation::with_context(move |ctx| {
-        let stream = ctx.get_cuda_stream();
-        let n = host_data.len();
-        let num_bytes = n * mem::size_of::<T>();
+    raw_operation(move |ctx| {
+        let buffer = unsafe { topk::allocate::<T>(ctx, host_data.len())? };
         unsafe {
-            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
-            memcpy_htod_async(dptr, host_data.as_ptr(), num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
+            memcpy_htod_async(
+                buffer.cu_deviceptr(),
+                host_data.as_ptr(),
+                std::mem::size_of_val(host_data),
+                ctx.get_cuda_stream().cu_stream(),
+            )?;
         }
+        Ok(buffer)
     })
 }
-
-/// Type-only variant of `zeros()` for interleaved sketch storage.
 fn zeros_u64(n: usize) -> impl DeviceOperation<Output = DeviceBox<[u64]>> {
-    device_operation::with_context(move |ctx| {
-        let stream = ctx.get_cuda_stream();
-        let num_bytes = n * mem::size_of::<u64>();
-        unsafe {
-            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
-            memset_d8_async(dptr, 0, num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
-        }
-    })
+    zeroed(n)
 }
-
-/// Allocates zero-initialized device memory.
-/// `ctx` is provided by the scheduler at execution time.
 fn zeros(n: usize) -> impl DeviceOperation<Output = DeviceBox<[f32]>> {
-    device_operation::with_context(move |ctx| {
-        let stream = ctx.get_cuda_stream();
-        let num_bytes = n * mem::size_of::<f32>();
+    zeroed(n)
+}
+fn zeroed<T: DeviceCopy + Send>(n: usize) -> impl DeviceOperation<Output = DeviceBox<[T]>> {
+    raw_operation(move |ctx| {
+        let buffer = unsafe { topk::allocate::<T>(ctx, n)? };
         unsafe {
-            let dptr = malloc_async(stream.cu_stream(), num_bytes).unwrap();
-            memset_d8_async(dptr, 0, num_bytes, stream.cu_stream()).unwrap();
-            value(DeviceBox::from_raw_parts(dptr, n, Arc::clone(stream)))
+            memset_d8_async(
+                buffer.cu_deviceptr(),
+                0,
+                n * mem::size_of::<T>(),
+                ctx.get_cuda_stream().cu_stream(),
+            )?;
         }
+        Ok(buffer)
     })
 }

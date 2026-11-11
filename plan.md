@@ -1,6 +1,110 @@
 # CUDA self-distance planning
 
-## Current round: CUB tile-level kNN with host global selection
+## Current round: multi-device GPU self-distances
+
+Status: implementation and correctness validation complete. Remaining GPU
+performance measurements are held pending the user's availability notice
+(2026-11-11); the completed two-device trace confirms overlap.
+
+### Accepted design and implementation
+
+- One current-thread coordinator drives independent device-local pipelines,
+  using each GPU's own default four-stream policy and explicitly scheduled
+  futures. A shared tile iterator and device-tagged ready slots give faster
+  devices more work without fixed weights, locks or extra GPU worker threads.
+- Device state owns its module, context, policy, metadata and CUB shape cache.
+  Raw operations bind their captured context and return allocation/transfer
+  errors rather than panic. CUB scratch queries explicitly bind their target;
+  dispatch binds again even after foreign-context pinned-buffer cleanup.
+- Shared pinned sketches are read once; all selected devices must support UVA.
+  Tile kNN selection stays on the GPU; one heap per sample and one dense writer
+  remain shared on the host. Slots return only after host consumption/writer
+  acknowledgement, preserving bounded buffering and cancellation ownership.
+- The CLI accepts `--gpu 0,1` and repeated `--gpu` flags. Duplicate/invalid CUDA
+  ordinals fail before loading sketch data. The original public single-device
+  entry point wraps the device-list entry point. Existing CPU routing is retained.
+- The per-device in-flight upper bound defaults to 4. Only multi-device calls
+  automatically size memory: budget 80% of free VRAM after setup, halve the
+  common block size if one tile cannot fit, then cap each device's slots using
+  actual sketch/distance/candidate/workspace requirements. Aggregate slots do
+  not exceed nonempty tiles. Single-device block/admission settings are unchanged.
+- `.cargo/cuda-oxide.toml` sets the default Rust target to SM75; explicit oxide
+  target overrides remain supported. Add SM75 native/PTX CUB coverage while
+  retaining SM80 native/PTX and SM120 native images. The source package includes
+  the new configuration and host scheduling module. No new C++ kernels or CUB
+  algorithm changes were introduced.
+- On device/writer failure, stop new work, abort/join jobs and retain submitted
+  resources until completion. Errors identify the device and tile ranges;
+  there is no silent skipping/retry. Logs report UUIDs, architecture, memory,
+  chosen limits, per-device completed tiles/pairs and aggregate host merge time.
+
+### Correctness validation completed
+
+- Local CUDA 13.5 builds passed. The release suite passed 81 tests plus one
+  doctest, with the hardware-dependent context test ignored by default.
+  Explicitly running that ignored test on all three local GPUs also passed:
+  it changes the current context through foreign pinned-buffer cleanup, queries
+  CUB on the intended device, and interleaves scheduled CUB operations/data copies
+  across the 5090, 3090 and 2080 Ti.
+- The existing Turing CLI validator passed its smoke run, 33 CPU/GPU comparisons
+  and two writer failures. Report: `/tmp/sketchlib-cuda-async-ms13oa_7/report.json`.
+- Twelve additional dense/kNN CPU comparisons passed for mixed/reversed device
+  lists, comma/repeated CLI forms, single/two/three GPUs, in-flight limits 1/4/8,
+  both k-mers, Jaccard/ANI, completeness correction, reordered subsets, k=1/50/256,
+  singleton remainders, a single tile and an 8,384-tile small-block stress case.
+  Maximum error remained below 1e-6. Seven invalid-argument cases and both
+  three-GPU writer failures (one/four formatter threads) passed.
+- Real memory planning with 100k samples and a requested 100k block completed
+  after selecting a 25k common block and 4/3/3 slots, covering all 4,999,950,000
+  pairs across three devices. The single-device oversized case instead preserved
+  its requested block and returned a clean GPU 2/tile allocation error requesting
+  19,999,800,000 bytes; no panic or final sparse output occurred.
+- Package listing includes `.cargo/cuda-oxide.toml`, the host scheduling module
+  and the CUB source. Source/format checks pass. Artifacts and logs are in
+  `/tmp/sketchlib-multigpu-implementation`. Earlier remote-testing instructions
+  are superseded by the user's local CUDA 13.5 testing instructions.
+
+### Performance acceptance
+
+- Save/rebuild original SM80 and architecture-matched SM75 baselines with the
+  current lockfile/toolchain. Compare the final executable using five alternating
+  measured runs after warm-ups on each GPU; reject samples with another process
+  or observed thermal throttling. Target no repeatable single-device median
+  regression above 3%, and measure combinations separately. Record results below
+  once those checks and the multi-device trace complete.
+- Completed uncontended single-device sets (five valid measured runs per
+  executable, after warm-ups; 100k samples, k=50, ANI/k-mer 31, block 5000,
+  four slots, 16 threads, default reactor, stdout `/dev/null`):
+
+  | GPU | Original SM80 baseline | Matched SM75 baseline | New SM75 implementation |
+  | --- | ---: | ---: | ---: |
+  | RTX 5090 / CUDA 0 | 5.689 s | 5.486 s | 5.531 s |
+  | RTX 3090 / CUDA 1 | 6.944 s | 6.941 s | 6.891 s |
+
+  These sets pass the 3% regression gate against both baselines. CUDA 2 currently
+  has three matched-baseline and four new samples; its five-pair gate is pending.
+  One thermally throttled warm-up was rejected automatically. Monitoring excludes
+  other compute processes on each measured GPU; workloads on other GPUs may still
+  affect shared host resources. Raw measurements, rejected-sample diagnostics and
+  interim medians are in the performance subdirectory recorded by
+  `/tmp/sketchlib-multigpu-implementation/latest-performance.txt`.
+- The two-device trace (`pair.nsys-rep`, `pair.sqlite`, `pair-summary.json` under
+  the implementation artifact directory) confirms 210 distance tiles split
+  113/97 across CUDA 0/1, four tile streams on each, and 1.238 s with distance
+  kernels executing simultaneously on the two devices. All four explicit stream
+  synchronisations precede the first tile. D2H volume remains 800 MB, and 3,852
+  traced context switches total about 0.79 ms of API time. This is overlap/context
+  validation, not a clean scaling comparison: another workload occupied CUDA 2
+  during capture.
+- The user requested that further GPU measurements wait until they announce
+  availability. Our benchmark process is stopped with SIGSTOP and consumes no
+  GPU work; its PID is recorded in
+  `/tmp/sketchlib-multigpu-implementation/paused-benchmark-pids.json`. Resume it
+  with SIGCONT after that notice (if still alive), finish the remaining Turing
+  samples, then measure multi-device combinations and collect the three-device
+  trace. `interim-summary.json` preserves completed results if the process exits.
+
+## Completed round: CUB tile-level kNN with host global selection
 
 Status: implementation, local validation and paired profiling complete.
 
@@ -1457,3 +1561,279 @@ Local command logs include `/private/tmp/sketchlib-cuda-build-index-fix.log`,
 
 The current brief supersedes earlier-session plans for fixed-four-block async
 execution. None of that earlier implementation is assumed to be present.
+
+## Research: multi-GPU runtime foundations
+
+Research scope: runtime feasibility and proposed application integration, checked
+2026-11-11 against the restored CUB tile-selection + host-global-heaps baseline.
+No application implementation changes or multi-GPU distance runs were made;
+limited driver/CUB probes are described below. `Cargo.lock` resolves cuda-oxide to
+`a0a4dc78a20e06ec90827f597e950bdc49f723e2`; the inspected checkout is
+`/home/marussel/.cargo/git/checkouts/cuda-oxide-6d394bb007f5e114/a0a4dc7`.
+Earlier research against `8785190` does not establish the current API.
+
+### Explicit scheduling supports one shared executor
+
+- There is one process-wide primary `Context` per device ordinal; scheduling
+  policies, default device, deallocator streams and optional pools are per OS
+  thread. `init_device_contexts(default, num_devices)` sets the default and map
+  capacity; it does **not** enumerate or initialize that many devices. It errors
+  if the calling thread already initialized its map. Device contexts are created
+  lazily. Sources: [device_context.rs:92–115,132–205,311–363](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/device_context.rs#L92).
+- `global_policy(device_id)` returns the selected device's policy.
+  `operation.schedule(policy.as_ref())?` is the explicit safe async path: it
+  chooses that policy's stream and stores an `ExecutionContext` with the stream,
+  device and pool in the returned `DeviceFuture`. Await this already-scheduled
+  future; avoid using bare operation `.await`/`.sync()` to select devices inside
+  concurrent tasks because those consult the calling thread's default device.
+  Sources: [device_context.rs:357–363,388–405,479–490](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/device_context.rs#L357),
+  [device_operation.rs:126–147,366–375,641–652](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/device_operation.rs#L126).
+- **Dependency limitation:** selecting a device is not the same as making its
+  CUDA context current. `with_cuda_context`/`with_device` only retrieves a context
+  and invokes a closure. `ExecutionContext::new`, round-robin `next_stream`, and
+  `DeviceFuture::execute` do not bind the captured context before executing user
+  operations. Sources: [device_context.rs:374–383](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/device_context.rs#L374),
+  [scheduling_policies.rs:60–66](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/scheduling_policies.rs#L60),
+  [device_future.rs:238–249](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/device_future.rs#L238).
+- Consequently one current-thread Tokio executor can drive all GPUs, provided
+  raw CUDA boundaries explicitly call the intended `context.bind_to_thread()?`
+  immediately before their synchronous host calls. There must be no `.await`
+  between binding and those calls. This is an inference from the captured stream
+  API and synchronous operation execution: another task cannot change the host
+  thread's current context during that uninterrupted sequence. CUDA itself lists
+  both single-host-thread and thread-per-GPU operation as supported approaches.
+  A thread per GPU is an alternative if host submission becomes a measured
+  bottleneck, not a prerequisite for CUDA overlap. Sources:
+  [NVIDIA multi-GPU guide](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/multi-gpu-systems.html),
+  [runtime.rs:289–298](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/runtime.rs#L289).
+
+### Device-affine resources and the CUB boundary
+
+- Load `kernels::load_async(id)` separately for each device; keep module,
+  prepared launches, streams, metadata buffers, tile allocations and CUB scratch
+  with that device. `DeviceBox` records its owning device from its stream.
+  `PreparedLaunch` queries the function's own context and rejects a stream from a
+  different context. Sharing a host-side owner across threads does not transfer
+  its device allocation to another GPU. Sources:
+  [module loader generation:237–257](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-oxide/crates/cuda-macros/src/cuda_module/mod.rs#L237),
+  [device_box.rs:49–83,108–110](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-async/src/device_box.rs#L49),
+  [launch.rs:899–910,1059–1071](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/launch.rs#L899).
+- Prepared Rust kernel queries/launch wrappers bind their owning context through
+  their typed CUDA methods. Raw CUB calls have no such automatic wrapper.
+  The runtime uses the Driver API context current on the calling host thread;
+  cuda-oxide retains each device's primary context, so explicitly binding the
+  matching primary context suffices for runtime/driver interoperability. Sources:
+  [module.rs:238–245](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/module.rs#L238),
+  [launch_raw.rs:36–47](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/launch_raw.rs#L36),
+  [runtime.rs:176–190](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/runtime.rs#L176),
+  [NVIDIA runtime/driver interoperability](https://docs.nvidia.com/cuda/cuda-runtime-api/cuda_runtime_api/group__CUDART__DRIVER.html).
+- Current `src/gpu/topk.rs:90–105` queries scratch with null pointers and a null
+  stream; it carries no device identity. Query scratch under each intended
+  device's binding, then use that device's result for its allocations/dispatch.
+  Bind again in `Finish::execute` before CUB runtime dispatch and raw stream-only
+  memory calls (`src/gpu/topk.rs:191–243`). Do not infer the binding from a prior
+  allocation or kernel launch: unrelated resource cleanup can change it.
+  This is an implementation requirement inferred from the source and NVIDIA's
+  current-context rule, not an assertion that existing single-GPU code fails.
+
+### Pinned host sketches can be shared with a qualification
+
+- `PinnedHostBuffer` owns an allocation made by `cuMemAllocHost`; it exposes no
+  portable-allocation flag or public raw-allocation constructor in this revision.
+  It is `Send`/`Sync` when its element type permits. Its destructor binds the
+  allocation context before freeing; it does not restore the previous binding.
+  Sources: [pinned_host_buffer.rs:41–71,129–166](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/pinned_host_buffer.rs#L41),
+  [memory.rs:209–214](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-core/src/memory.rs#L209).
+- NVIDIA documents `cuMemAllocHost` allocations as accessible to every context on
+  devices supporting unified addressing. Thus sharing the existing immutable
+  pinned sketches is reasonable if every selected GPU's unified-addressing
+  support is checked/required. Explicit `cuMemHostAlloc` with
+  `CU_MEMHOSTALLOC_PORTABLE` guarantees pinned status across contexts; adding
+  this as an explicit allocation option requires a dependency extension or a
+  separate owning buffer type. Do not assume `PinnedHostBuffer` already requests
+  that flag. Source: [NVIDIA memory API, cuMemAllocHost/cuMemHostAlloc](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__MEM.html).
+- Keep output buffers owned by their assigned device's pipeline and retain all
+  input/output owners until transfer completion. Creating/freeing a pinned
+  output through its own context is already handled by the current buffer type;
+  CPU-side free is safe under that destructor's ownership contract but can
+  change the freeing thread's CUDA binding. No per-GPU duplication of the entire
+  host sketch allocation is inherently required by the UVA case above.
+
+### Mixed generations and remaining validation
+
+- `build.rs:53–75` requires Toolkit 13.5+ and CCCL/CUB 3.5+, and builds the CUB
+  wrapper with native `sm_80`, native `sm_120`, and forward-compatible
+  `compute_80` PTX. That makes the CUB code path potentially usable on mixed
+  Ampere/Ada/Hopper/Blackwell devices with compute capability >= 8.0: same-major
+  compatible native code is preferred; otherwise the driver can JIT PTX for the
+  selected GPU. It cannot cover GPUs below CC 8.0. This is a code-compatibility
+  inference, not hardware validation. Source:
+  [NVIDIA binary/PTX compatibility](https://docs.nvidia.com/cuda/cuda-programming-guide/01-introduction/cuda-platform.html#binary-compatibility).
+- These CUB build flags do not establish the artifact targets of the Rust
+  distance kernels. Each selected device must also successfully load its own
+  embedded Rust kernel bundle and satisfy its prepared launch contract. The
+  checkout's loader distinguishes target-specific NVVM/LTOIR inputs and rejects
+  incompatible targets; do not promise whole-application mixed-generation
+  support based only on the CUB fatbin. Source:
+  [cuda-host/ltoir.rs:104–143,246–255](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-oxide/crates/cuda-host/src/ltoir.rs#L104).
+- Driver support must cover every chosen GPU and the emitted PTX/toolkit.
+  NVIDIA lists >=580 as the CUDA 13.x minor-compatibility floor, with feature
+  limits; a driver too old for the toolkit's PTX can still fail JIT. Native
+  images reduce that dependence where available but do not remove all driver
+  feature requirements. Source:
+  [NVIDIA minor-version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
+
+Recommended foundation: retain the shared current-thread executor and serial
+host heap coordinator; explicitly schedule each complete tile operation through
+its device policy, keep GPU resources per device, and bind at every raw CUDA/CUB
+boundary. Before implementation is accepted, validate two actual devices
+(including mixed generations if that is required), each device's scratch query,
+UVA support, cancellation/cleanup, and bundle loading. Peer access, NCCL, and
+GPU-side global selection are not prerequisites for independent tile dispatch.
+
+### Limited local probes
+
+- `/tmp/sketchlib-multigpu-research/driver_probe.py` passed eight H2D/D2H round
+  trips using four non-blocking streams per device on the RTX 5090 (CUDA 0) and
+  RTX 3090 (CUDA 1), alternately submitted by one host thread with explicit
+  context binding. Both devices report UVA. All streams read one default
+  `cuMemAllocHost` source allocation made under the first GPU's primary context;
+  no portable-allocation flag or peer-access enablement was used. Results are in
+  the adjacent `driver_probe.json`. This corroborates pinned sharing and basic
+  stream/context setup, not Rust future scheduling or concurrent distance kernels.
+- CUDA 13.5 `nvcc --list-gpu-arch` includes `compute_75`. Compiling the unchanged
+  CUB wrapper into a temporary SM75 shared library succeeded. On the local RTX
+  2080 Ti (CUDA 2), the existing ABI oracle passed rectangular (17 x 23, k=5),
+  diagonal (257 x 257, k=50), and large-k fallback (3 x 5003, k=2500) cases.
+  Probe/library: `/tmp/sketchlib-multigpu-research/turing_cub_probe.py` and
+  `cub-sm75.so`. This is evidence that CUB/Toolkit 13.5 do not inherently rule
+  out this older GPU; the current application fatbin still does not cover it.
+- The locked Rust backend's `arch_satisfies_feature` allows basic kernels on
+  SM70+, while cross-compilation defaults to SM80. Explicit SM75 is therefore
+  plausible for these kernels, but no SM75 build of the complete application was
+  tested. Add SM75 CUB coverage and verify a portable Rust target/bundle before
+  claiming whole-application Turing support. Do not drop existing native/PTX
+  coverage for newer devices just to add the older one. Source:
+  [architecture validation:23–64](https://github.com/NVlabs/cuda-oxide/blob/a0a4dc78a20e06ec90827f597e950bdc49f723e2/cuda-oxide/crates/cuda-oxide-codegen/src/target/arch.rs#L23).
+
+### Recommended application design
+
+This is a proposed direction, not an implemented or benchmarked multi-GPU path.
+The current application evidence is `src/gpu/mod.rs` (`DistTile::pipeline`,
+`self_dists_stream`, host merge/writer), `src/gpu/topk.rs` (scratch query and
+`Finish`), and `src/lib.rs`/`src/cli.rs` (single-device loading and selection).
+
+1. **Keep one current-thread coordinator.** Add a small per-device state holding
+   device ID/context, scheduling policy, loaded Rust module, device k-mer and
+   completeness arrays, and output-slot pool. Initialise the context map once;
+   obtain each selected GPU's policy with `global_policy(id)`. Each policy has
+   its own four-stream round-robin pool by default. Stream selection within a
+   GPU and load balancing between GPUs are separate decisions.
+2. **Choose the GPU before constructing/submitting a tile operation.** Use its
+   module/constants and `tile.pipeline(...).schedule(policy.as_ref())?`, then
+   await the scheduled future. One complete H2D/interleave/dists/CUB/D2H chain
+   stays on that GPU's selected stream. Tag completed tiles and CPU consumers
+   with their device/slot ID. Do not build one mixed-device round-robin policy
+   around operations containing another GPU's module or buffers.
+3. **Make context binding explicit.** Bind the target before setup/prepare/CUB
+   queries, at the beginning of execution of each custom tile operation, and
+   immediately before raw CUB and stream-only memory calls. Never carry an
+   ambient default-device/context assumption across an await. Query/cache CUB
+   workspace per device and geometry; the same tile shape need not have the
+   same scratch requirement on different architectures. This requires Rust
+   host-side changes, not a new C++ algorithm or new distance kernels.
+4. **Use ready slots as the dynamic work queue.** Keep one canonical tile
+   iterator and a `VecDeque` of free `(device_id, output_buffer)` slots, initially
+   interleaved across devices. Assign one next tile to each available slot.
+   Return its slot to the same device after host heap merging or dense writer
+   acknowledgement, exactly preserving buffer reuse/backpressure. Faster GPUs
+   finish and reclaim slots sooner, so naturally receive more tiles. This fits
+   the existing JoinSet/select coordinator without new GPU worker threads,
+   blocking channels, locks around heaps, or per-device global heaps.
+5. **Keep host result handling shared.** Retain one heap per sample globally,
+   merging completed candidates serially as now, and one dense writer with the
+   existing shared Rayon formatting pool. Read sketches once into shared pinned
+   storage after checking every selected device's UVA support. Copy only the
+   current tile's blocks to each assigned device; duplicate only small persistent
+   device metadata. No NCCL, NVLink or peer access is needed for this design.
+
+### Memory sizing and heterogeneous performance
+
+- Recommend retaining one common block partition. First bound block size by
+  `--max-sketch-batch`; if even one tile cannot fit a selected device, reduce the
+  common block size and regenerate the grid before dispatch. Size against actual
+  diagonal/rectangular/remainder geometries, not just the distance matrix.
+  Different block grids per GPU cannot simply be enumerated independently:
+  they overlap or leave gaps. Device-specific subdivision of canonical tiles is
+  a later option if uniform tiles prove limiting, not needed for initial support.
+- Estimate a tile's device footprint as `2 * (r+q) * S + 4*d + 8*c + W`, where S
+  is bytes per stored sketch, d is the number of pair distances, c is the number
+  of selected directional candidates, and W is that device's queried CUB
+  workspace. Dense mode omits candidate arrays/workspace. The first term covers
+  both raw and interleaved sketch buffers, including today's duplicate diagonal
+  preparation. Include persistent metadata and runtime/allocator headroom.
+- Choose a per-device admission cap from that footprint and currently free
+  memory after setup, leaving headroom (80% of remaining free memory is a
+  reasonable initial conservative budget, not an OOM guarantee). Keep the
+  requested in-flight limit as an upper bound, not a requirement to fill every
+  GPU with that many tiles. Log the common block size, estimated tile bytes,
+  free-memory budget and effective slot count for each device. If one slot still
+  cannot fit at the minimum block size, fail clearly before dispatch.
+- Recommend defining `--max-in-flight-tiles` as a **per-device upper bound** for
+  multi-GPU mode, default 4, with the single-GPU behaviour unchanged. Document
+  the aggregate bound as the sum of device caps; pinned output memory grows with
+  this sum. Do not allocate more aggregate slots than there are nonempty tiles,
+  and preserve bounded host result/text queues. This semantics change for the
+  new multi-GPU case must be explicit in help/docs before implementation.
+- Pull scheduling balances observed completion throughput without GPU speed
+  weights or a calibration benchmark. It also adapts to PCIe differences and
+  varying device load. It is not optimal: a slow GPU can retain a few final
+  in-flight tiles while a faster GPU becomes idle. Start with sufficiently small
+  tiles and bounded queues; measure that tail before adding speed estimates,
+  adaptive admission or migration. More GPUs are not guaranteed to be faster.
+- The whole calculation does not have to reside on each GPU, and the device
+  memories are not pooled: each needs only its own live tiles and metadata.
+  Shared PCIe bandwidth, host RAM/NUMA placement, serial host kNN merging and
+  dense formatting/writing can limit scaling. Dense output is already known to
+  be host-bound in some runs; multi-GPU dispatch alone cannot remove that work.
+
+### Interface, errors and validation before implementation acceptance
+
+- Suggested CLI: accept comma-separated/repeated IDs, e.g. `--gpu 0,1` or
+  `--gpu 0 --gpu 1`; preserve `--gpu 0` and CPU execution when omitted. Require
+  unique valid visible CUDA ordinals and log names, UUIDs, compute capability
+  and memory. Do not confuse CUDA ordinals with `nvidia-smi` enumeration. Explicit
+  selection is preferable initially to an `all` option that silently includes an
+  unsupported or unsuitable GPU.
+- Preserve the existing public single-device Rust entry point as a wrapper;
+  introduce a device-list entry point backed by the same coordinator. Keep the
+  initial feature limited to the existing GPU self-distance modes (dense and
+  tile-kNN/host-global-kNN). Do not accidentally route cross-query/core-accessory
+  modes to unsupported GPU implementations.
+- Preflight every selected device's module/bundle and CUB support before tile
+  output. Mixed generations need compatible code for both the Rust kernels and
+  the CUB wrapper, not matching GPUs. Initially fail clearly if a selected device
+  is unsupported. A current SM80+ build can target the 3090/5090 pair; including
+  the 2080 Ti requires the artifact changes/validation described above.
+- On a device error, stop new submissions to all devices, abort/join outstanding
+  futures/consumers and retain resources through actual GPU completion via the
+  existing leases. Report the failing device and tile. Do not silently skip a
+  device or retry already-consumed tiles: repeated candidates can corrupt the
+  heap results, and dense output may already contain partial records.
+- Validate exact pair coverage/no duplicate tile assignment; compare single-GPU
+  and mixed-GPU dense/kNN output against CPU with existing tolerances and valid
+  cutoff ties. Exercise device order reversal, one device, more devices/slots
+  than tiles, singleton remainders, in-flight limits 1/4/8, memory caps that give
+  different devices different slot counts, invalid/duplicate device IDs,
+  unsupported targets and writer/device errors. Explicitly test interleaved
+  CUB queries/dispatch with an intentionally wrong prior current context.
+- Add scheduler-level tests with synthetic fast/slow completions: every tile
+  must be assigned exactly once, slots remain device-owned/bounded, and the fast
+  device receives more work without fixed weights. A small multi-GPU end-to-end
+  run is still required: the driver probe does not establish application safety.
+- Benchmark each GPU alone and selected combinations using the same dataset,
+  tile parameters and output destination. Log per-device tile/sample-pair counts
+  and execution time, trace both devices' overlapping work, and monitor other
+  workloads/thermal state. Separate dense host-output time and global heap merge
+  time so a host bottleneck is not mistaken for poor device scheduling. Use local
+  CUDA 13.5 builds/tests; the old remote-testing instructions do not apply.
