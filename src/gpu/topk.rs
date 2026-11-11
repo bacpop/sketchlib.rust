@@ -1,4 +1,5 @@
 //! Private CUB host dispatch and stream-owned output buffers.
+use super::operations::allocate;
 use anyhow::{ensure, Context, Result};
 use cuda_async::device_operation::BoxedDeviceOp;
 use cuda_async::{
@@ -6,7 +7,7 @@ use cuda_async::{
     device_operation::{DeviceOperation, ExecutionContext},
     error::DeviceError,
 };
-use cuda_core::memory::{malloc_async, memcpy_dtoh_async};
+use cuda_core::memory::memcpy_dtoh_async;
 use cuda_core::{Context as CudaContext, DriverError, PinnedHostBuffer};
 use std::future::IntoFuture;
 use std::{
@@ -138,45 +139,10 @@ impl HostOutput {
     }
 }
 
-/// Register an owner before enqueueing raw asynchronous accesses to it.
-pub(super) struct KeepAlive<T: Send + 'static>(pub T);
-impl<T: Send + 'static> DeviceOperation for KeepAlive<T> {
-    type Output = ();
-    unsafe fn execute(self, ctx: &ExecutionContext) -> Result<(), DeviceError> {
-        ctx.context().bind_to_thread()?;
-        ctx.retain(self.0)
-    }
-}
-
-impl<T: Send + 'static> IntoFuture for KeepAlive<T> {
-    type Output = Result<(), DeviceError>;
-    type IntoFuture = <BoxedDeviceOp<()> as IntoFuture>::IntoFuture;
-    fn into_future(self) -> Self::IntoFuture {
-        self.boxed().into_future()
-    }
-}
-
 pub(super) struct Finish {
     pub distances: DeviceBox<[f32]>,
     pub host: HostOutput,
     pub selection: Option<Shape>,
-}
-
-// Allocate only on this operation's stream; leases protect raw CUB accesses.
-pub(super) unsafe fn allocate<T: cuda_core::DeviceCopy + Send>(
-    ctx: &ExecutionContext,
-    n: usize,
-) -> Result<DeviceBox<[T]>, DeviceError> {
-    let bytes = n
-        .checked_mul(mem::size_of::<T>())
-        .ok_or_else(|| DeviceError::Internal("CUB allocation overflow".into()))?;
-    let stream = ctx.get_cuda_stream();
-    let ptr = unsafe { malloc_async(stream.cu_stream(), bytes) }.map_err(|error| {
-        DeviceError::Internal(format!("Allocating {bytes} device bytes: {error}"))
-    })?;
-    let buffer = unsafe { DeviceBox::from_raw_parts(ptr, n, Arc::clone(stream)) };
-    ctx.retain_buffer(buffer.storage().clone(), true)?;
-    Ok(buffer)
 }
 
 /// Obtain the DMA pointer exclusively before retaining a second owner. No Rust
@@ -301,7 +267,7 @@ mod tests {
             let policy = global_policy(id).unwrap();
             let stream = policy.next_stream().unwrap();
             foreign.bind_to_thread().unwrap();
-            let distances = crate::gpu::h2d(&data).sync_on(&stream).unwrap();
+            let distances = crate::gpu::operations::h2d(&data).sync_on(&stream).unwrap();
             let host = HostOutput::new(context, 0, Some(shape.count)).unwrap();
             let job = Finish {
                 distances,

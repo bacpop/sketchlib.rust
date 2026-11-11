@@ -1,7 +1,7 @@
 //! Distance-specific device state, tile memory admission and scheduling.
 //! Kernel metadata and selection planning here belong to GPU self-distances;
 //! this module is not general device infrastructure.
-use super::{h2d, kernels, topk};
+use super::{kernels, operations::h2d, topk};
 use anyhow::{ensure, Context, Result};
 use cuda_async::{
     device_box::DeviceBox,

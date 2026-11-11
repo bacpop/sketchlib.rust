@@ -49,7 +49,28 @@ regressions above 3%. Run GPU measurements only with the devices idle.
   pre-existing rustfmt discrepancy, confirmed against HEAD; it is left alone.
   A normalized comparison verifies that the renamed module contains only the
   intended naming/documentation changes.
-- **Stage 1 complete; awaiting the user's review and commit. Stage 2 has not
+- Stage 1 reviewed and committed by the user as `421f250`.
+
+### Stage 2 progress
+
+- Moved the custom operation implementation, allocation, H2D copying and
+  zeroing into private `operations`. Distance setup and CUB selection now use
+  the same low-level helpers without routing ordinary allocation through top-K.
+- Replaced `KeepAlive` and its separate future implementation with `retain()`,
+  using the existing context-binding raw operation. Removed typed zeroing
+  wrappers in favour of `zeroed::<u64>()` and `zeroed::<f32>()`.
+- Preserved stream allocation, copies, zeroing, ownership registration and
+  completion leases. The allocator's overflow diagnostic now says "Device"
+  rather than "CUB" to match its shared responsibility.
+- Local CUDA 13.5 build and the existing release suite passed: 81 tests plus
+  one doctest. The explicitly invoked three-GPU context test also passed after
+  removing an unused import exposed by the extraction. Logs are under
+  `/tmp/sketchlib-gpu-cleanup/stage2-{build,tests,context}.log`.
+- Extracted/updated helper modules pass rustfmt (edition 2021), and
+  `git diff --check` passes. The main module's pre-existing long timer log
+  statement remains untouched. Inspection confirms no new synchronisation,
+  GPU allocation, transfer or zeroing operation in the tile chain.
+- **Stage 2 complete; awaiting the user's review and commit. Stage 3 has not
   started.**
 
 ## Current round: multi-device GPU self-distances
