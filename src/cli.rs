@@ -452,7 +452,7 @@ pub enum InvertedCommands {
         #[arg(short)]
         output: Option<String>,
 
-        /// Do not run analysis, only return the number of comparisons
+        /// Do not run analysis, only return the number of comparisons passing the prefilter
         #[arg(long, group = "mode")]
         count: bool,
 

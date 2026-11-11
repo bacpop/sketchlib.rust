@@ -638,7 +638,7 @@ mod tests {
             .arg("--count")
             .arg("inverted.ski")
             .assert()
-            .stdout_eq("Identified 2 prefilter pairs from a max of 6\n");
+            .stdout_eq("Identified 2 prefilter pairs from a max of 6 (33.3%)\n");
 
         // Build a standard .skd
         Command::new(cmd::cargo_bin!("sketchlib"))
