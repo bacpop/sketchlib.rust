@@ -104,8 +104,49 @@ regressions above 3%. Run GPU measurements only with the devices idle.
 - Updated helper modules pass rustfmt (edition 2021); `git diff --check`
   passes. Existing compiler warnings and the main module's pre-existing timer
   log formatting remain outside this stage.
-- **Stage 3 complete; awaiting the user's review and commit. Stage 4 has not
-  started.**
+- Stage 3 reviewed and committed by the user as `862265d`.
+
+### Stage 4 progress
+
+- Moved `HostOutput`, `Finish`, pinned D2H destination handling and the
+  existing end-to-end context test into private `tile_output`.
+- `topk` now contains selection planning, FFI/runtime error conversion and
+  one internal `select()` helper for stream-ordered CUB dispatch. It allocates
+  candidates/workspace and returns candidate device storage for output copying.
+- Preserved the context bind before raw work and documented the selection
+  helper's context/input-retention requirements. Allocation leases keep all
+  candidate/workspace storage alive through the submission's completion,
+  including D2H copies. Dense output takes its original direct-copy branch.
+- No changes to C++ code, kernels, build configuration, scheduling or public
+  interfaces. Local CUDA 13.5 build, 81 release tests, one doctest and the
+  explicit three-GPU context test passed.
+- The mixed-device validator passed all 12 CPU comparisons (maximum absolute
+  error 1.554e-7), including the small-block stress case, plus seven invalid
+  arguments and both writer failures. All five baseline memory-plan comparisons
+  matched, including the 100k-to-25k block reduction and 4/3/3 slot limits.
+  Logs/reports use the `stage4-` prefix under `/tmp/sketchlib-gpu-cleanup`.
+- Completed the pre-cleanup/final performance comparison on the existing
+  100k workload: k-mer 31, ANI, kNN 50, block 5000, four slots/GPU, 16 threads,
+  default reactor and stdout discarded. Each executable/configuration had a
+  warm-up and five valid measured runs in alternating pairs. Monitoring found
+  no competing GPU workloads; one thermally throttled baseline sample was
+  rejected and replaced after cooling. Every run covered 210 tiles and
+  4,999,950,000 pairs.
+
+  | Devices | Pre-cleanup median | Final median | Change |
+  | --- | ---: | ---: | ---: |
+  | CUDA 0 / RTX 5090 | 5.738 s | 5.689 s | -0.87% |
+  | CUDA 0,1,2 / RTX 5090 + 3090 + 2080 Ti | 4.431 s | 4.233 s | -4.48% |
+
+  Both measured configurations pass the 3% regression gate. These results
+  establish no measured regression; they do not attribute a speedup to a
+  particular organisational change. Raw measurements, monitoring, executable
+  hashes and medians are in
+  `/tmp/sketchlib-gpu-cleanup/stage4-performance-20261111T165436Z`.
+- `topk` and `tile_output` pass rustfmt (edition 2021); `git diff --check`
+  passes. The measured final executable matches `target/release/sketchlib`.
+- **Stage 4 complete; awaiting the user's final review and commit. All four
+  implementation stages are complete; no commit was created automatically.**
 
 ## Current round: multi-device GPU self-distances
 

@@ -30,10 +30,11 @@ use crate::utils::get_progress_bar;
 
 mod distance_devices;
 mod operations;
+mod tile_output;
 mod topk;
 use distance_devices::{DistanceDevice, MemoryPlan, TileQueue};
 use operations::{h2d, retain, zeroed};
-use topk::HostOutput;
+use tile_output::HostOutput;
 
 const BBITS: u64 = BIN_BITS as u64;
 const DENSE_CHUNK_SIZE: usize = 1000;
@@ -367,7 +368,7 @@ impl DistTile {
                                         completeness,
                                         output,
                                     )| {
-                                        topk::Finish {
+                                        tile_output::Finish {
                                             distances: output,
                                             host: host_output,
                                             selection,
