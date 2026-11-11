@@ -2,9 +2,8 @@
 
 ## Current round: multi-device GPU self-distances
 
-Status: implementation and correctness validation complete. Remaining GPU
-performance measurements are held pending the user's availability notice
-(2026-11-11); the completed two-device trace confirms overlap.
+Status: implementation, correctness validation, single-device performance
+checks, mixed-device benchmarks and three-device profiling complete (2026-11-11).
 
 ### Accepted design and implementation
 
@@ -66,12 +65,11 @@ performance measurements are held pending the user's availability notice
 
 ### Performance acceptance
 
-- Save/rebuild original SM80 and architecture-matched SM75 baselines with the
-  current lockfile/toolchain. Compare the final executable using five alternating
-  measured runs after warm-ups on each GPU; reject samples with another process
-  or observed thermal throttling. Target no repeatable single-device median
-  regression above 3%, and measure combinations separately. Record results below
-  once those checks and the multi-device trace complete.
+- Rebuilt original SM80 and architecture-matched SM75 baselines with the current
+  lockfile/toolchain. Compared the final executable using five alternating
+  measured runs after warm-ups on each GPU, rejecting samples with another
+  process on the measured GPU or observed thermal throttling. All three devices
+  passed the 3% single-device median regression gate.
 - Completed uncontended single-device sets (five valid measured runs per
   executable, after warm-ups; 100k samples, k=50, ANI/k-mer 31, block 5000,
   four slots, 16 threads, default reactor, stdout `/dev/null`):
@@ -80,14 +78,31 @@ performance measurements are held pending the user's availability notice
   | --- | ---: | ---: | ---: |
   | RTX 5090 / CUDA 0 | 5.689 s | 5.486 s | 5.531 s |
   | RTX 3090 / CUDA 1 | 6.944 s | 6.941 s | 6.891 s |
+  | RTX 2080 Ti / CUDA 2 | Unsupported target | 9.451 s | 9.453 s |
 
-  These sets pass the 3% regression gate against both baselines. CUDA 2 currently
-  has three matched-baseline and four new samples; its five-pair gate is pending.
+  The matched-baseline differences are +0.83%, -0.71% and +0.02%, respectively.
   One thermally throttled warm-up was rejected automatically. Monitoring excludes
   other compute processes on each measured GPU; workloads on other GPUs may still
   affect shared host resources. Raw measurements, rejected-sample diagnostics and
-  interim medians are in the performance subdirectory recorded by
+  final medians are in the performance subdirectory recorded by
   `/tmp/sketchlib-multigpu-implementation/latest-performance.txt`.
+- After the user announced GPU availability, completed all four multi-device
+  combinations with the same workload/settings, one warm-up and three valid
+  measured runs per combination. One thermally throttled sample was rejected
+  and replaced. Each run covered 210 tiles and all 4,999,950,000 pairs.
+
+  | CUDA devices | GPUs | Median wall time |
+  | --- | --- | ---: |
+  | 0,1 | RTX 5090 + RTX 3090 | 4.485 s |
+  | 0,2 | RTX 5090 + RTX 2080 Ti | 4.835 s |
+  | 1,2 | RTX 3090 + RTX 2080 Ti | 5.338 s |
+  | 0,1,2 | All three | 4.381 s |
+
+  Compared with the new 5090-only median of 5.531 s, the 5090/3090 pair reduces
+  total time by about 19%; all three reduce it by about 21%. The third device
+  provides a small further gain on this workload. Raw measurements, monitoring
+  and summaries are in the directory recorded by
+  `/tmp/sketchlib-multigpu-implementation/latest-scaling.txt`.
 - The two-device trace (`pair.nsys-rep`, `pair.sqlite`, `pair-summary.json` under
   the implementation artifact directory) confirms 210 distance tiles split
   113/97 across CUDA 0/1, four tile streams on each, and 1.238 s with distance
@@ -96,13 +111,20 @@ performance measurements are held pending the user's availability notice
   traced context switches total about 0.79 ms of API time. This is overlap/context
   validation, not a clean scaling comparison: another workload occupied CUDA 2
   during capture.
-- The user requested that further GPU measurements wait until they announce
-  availability. Our benchmark process is stopped with SIGSTOP and consumes no
-  GPU work; its PID is recorded in
-  `/tmp/sketchlib-multigpu-implementation/paused-benchmark-pids.json`. Resume it
-  with SIGCONT after that notice (if still alive), finish the remaining Turing
-  samples, then measure multi-device combinations and collect the three-device
-  trace. `interim-summary.json` preserves completed results if the process exits.
+- The final three-device trace (`triple.nsys-rep`, `triple.sqlite`,
+  `triple-summary.json` in the same artifact directory) splits the 210 tiles
+  87/69/54 across CUDA 0/1/2, using four streams per device. Distance kernels
+  overlap across at least two devices for 1.569 s and across all three for
+  0.778 s. The GPU phase spans 1.991 s, with only 1.116 ms of aggregate time
+  when no device runs a kernel or memory operation; the largest such gap is
+  0.370 ms. All six explicit stream synchronisations precede the first distance
+  kernel. There are no repeated tile-group synchronisation barriers.
+- That trace records one shared 204.8 MB pinned sketch allocation, about 612 MB
+  peak tracked device allocations per GPU, and 800 MB total D2H output. Its
+  5,694 context-binding calls total about 1.10 ms of CPU API time. Host global
+  heap merging takes 1.390 s in this profiled run. Profiling includes memory
+  tracking, so benchmark wall times above come from unprofiled runs. No benchmark
+  process remains paused; all requested validation is complete.
 
 ## Completed round: CUB tile-level kNN with host global selection
 
