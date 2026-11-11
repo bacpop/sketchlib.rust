@@ -1,5 +1,5 @@
-//! Fast distance calculations between biological sequences (DNA, AA or structures
-//! via the 3di alphabet). Distances are based on bindash approximations of the Jaccard
+//! Fast distance calculations between biological sequences (DNA, AA).
+//! Distances are based on bindash approximations of the Jaccard
 //! distance, with the [PopPUNK method](https://poppunk.bacpop.org/index.html) to calculate core and accessory distances. nthash/aahash
 //! are used for hash functions to create the sketches.
 //!
@@ -43,7 +43,6 @@
 //!   resolution and 100000-1000000 for SNP level resolution.
 //! - To sketch amino acid sequences use `--seq-type aa --concat-fasta` if you have the typical case
 //!   of each fasta file being a multifasta with many aa sequences. Each one will then be its own sample.
-//! - You can also sketch structures with .pdb input, see 'Enabling PDB->3Di' below. This is experimental.
 //!
 //! ### Distances
 //!
@@ -140,16 +139,6 @@
 //! - `append` sketches new input samples, and adds them to an existing database.
 //! - `delete` removes samples from a sketch database.
 //!
-//! ## Enabling PDB->3Di
-//! conda doesn't work, so make sure it is deactivated
-//! ```bash
-//! export PYO3_PYTHON=python3
-//! python3 -m venv 3di_venv
-//! source 3di_venv/bin/activate
-//! python3 -m pip install numpy biopython mini3di
-//! cargo run -F 3di
-//! export PYTHONPATH=${PYTHONPATH}:$(realpath ./)/3di_venv/lib/python3.12/site-packages
-//! ```
 
 #![warn(missing_docs)]
 #![allow(clippy::too_many_arguments)]
@@ -198,8 +187,6 @@ use crate::io::{
     get_input_list, parse_kmers, parse_metadata_info, read_completeness_file, read_subset_names,
     reorder_input_files, set_ostream,
 };
-
-pub mod structures;
 
 pub mod hashing;
 
@@ -250,8 +237,6 @@ pub fn main() -> Result<(), Error> {
             seq_files,
             file_list,
             concat_fasta,
-            #[cfg(feature = "3di")]
-            convert_pdb,
             output,
             kmers,
             sketch_size,
@@ -262,7 +247,7 @@ pub fn main() -> Result<(), Error> {
             min_qual,
             threads,
         } => {
-            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
+            if *concat_fasta && matches!(*seq_type, HashType::DNA) {
                 panic!("--concat-fasta currently only supported with --seq-type aa");
             }
 
@@ -290,8 +275,6 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
-                #[cfg(feature = "3di")]
-                *convert_pdb,
                 &kmers,
                 sketch_bins,
                 &seq_type,
@@ -687,7 +670,7 @@ pub fn main() -> Result<(), Error> {
                     let n_samples = inverted_index.n_samples() as u64;
                     let maximum_pairs = n_samples * n_samples.saturating_sub(1) / 2;
                     println!(
-                        "Identified {} prefilter pairs from a max of {} ({:.1})%",
+                        "Identified {} prefilter pairs from a max of {} ({:.1}%)",
                         prefilter_pairs,
                         maximum_pairs,
                         100.0 * prefilter_pairs as f64 / maximum_pairs as f64,
@@ -802,7 +785,7 @@ pub fn main() -> Result<(), Error> {
             let rc = !*single_strand;
             let sketch_size = db_metadata.sketch_size;
             let seq_type = db_metadata.get_hash_type();
-            if *concat_fasta && matches!(*seq_type, HashType::DNA | HashType::PDB) {
+            if *concat_fasta && matches!(*seq_type, HashType::DNA) {
                 panic!("--concat-fasta currently only supported with --seq-type aa");
             }
 
@@ -824,8 +807,6 @@ pub fn main() -> Result<(), Error> {
                 output,
                 &input_files,
                 *concat_fasta,
-                #[cfg(feature = "3di")]
-                false,
                 kmers,
                 sketch_size,
                 &seq_type,
