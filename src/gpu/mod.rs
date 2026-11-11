@@ -33,9 +33,9 @@ use crate::sketch::multisketch::MultiSketch;
 use crate::sketch::BIN_BITS;
 use crate::utils::get_progress_bar;
 
-mod devices;
+mod distance_devices;
 mod topk;
-use devices::{DeviceState, Geometry, MemoryPlan, TileQueue};
+use distance_devices::{DistanceDevice, Geometry, MemoryPlan, TileQueue};
 use topk::HostOutput;
 
 const BBITS: u64 = BIN_BITS as u64;
@@ -539,7 +539,7 @@ pub fn self_dists_stream<W: IoWrite + Send>(
 /// Validate unique visible CUDA ordinals and shared pinned-memory support.
 /// Call before loading large sketch collections to report invalid devices early.
 pub fn validate_devices(device_ids: &[usize]) -> Result<(), Error> {
-    devices::validate(device_ids)
+    distance_devices::validate(device_ids)
 }
 
 /// Process self-distance tiles across selected GPUs, with one stream pool per
@@ -602,7 +602,7 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
     let mut devices = gpu_device_ids
         .iter()
         .map(|&id| {
-            DeviceState::new(id, sketches.kmer_lengths(), &completeness)
+            DistanceDevice::new(id, sketches.kmer_lengths(), &completeness)
                 .with_context(|| format!("Initialising GPU {id}"))
         })
         .collect::<Result<Vec<_>, _>>()?;

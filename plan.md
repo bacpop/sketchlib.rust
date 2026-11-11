@@ -1,5 +1,57 @@
 # CUDA self-distance planning
 
+## Current round: staged GPU distance cleanup
+
+Implement one stage at a time. After each stage, report checks and stop for the
+user to review and commit. Continue only after the user confirms that review
+and commit are complete. Do not create commits automatically.
+
+1. **Distance-specific naming:** rename `devices.rs` to `distance_devices.rs`
+   and `DeviceState` to `DistanceDevice`; clarify documentation. Preserve the
+   existing geometry, memory planner, admission decisions and tile queue.
+2. **Low-level operations:** move custom operation machinery, allocation,
+   H2D, zeroing and retention into a private operations module. Replace
+   `KeepAlive` with a helper using the existing raw operation and remove the
+   typed zeroing wrappers. Preserve context binding and completion ownership.
+3. **Selection planning:** move the per-device shape cache/query logic into
+   `topk::SelectionCache`; keep its keys independent of the distance-device
+   module. Put checked candidate-plus-workspace memory accounting on the shape.
+4. **Tile output:** move host output buffers, D2H completion and destination
+   handling into a private tile-output module. Keep FFI, runtime errors,
+   workspace queries and selection allocation/dispatch inside `topk`.
+
+Preserve public interfaces, CLI behaviour, algorithms, stream scheduling,
+memory sizing, shared pinned input and cancellation/resource lifetimes. No
+general GPU framework or new dependencies. Timer labels are outside this round.
+
+Validation: local CUDA 13.5 build/release tests at every stage; existing
+context tests after operation/selection changes; CPU/GPU comparisons and
+writer failures for selection/output changes. After Stage 4, compare the
+saved baseline with the final executable using the existing 100k ANI/kNN50
+workload (k-mer 31, block 5000, four slots, 16 threads), single/three GPUs,
+warm-ups and five alternating measurements; investigate repeatable median
+regressions above 3%. Run GPU measurements only with the devices idle.
+
+### Stage 1 progress
+
+- Renamed the distance-device module/state and updated all source references.
+  Documentation explicitly identifies distance kernels, metadata, selection
+  planning and counters as distance-specific responsibilities.
+- Saved the pre-cleanup release executable and its SHA-256 in
+  `/tmp/sketchlib-gpu-cleanup/baseline` and `baseline.sha256` for the final
+  comparison. No scheduling, memory, kernel or selection logic changed.
+- Local `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build` and
+  `cargo oxide test -- --release` passed. Existing documentation warnings
+  remain. Logs: `/tmp/sketchlib-gpu-cleanup/stage1-build.log` and
+  `stage1-tests.log`.
+- The renamed module passes rustfmt (edition 2021), and `git diff --check`
+  passes. The unchanged long merge-timer log statement in `mod.rs` has a
+  pre-existing rustfmt discrepancy, confirmed against HEAD; it is left alone.
+  A normalized comparison verifies that the renamed module contains only the
+  intended naming/documentation changes.
+- **Stage 1 complete; awaiting the user's review and commit. Stage 2 has not
+  started.**
+
 ## Current round: multi-device GPU self-distances
 
 Status: implementation, correctness validation, single-device performance
