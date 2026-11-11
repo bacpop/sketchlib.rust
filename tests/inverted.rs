@@ -71,6 +71,234 @@ mod tests {
             })
     }
 
+    const METADATA_SAMPLES: [&str; 4] = [
+        "TIGR4.fa.gz",
+        "R6.fa.gz",
+        "14412_3#82.contigs_velvet.fa.gz",
+        "14412_3#84.contigs_velvet.fa.gz",
+    ];
+
+    fn metadata_build_command(sandbox: &TestSetup) -> std::process::Command {
+        sandbox.create_named_rfile("samples.txt", &METADATA_SAMPLES);
+        let mut command = std::process::Command::new(cmd::cargo_bin!("sketchlib"));
+        command
+            .current_dir(sandbox.get_wd())
+            .args([
+                "inverted",
+                "build",
+                "-o",
+                "reference",
+                "-k",
+                "21",
+                "-s",
+                "10",
+                "-f",
+                "samples.txt",
+                "--phylo-clusters",
+            ])
+            .arg(sandbox.file_string("phylo_clusters.txt", TestDir::Input));
+        command
+    }
+
+    fn metadata_query_command(
+        sandbox: &TestSetup,
+        mode: &str,
+        threads: &str,
+    ) -> std::process::Command {
+        let mut command = std::process::Command::new(cmd::cargo_bin!("sketchlib"));
+        command.current_dir(sandbox.get_wd()).args([
+            "inverted",
+            "query",
+            "reference.ski",
+            "-f",
+            "samples.txt",
+            "--query-type",
+            mode,
+            "--threads",
+            threads,
+        ]);
+        command
+    }
+
+    fn successful_stdout(output: std::process::Output) -> String {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn assert_query_rows(actual: &str, expected: &str) {
+        assert_eq!(actual.lines().next(), expected.lines().next());
+        let mut actual: Vec<_> = actual.lines().skip(1).collect();
+        let mut expected: Vec<_> = expected.lines().skip(1).collect();
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn inverted_query_metadata_all_modes_and_suppression() {
+        let sandbox = TestSetup::setup();
+        for (filename, prefix) in [("reference.tsv", "reference"), ("queries.tsv", "query")] {
+            let data: String = METADATA_SAMPLES
+                .iter()
+                .enumerate()
+                .map(|(i, name)| format!("{name}\t{prefix} {i}\n"))
+                .collect();
+            std::fs::write(sandbox.file_path(filename, TestDir::Output), data).unwrap();
+        }
+        successful_stdout(
+            metadata_build_command(&sandbox)
+                .args(["--metadata", "reference.tsv"])
+                .output()
+                .unwrap(),
+        );
+        let [tigr, r6, a, b] = METADATA_SAMPLES;
+        let expectations = [
+            ("match-count", format!("Query\t{tigr};reference 0\t{r6};reference 1\t{a};reference 2\t{b};reference 3\n{tigr};query 0\t10\t9\t0\t0\n{r6};query 1\t9\t10\t0\t0\n{a};query 2\t0\t0\t10\t6\n{b};query 3\t0\t0\t6\t10\n")),
+            ("all-bins", format!("Query\tMatches\n{tigr};query 0\t{tigr};reference 0\n{r6};query 1\t{r6};reference 1\n{a};query 2\t{a};reference 2\n{b};query 3\t{b};reference 3\n")),
+            ("any-bins", format!("Query\tMatches\n{tigr};query 0\t{tigr};reference 0,{r6};reference 1\n{r6};query 1\t{tigr};reference 0,{r6};reference 1\n{a};query 2\t{a};reference 2,{b};reference 3\n{b};query 3\t{a};reference 2,{b};reference 3\n")),
+        ];
+        for (mode, expected) in &expectations {
+            let mut unannotated = expected.clone();
+            let mut reference_only = expected.clone();
+            for i in 0..4 {
+                unannotated = unannotated
+                    .replace(&format!(";reference {i}"), "")
+                    .replace(&format!(";query {i}"), "");
+                reference_only = reference_only.replace(&format!(";query {i}"), "");
+            }
+            for threads in ["1", "2"] {
+                let actual = successful_stdout(
+                    metadata_query_command(&sandbox, mode, threads)
+                        .args(["--metadata", "queries.tsv"])
+                        .output()
+                        .unwrap(),
+                );
+                assert_query_rows(&actual, expected);
+                let actual = successful_stdout(
+                    metadata_query_command(&sandbox, mode, threads)
+                        .args(["--metadata", "queries.tsv", "--suppress-metadata"])
+                        .output()
+                        .unwrap(),
+                );
+                assert_query_rows(&actual, &unannotated);
+            }
+            let stdout = successful_stdout(
+                metadata_query_command(&sandbox, mode, "1")
+                    .args(["-o", "result.tsv"])
+                    .output()
+                    .unwrap(),
+            );
+            assert!(stdout.is_empty());
+            assert_query_rows(
+                &std::fs::read_to_string(sandbox.file_path("result.tsv", TestDir::Output)).unwrap(),
+                &reference_only,
+            );
+        }
+        // Query metadata belongs to the loaded index, but is never saved in .ski files.
+        let query_metadata = sketchlib::io::parse_metadata_info(
+            Some(&sandbox.file_string("queries.tsv", TestDir::Output)),
+            METADATA_SAMPLES,
+        )
+        .unwrap();
+        let prefix = sandbox.file_string("reference", TestDir::Output);
+        let index =
+            sketchlib::inverted::Inverted::load(&prefix, query_metadata.clone(), false).unwrap();
+        assert_eq!(index.get_query_metadata(tigr), Some("query 0"));
+        let saved_prefix = sandbox.file_string("saved", TestDir::Output);
+        index.save(&saved_prefix).unwrap();
+        let reloaded = sketchlib::inverted::Inverted::load(&saved_prefix, None, false).unwrap();
+        assert_eq!(reloaded.get_query_metadata(tigr), None);
+        assert_eq!(reloaded.get_metadata(), index.get_metadata());
+        let suppressed =
+            sketchlib::inverted::Inverted::load(&prefix, query_metadata, true).unwrap();
+        assert_eq!(suppressed.get_query_metadata(tigr), None);
+        assert_eq!(suppressed.get_metadata(), &None);
+
+        // Rebuild without reference metadata: query metadata remains independently usable.
+        successful_stdout(metadata_build_command(&sandbox).output().unwrap());
+        for (mode, expected) in &expectations {
+            let mut query_only = expected.clone();
+            for i in 0..4 {
+                query_only = query_only.replace(&format!(";reference {i}"), "");
+            }
+            let actual = successful_stdout(
+                metadata_query_command(&sandbox, mode, "1")
+                    .args(["--metadata", "queries.tsv"])
+                    .output()
+                    .unwrap(),
+            );
+            assert_query_rows(&actual, &query_only);
+        }
+    }
+
+    #[test]
+    fn inverted_missing_metadata_has_one_aggregate_warning_per_source() {
+        let sandbox = TestSetup::setup();
+        let [tigr, r6, a, _] = METADATA_SAMPLES;
+        std::fs::write(
+            sandbox.file_path("missing.tsv", TestDir::Output),
+            format!("\n\tignored\n  \talso ignored\n{tigr}\t\n{r6}\n{a}\t   \n"),
+        )
+        .unwrap();
+        let output = metadata_build_command(&sandbox)
+            .args(["--metadata", "missing.tsv"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(stderr.matches("WARN").count(), 1, "{stderr}");
+        assert!(
+            stderr.contains("4 missing values set to NA; 2 records without sample names ignored"),
+            "{stderr}"
+        );
+        let output = metadata_query_command(&sandbox, "all-bins", "1")
+            .args(["--metadata", "missing.tsv"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(stderr.matches("WARN").count(), 1, "{stderr}");
+        assert!(
+            stderr.contains("4 missing values set to NA; 2 records without sample names ignored"),
+            "{stderr}"
+        );
+        let expected = format!("Query\tMatches\n{tigr};NA\t{tigr};NA\n{r6};NA\t{r6};NA\n{a};NA\t{a};NA\n{};NA\t{};NA\n", METADATA_SAMPLES[3], METADATA_SAMPLES[3]);
+        assert_query_rows(&String::from_utf8(output.stdout).unwrap(), &expected);
+    }
+
+    #[test]
+    fn inverted_metadata_errors_are_reported_without_panicking() {
+        let sandbox = TestSetup::setup();
+        successful_stdout(metadata_build_command(&sandbox).output().unwrap());
+        for value in ["left\tright", "left,right", "left;right"] {
+            std::fs::write(
+                sandbox.file_path("invalid.tsv", TestDir::Output),
+                format!("{}\t{value}\n", METADATA_SAMPLES[0]),
+            )
+            .unwrap();
+            for mut command in [
+                metadata_build_command(&sandbox),
+                metadata_query_command(&sandbox, "all-bins", "1"),
+            ] {
+                let output = command
+                    .args(["--metadata", "invalid.tsv"])
+                    .output()
+                    .unwrap();
+                assert!(!output.status.success());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    stderr.contains("Metadata must not contain tabs, commas, or semicolons"),
+                    "{stderr}"
+                );
+                assert!(!stderr.contains("panicked"), "{stderr}");
+            }
+        }
+    }
+
     #[test]
     fn inverted_sketch() {
         let sandbox = TestSetup::setup();
@@ -128,7 +356,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "64"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -188,7 +415,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
         sandbox.copy_input_file_to_wd("rfile.txt");
         sandbox.copy_input_file_to_wd("metadata.txt");
-        sandbox.copy_input_file_to_wd("species_names.txt");
+        sandbox.copy_input_file_to_wd("phylo_clusters.txt");
         Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
@@ -197,7 +424,7 @@ mod tests {
             .arg("inverted")
             .args(["-v", "-k", "31"])
             .args(["-f", "rfile.txt"])
-            .args(["--species-names", "species_names.txt"])
+            .args(["--phylo-clusters", "phylo_clusters.txt"])
             .args(["--metadata", "metadata.txt"])
             .assert()
             .success();
@@ -214,9 +441,9 @@ mod tests {
         sandbox.copy_input_file_to_wd("R6.fa.gz");
         sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
         sandbox.copy_input_file_to_wd("rfile.txt");
-        sandbox.copy_input_file_to_wd("species_names_empty.txt");
+        sandbox.copy_input_file_to_wd("phylo_clusters_empty.txt");
 
-        // This shouldn't give an error, but it is an unfortunate situation with respect to the species-names file the user provided
+        // This shouldn't give an error, but it is an unfortunate situation with respect to the phylo-clusters file the user provided
         Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
@@ -225,7 +452,7 @@ mod tests {
             .arg("inverted")
             .args(["-v", "-k", "31"])
             .args(["-f", "rfile.txt"])
-            .args(["--species-names", "species_names_empty.txt"])
+            .args(["--phylo-clusters", "phylo_clusters_empty.txt"])
             .assert()
             .success();
 
@@ -242,7 +469,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
         sandbox.copy_input_file_to_wd("rfile_multi.txt");
 
-        // This shouldn't give an error, but it is an unfortunate situation with respect to the species-names file the user provided
+        // This shouldn't give an error, but it is an unfortunate situation with respect to the phylo-clusters file the user provided
         Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
@@ -272,8 +499,8 @@ mod tests {
             .arg("-o")
             .arg("inverted")
             .args(["-v", "-k", "61", "-s", "63"])
-            .arg("--species-names")
-            .arg(sandbox.file_string("species_names.txt", TestDir::Input))
+            .arg("--phylo-clusters")
+            .arg(sandbox.file_string("phylo_clusters.txt", TestDir::Input))
             .arg("14412_3#82.contigs_velvet.fa.gz")
             .arg("14412_3#84.contigs_velvet.fa.gz")
             .arg("R6.fa.gz")
@@ -391,7 +618,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -412,7 +638,7 @@ mod tests {
             .arg("--count")
             .arg("inverted.ski")
             .assert()
-            .stdout_eq("Identified 2 prefilter pairs from a max of 6\n");
+            .stdout_eq("Identified 2 prefilter pairs from a max of 6 (33.3%)\n");
 
         // Build a standard .skd
         Command::new(cmd::cargo_bin!("sketchlib"))
@@ -480,7 +706,7 @@ mod tests {
     }
 
     // Helper to set up reordered SKI + standard SKD
-    // SKI order (via --species-names): TIGR4, R6, #82, #84
+    // SKI order (via --phylo-clusters): TIGR4, R6, #82, #84
     // SKD order (via rfile.txt):       #82, #84, R6, TIGR4
     fn setup_reordered_precluster(sandbox: &TestSetup) {
         sandbox.copy_input_file_to_wd("14412_3#82.contigs_velvet.fa.gz");
@@ -489,7 +715,7 @@ mod tests {
         sandbox.copy_input_file_to_wd("TIGR4.fa.gz");
         sandbox.copy_input_file_to_wd("rfile.txt");
 
-        // Build SKI+SKQ with reordered samples via --species-names
+        // Build SKI+SKQ with reordered samples via --phylo-clusters
         Command::new(cmd::cargo_bin!("sketchlib"))
             .current_dir(sandbox.get_wd())
             .arg("inverted")
@@ -499,9 +725,8 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
-            .arg("--species-names")
-            .arg(sandbox.file_string("species_names.txt", TestDir::Input))
+            .arg("--phylo-clusters")
+            .arg(sandbox.file_string("phylo_clusters.txt", TestDir::Input))
             .assert()
             .success();
 
@@ -615,7 +840,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg(&reversed_rfile)
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -685,7 +909,6 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--write-skq")
             .assert()
             .success();
 
@@ -958,8 +1181,8 @@ mod tests {
             .args(["-v", "-k", "21", "-s", "10"])
             .arg("-f")
             .arg("rfile.txt")
-            .arg("--species-names")
-            .arg(sandbox.file_string("species_names.txt", TestDir::Input))
+            .arg("--phylo-clusters")
+            .arg(sandbox.file_string("phylo_clusters.txt", TestDir::Input))
             .assert()
             .success();
 

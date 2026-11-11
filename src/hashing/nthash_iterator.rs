@@ -51,8 +51,13 @@ impl RollHash for NtHashIterator {
             self.k = k;
             self.offset_idx = 0; // rewind: offsets must be re-traversed for each k
             if self.next_iterator(0).is_none() {
-                let seq_str = std::str::from_utf8(&self.seq).unwrap_or("<not a valid UTF-8 string>");
-                return Err(anyhow::anyhow!("K-mer size {} larger than smallest valid sequence {}", k, seq_str))
+                let seq_str =
+                    std::str::from_utf8(&self.seq).unwrap_or("<not a valid UTF-8 string>");
+                return Err(anyhow::anyhow!(
+                    "K-mer size {} larger than smallest valid sequence {}",
+                    k,
+                    seq_str
+                ));
             }
         }
         Ok(())

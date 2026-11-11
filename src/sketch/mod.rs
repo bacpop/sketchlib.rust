@@ -27,8 +27,6 @@ use crate::hashing::aahash_iterator::AaHashIterator;
 use crate::io::InputFastx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::io::NeedletailIterator;
-#[cfg(feature = "3di")]
-use crate::structures::pdb_to_3di;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::get_progress_bar;
 
@@ -488,8 +486,6 @@ impl fmt::Display for Sketch {
 pub fn sketch_data<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
     records_readers: &mut [I],
     opts: SketchingOpts,
-    #[cfg(feature = "3di")] convert_pdb: bool,
-    #[cfg(feature = "3di")] struct_string: Option<String>,
 ) -> anyhow::Result<Vec<Sketch>> {
     // Read in sequence and set up rolling hash by alphabet type
     let mut hash_its: Vec<Box<dyn RollHash>> = match opts.seq_type {
@@ -512,36 +508,17 @@ pub fn sketch_data<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
         .into_iter()
         .map(|it| Box::new(it) as Box<dyn RollHash>)
         .collect(),
-        HashType::PDB => {
-            #[cfg(feature = "3di")]
-            if let Some(di) = &struct_string {
-                AaHashIterator::from_3di_string(di.clone()) // TODO: clone is not ideal
-                    .into_iter()
-                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                    .collect()
-            } else {
-                AaHashIterator::from_3di_file(records_readers, &opts.name)
-                    .into_iter()
-                    .map(|it| Box::new(it) as Box<dyn RollHash>)
-                    .collect()
-            }
-            #[cfg(not(feature = "3di"))]
-            AaHashIterator::from_3di_file(records_readers, &opts.name)
-                .into_iter()
-                .map(|it| Box::new(it) as Box<dyn RollHash>)
-                .collect()
-        }
     };
 
     let mut sketches: Vec<Sketch> = Vec::with_capacity(hash_its.len());
-    for(idx, hash_it) in hash_its.iter_mut().enumerate() {
+    for (idx, hash_it) in hash_its.iter_mut().enumerate() {
         let sample_name = if opts.concat_fasta {
             format!("{}_{}", opts.name, idx + 1)
         } else {
             opts.name.to_string()
         };
         if hash_it.seq_len() == 0 {
-            return Err(anyhow::anyhow!("{sample_name} has no valid sequence"))
+            return Err(anyhow::anyhow!("{sample_name} has no valid sequence"));
         }
         // Run the sketching
         let sketch = Sketch::new(
@@ -564,7 +541,6 @@ pub fn sketch_files(
     output_prefix: &str,
     input_files: &[InputFastx],
     concat_fasta: bool,
-    #[cfg(feature = "3di")] convert_pdb: bool,
     k: &[usize],
     sketch_size: u64,
     seq_type: &HashType,
@@ -576,16 +552,6 @@ pub fn sketch_files(
     let bin_stride = 1;
     let kmer_stride = sketch_size as usize * BIN_BITS;
     let sample_stride = kmer_stride * k.len();
-
-    #[cfg(feature = "3di")]
-    let struct_strings = if convert_pdb {
-        log::info!("Converting PDB files into 3Di representations");
-        Some(pdb_to_3di(input_files).expect("Error converting to 3Di"))
-    } else {
-        None
-    };
-    #[cfg(feature = "3di")]
-    log::trace!("{struct_strings:?}");
 
     // Open output file
     let data_filename = format!("{output_prefix}.skd");
@@ -645,16 +611,10 @@ pub fn sketch_files(
                         NeedletailIterator::new(reader)
                     }).collect::<Vec<NeedletailIterator>>();
 
-                    #[cfg(feature = "3di")]
-                    let di = struct_strings.as_ref().map(|structs| structs[_idx].clone());
 
                     sketch_data(
                         &mut records_readers,
                         opts,
-                        #[cfg(feature = "3di")]
-                        convert_pdb,
-                        #[cfg(feature = "3di")]
-                        di,
                     ).unwrap()
                 })
                 .for_each_with(tx, |tx, sketch| {

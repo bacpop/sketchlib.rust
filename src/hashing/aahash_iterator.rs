@@ -38,7 +38,11 @@ impl RollHash for AaHashIterator {
             Ok(())
         } else {
             let seq_str = std::str::from_utf8(&self.seq).unwrap_or("<not a valid UTF-8 string>");
-            Err(anyhow::anyhow!("K-mer size {} larger than smallest valid sequence {}", k, seq_str))
+            Err(anyhow::anyhow!(
+                "K-mer size {} larger than smallest valid sequence {}",
+                k,
+                seq_str
+            ))
         }
     }
 
@@ -120,21 +124,6 @@ impl AaHashIterator {
             hash_vec.push(seq_hash_it);
         }
         hash_vec
-    }
-
-    /// Create a new iterator from a 3di embedding file of a structure
-    pub fn from_3di_file<I: Iterator<Item = (Vec<u8>, Option<Vec<u8>>)>>(
-        readers: &mut [I],
-        file: &String,
-    ) -> Vec<Self> {
-        Self::new(readers, file, AaLevel::Level1, false)
-    }
-
-    /// Create a new iterator from a 3di embedding string of a structure
-    pub fn from_3di_string(sequence: String) -> Vec<Self> {
-        let mut hash_it = Self::default(AaLevel::Level1);
-        hash_it.seq = sequence.into_bytes();
-        vec![hash_it]
     }
 
     fn new_iterator(

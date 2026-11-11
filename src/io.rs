@@ -7,7 +7,7 @@ use std::io::{stdout, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::Mutex;
 
-use anyhow::Context;
+use anyhow::{bail, Context, Error};
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 use regex::Regex;
@@ -65,32 +65,32 @@ pub fn read_input_fastas(seq_files: &[String]) -> Vec<InputFastx> {
 /// Give a reordering for input files given some labels, putting the same labels next to each other
 pub fn reorder_input_files(
     input_files: &Vec<(String, Vec<String>)>,
-    species_name_file: &str,
+    phylo_clusters_file: &str,
 ) -> (Vec<usize>, Option<HashMap<String, String>>) {
-    // Set of names, so only these are read from the species order
-    log::info!("Reordering samples using labels in {species_name_file}");
+    // Set of names, so only these are read from the cluster order
+    log::info!("Reordering samples using labels in {phylo_clusters_file}");
     let input_names: HashSet<String> = input_files.iter().map(|fastx| fastx.0.clone()).collect();
 
-    let f = File::open(species_name_file).unwrap_or_else(|_| {
+    let f = File::open(phylo_clusters_file).unwrap_or_else(|_| {
         panic!(
             "Unable to
-        open species name file {species_name_file}"
+        open phylogenetic cluster file {phylo_clusters_file}"
         )
     });
     let f = BufReader::new(f);
-    let mut species_labels: HashMap<String, usize> = HashMap::new(); // Stores [species, species order index]
-    let mut map_names_labels: HashMap<String, String> = HashMap::new(); // Stores [sample name, species]
-    let mut label_order: Vec<(String, usize)> = Vec::with_capacity(input_files.len()); // Stores [species, index-to-be]
+    let mut cluster_order: HashMap<String, usize> = HashMap::new(); // Stores [cluster, cluster order index]
+    let mut map_names_labels: HashMap<String, String> = HashMap::new(); // Stores [sample name, cluster]
+    let mut label_order: Vec<(String, usize)> = Vec::with_capacity(input_files.len()); // Stores [sample name, index-to-be]
     let mut order_idx = 0;
     // Read through labels, assign each name to a cluster in increasing order
     for line in f.lines() {
-        let line = line.expect("Unable to read line in species_list");
+        let line = line.expect("Unable to read line in phylo_clusters");
         let fields: Vec<&str> = line.split_terminator('\t').collect();
         if input_names.contains(fields[0]) {
-            if let Some(idx) = species_labels.get(fields[1]) {
+            if let Some(idx) = cluster_order.get(fields[1]) {
                 label_order.push((fields[0].to_string(), *idx));
             } else {
-                species_labels.insert(fields[1].to_string(), order_idx);
+                cluster_order.insert(fields[1].to_string(), order_idx);
                 label_order.push((fields[0].to_string(), order_idx));
                 order_idx += 1;
             }
@@ -100,7 +100,7 @@ pub fn reorder_input_files(
     log::info!(
         "{} samples with {} unique labels",
         label_order.len(),
-        species_labels.len()
+        cluster_order.len()
     );
     // Order the found labels by cluster they are associated with
     label_order.sort_unstable_by_key(|k| k.1);
@@ -112,7 +112,7 @@ pub fn reorder_input_files(
     }
 
     if reordered_dict.is_empty() {
-        log::warn!("Could not find any sample names in {species_name_file}");
+        log::warn!("Could not find any sample names in {phylo_clusters_file}");
         ((0..input_files.len()).collect(), None)
     } else {
         // Use lookup table to create a list of new index for each input sample
@@ -140,26 +140,69 @@ pub fn reorder_input_files(
     }
 }
 
-/// Parse the metadata for creating an inverted index, so that we can include them in it
-pub fn parse_metadata_info(metadata_file: &str) -> HashMap<String, String> {
-    let f = File::open(metadata_file)
-        .unwrap_or_else(|_| panic!("Unable to open species name file {metadata_file}"));
-    let f = BufReader::new(f);
-    let mut out_dict: HashMap<String, String> = HashMap::new(); // Stores [label, metadata]
-                                                                // Read through labels, saves all metadata in the dictionary
-    for line in f.lines() {
-        let line = line.expect("Unable to read line in metadata");
-        let fields: Vec<&str> = line.split_terminator("\t").collect();
-        if out_dict.contains_key(fields[0]) {
-            panic!("Some entry in metadata is duplicated");
-        } else {
-            out_dict.insert(fields[0].to_string(), fields[1].to_string());
-        }
+/// Validate output separators and replace empty metadata with `NA`.
+/// Returns whether a value was missing.
+pub(crate) fn normalise_metadata(value: &mut String) -> Result<bool, Error> {
+    if value.contains(['\t', ',', ';']) {
+        bail!("Metadata must not contain tabs, commas, or semicolons");
     }
+    if value.trim().is_empty() {
+        *value = "NA".to_owned();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
 
-    log::info!("Got metadata for {} labels", out_dict.len(),);
-
-    out_dict
+/// Parse optional headerless `sample_name<TAB>metadata` input.
+/// Missing or empty values become `NA`, with one aggregate warning per source.
+pub fn parse_metadata_info<'a>(
+    metadata_file: Option<&str>,
+    sample_names: impl IntoIterator<Item = &'a str>,
+) -> Result<Option<HashMap<String, String>>, Error> {
+    let Some(metadata_file) = metadata_file else {
+        return Ok(None);
+    };
+    let f = BufReader::new(
+        File::open(metadata_file)
+            .with_context(|| format!("Unable to open metadata file {metadata_file}"))?,
+    );
+    let mut values = HashMap::new();
+    let (mut missing, mut nameless) = (0, 0);
+    for line in f.lines() {
+        let line = line.context("Unable to read metadata")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Keep the entire value so extra tabs are validated, not silently discarded.
+        let (name, value) = line.split_once('\t').unwrap_or((&line, ""));
+        if name.trim().is_empty() {
+            nameless += 1;
+            continue;
+        }
+        if values.contains_key(name) {
+            bail!("Duplicate sample name in metadata: {name}");
+        }
+        let mut value = value.to_owned();
+        missing += usize::from(
+            normalise_metadata(&mut value)
+                .with_context(|| format!("Invalid metadata for sample {name}"))?,
+        );
+        values.insert(name.to_owned(), value);
+    }
+    for name in sample_names {
+        values.entry(name.to_owned()).or_insert_with(|| {
+            missing += 1;
+            "NA".to_owned()
+        });
+    }
+    if missing > 0 || nameless > 0 {
+        log::warn!(
+            "Metadata: {missing} missing values set to NA; {nameless} records without sample names ignored"
+        );
+    }
+    log::info!("Got metadata for {} samples", values.len());
+    Ok(Some(values))
 }
 
 /// Validate and sort k-mer lists provided via the CLI
@@ -356,7 +399,7 @@ use tempfile::NamedTempFile;
 
 #[test]
 fn test_reorder_input_files() {
-    // Create a temporary file for species labels
+    // Create a temporary file for phylogenetic cluster labels
     let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
     writeln!(
         temp_file,
@@ -372,8 +415,8 @@ fn test_reorder_input_files() {
         ("sample5".to_string(), vec!["assembly5.fa".to_string()]),
     ];
 
-    let species_name_file = temp_file.path().to_str().unwrap();
-    let reordered_indices = reorder_input_files(&input_files, species_name_file);
+    let phylo_clusters_file = temp_file.path().to_str().unwrap();
+    let reordered_indices = reorder_input_files(&input_files, phylo_clusters_file);
 
     assert_eq!(reordered_indices.0.len(), input_files.len());
     assert_eq!(reordered_indices.0, vec![0, 2, 1, 3, 4]) // 1(A), 3(A), 2(B), 4(C), 5(NA) (sample6 not included)

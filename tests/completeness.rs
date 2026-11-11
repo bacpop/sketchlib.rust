@@ -394,7 +394,7 @@ mod tests {
             .arg("build")
             .arg("-o")
             .arg("precluster_index")
-            .args(["-v", "-k", "21", "-s", "10", "--write-skq"])
+            .args(["-v", "-k", "21", "-s", "10"])
             .arg("14412_3#82.contigs_velvet.fa.gz")
             .arg("14412_3#84.contigs_velvet.fa.gz")
             .arg("R6.fa.gz")
