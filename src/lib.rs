@@ -338,7 +338,14 @@ pub fn main() -> Result<(), Error> {
 
             log::info!("Loading sketch data from {ref_db_name}.skd");
             let subset_names = subset.as_ref().map(|file| read_subset_names(file));
-            match (*gpu, query_db.is_none(), subset_names.as_deref()) {
+            if !gpu.is_empty() && query_db.is_none() {
+                gpu::validate_devices(gpu)?;
+            }
+            match (
+                gpu.first().copied(),
+                query_db.is_none(),
+                subset_names.as_deref(),
+            ) {
                 (Some(device), true, Some(names)) => {
                     references.read_sketch_data_block_pinned(ref_db_name, names, device)?;
                 }
@@ -391,8 +398,8 @@ pub fn main() -> Result<(), Error> {
                             nn
                         }
                     });
-                    if let Some(gpu_device_id) = *gpu {
-                        gpu::self_dists_stream(
+                    if !gpu.is_empty() {
+                        gpu::self_dists_stream_multi(
                             &mut output_file,
                             &references,
                             n,
@@ -401,7 +408,7 @@ pub fn main() -> Result<(), Error> {
                             args.quiet,
                             ref_completeness_vec.as_ref(),
                             *completeness_cutoff,
-                            gpu_device_id,
+                            gpu,
                             *max_sketch_batch,
                             *max_in_flight_tiles,
                         )?;

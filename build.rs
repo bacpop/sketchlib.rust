@@ -69,6 +69,7 @@ fn main() {
         .ccbin(false)
         .include(cccl)
         .flag("-std=c++17")
+        .flag("-gencode=arch=compute_75,code=[sm_75,compute_75]")
         .flag("-gencode=arch=compute_80,code=[sm_80,compute_80]")
         // Native Blackwell code also supports CUDA minor-version compatibility
         // when the installed driver cannot JIT this toolkit's newer PTX.

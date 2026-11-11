@@ -51,7 +51,7 @@ pub(super) struct Shape {
     pub ref_k: usize,
     pub query_k: usize,
     pub count: usize,
-    bytes: usize,
+    pub bytes: usize,
 }
 
 impl Shape {
@@ -87,7 +87,8 @@ impl Shape {
         })
     }
 
-    pub fn query(mut self) -> Result<Self> {
+    pub fn query_on(mut self, context: &CudaContext) -> Result<Self> {
+        context.bind_to_thread()?;
         // Query mode never dereferences these device pointers or enqueues work.
         check(unsafe {
             sketchlib_tile_topk(
@@ -142,6 +143,7 @@ pub(super) struct KeepAlive<T: Send + 'static>(pub T);
 impl<T: Send + 'static> DeviceOperation for KeepAlive<T> {
     type Output = ();
     unsafe fn execute(self, ctx: &ExecutionContext) -> Result<(), DeviceError> {
+        ctx.context().bind_to_thread()?;
         ctx.retain(self.0)
     }
 }
@@ -161,7 +163,7 @@ pub(super) struct Finish {
 }
 
 // Allocate only on this operation's stream; leases protect raw CUB accesses.
-unsafe fn allocate<T: cuda_core::DeviceCopy + Send>(
+pub(super) unsafe fn allocate<T: cuda_core::DeviceCopy + Send>(
     ctx: &ExecutionContext,
     n: usize,
 ) -> Result<DeviceBox<[T]>, DeviceError> {
@@ -169,7 +171,9 @@ unsafe fn allocate<T: cuda_core::DeviceCopy + Send>(
         .checked_mul(mem::size_of::<T>())
         .ok_or_else(|| DeviceError::Internal("CUB allocation overflow".into()))?;
     let stream = ctx.get_cuda_stream();
-    let ptr = unsafe { malloc_async(stream.cu_stream(), bytes)? };
+    let ptr = unsafe { malloc_async(stream.cu_stream(), bytes) }.map_err(|error| {
+        DeviceError::Internal(format!("Allocating {bytes} device bytes: {error}"))
+    })?;
     let buffer = unsafe { DeviceBox::from_raw_parts(ptr, n, Arc::clone(stream)) };
     ctx.retain_buffer(buffer.storage().clone(), true)?;
     Ok(buffer)
@@ -194,6 +198,9 @@ impl DeviceOperation for Finish {
         mut self,
         ctx: &ExecutionContext,
     ) -> Result<(HostOutput, DeviceBox<[f32]>), DeviceError> {
+        // Runtime CUB uses the thread's current Driver API context, not just
+        // the stream argument. Resource cleanup may have changed that context.
+        ctx.context().bind_to_thread()?;
         let stream = ctx.get_cuda_stream().cu_stream();
         ctx.retain_buffer(self.distances.storage().clone(), false)?;
         match (&mut self.host, self.selection) {
@@ -256,5 +263,91 @@ impl IntoFuture for Finish {
     type IntoFuture = <BoxedDeviceOp<(HostOutput, DeviceBox<[f32]>)> as IntoFuture>::IntoFuture;
     fn into_future(self) -> Self::IntoFuture {
         self.boxed().into_future()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuda_async::device_context::{global_policy, init_device_contexts, with_cuda_context};
+
+    #[test]
+    #[ignore = "requires three CUDA GPUs; run explicitly for multi-GPU validation"]
+    fn cub_and_raw_operations_bind_their_own_context() {
+        use cuda_core::IntoResult;
+        assert!(CudaContext::device_count().unwrap() >= 3);
+        init_device_contexts(0, 3).unwrap();
+        let contexts: Vec<_> = (0..3)
+            .map(|id| with_cuda_context(id, Arc::clone).unwrap())
+            .collect();
+        let data: Vec<_> = (0..35).map(|i| i as f32 / 100.0).collect();
+        let mut jobs = Vec::new();
+        for (id, context) in contexts.iter().enumerate() {
+            let foreign = &contexts[(id + 1) % 3];
+            let foreign_buffer = PinnedHostBuffer::<u32>::zeroed(foreign, 1).unwrap();
+            context.bind_to_thread().unwrap();
+            drop(foreign_buffer); // Deliberately changes the current context.
+            let shape = Shape::new(5, 7, 3, false)
+                .unwrap()
+                .query_on(context)
+                .unwrap();
+            let mut current = ptr::null_mut();
+            unsafe {
+                cuda_core::sys::cuCtxGetCurrent(&mut current)
+                    .result()
+                    .unwrap();
+            }
+            assert_eq!(current, context.cu_ctx());
+            let policy = global_policy(id).unwrap();
+            let stream = policy.next_stream().unwrap();
+            foreign.bind_to_thread().unwrap();
+            let distances = crate::gpu::h2d(&data).sync_on(&stream).unwrap();
+            let host = HostOutput::new(context, 0, Some(shape.count)).unwrap();
+            let job = Finish {
+                distances,
+                host,
+                selection: Some(shape),
+            }
+            .schedule(policy.as_ref())
+            .unwrap();
+            foreign.bind_to_thread().unwrap();
+            jobs.push(job);
+        }
+        crate::gpu::run_gpu_batches(async {
+            let mut pending = tokio::task::JoinSet::new();
+            for job in jobs {
+                pending.spawn(job);
+            }
+            while let Some(result) = pending.join_next().await {
+                let (host, _distances) = result.unwrap().unwrap();
+                let HostOutput::Candidates { keys, ids } = host else {
+                    panic!("Expected candidates")
+                };
+                for row in 0..5 {
+                    let mut chosen = Vec::new();
+                    for j in 0..3 {
+                        let offset = row * 3 + j;
+                        let id = ids[offset] as usize;
+                        assert_eq!(keys[offset], data[row * 7 + id]);
+                        chosen.push(id);
+                    }
+                    chosen.sort_unstable();
+                    assert_eq!(chosen, [0, 1, 2]);
+                }
+                for col in 0..7 {
+                    let mut chosen = Vec::new();
+                    for j in 0..3 {
+                        let offset = 15 + col * 3 + j;
+                        let id = ids[offset] as usize;
+                        assert_eq!(keys[offset], data[id * 7 + col]);
+                        chosen.push(id);
+                    }
+                    chosen.sort_unstable();
+                    assert_eq!(chosen, [0, 1, 2]);
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

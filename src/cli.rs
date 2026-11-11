@@ -245,15 +245,15 @@ pub enum Commands {
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
 
-        /// The GPU to use. Uses CPU only if unspecified
-        #[arg(long)]
-        gpu: Option<usize>,
+        /// CUDA devices for GPU self-distances (comma separated or repeated). CPU if omitted
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        gpu: Vec<usize>,
 
         /// Maximum sketches per block for dense or kNN GPU self-distances
         #[arg(long, default_value_t = DEFAULT_MAX_SKETCH_BATCH, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         max_sketch_batch: usize,
 
-        /// Maximum tiles in GPU execution or CPU consumption for dense or kNN GPU self-distances
+        /// Maximum tiles per GPU in execution or CPU consumption (multi-GPU limits may be reduced to fit memory)
         #[arg(long, default_value_t = DEFAULT_MAX_IN_FLIGHT_TILES, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         max_in_flight_tiles: usize,
     },

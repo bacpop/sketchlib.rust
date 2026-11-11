@@ -16,6 +16,7 @@ homepage = "https://bacpop.org/software/"
 license = "Apache-2.0"
 readme = "README.md"
 include = [
+    "/.cargo/cuda-oxide.toml",
     "/build.rs",
     "/Cargo.toml",
     "/LICENSE",
