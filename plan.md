@@ -1,6 +1,281 @@
 # CUDA self-distance planning
 
-## Current round: staged GPU distance cleanup
+## Current round: pre-merge cleanup
+
+Source checklist: `todo_before_pr_merge.txt`. Merge target inspected at
+`gpu_cuda` commit `2a75b50`; this round starts from `b80a34e`.
+
+Implement only one stage at a time. Report changes, findings and checks, update
+this record, then stop for manual review and commit. Continue only when the
+user requests the next stage. Do not commit automatically. Stage 1a is complete.
+The first 1b patch was not accepted; revised 1b below is planned, not implemented.
+Stage 1c and later work have not started.
+
+Prefer small changes or justified reverts toward `gpu_cuda`. Interface
+compatibility is not required. Preserve sketch values, on-disk formats and GPU
+performance. Keep the planned k-mer regression arguments and placeholder intact.
+The broader namespace/API refactors discussed earlier are not part of this list.
+
+### 1. Sketch loading and storage: independent sub-stages
+
+Treat 1a–1d as separate implementation stops. After each, record its results
+and stop for review and commit; do not bundle it with another sub-stage or
+Stage 2. An audit that justifies keeping existing code is a valid completed
+sub-stage and should produce findings rather than unnecessary edits.
+
+#### 1a. Establish the loading and sketch-equivalence baseline
+
+- Compare against `gpu_cuda` at `2a75b50` without changing implementation.
+  Sequence parsing/sketching in `src/sketch/mod.rs`, hashing and `src/io.rs`
+  currently have no diff against that target. Distinguish those paths from
+  changed `.skd` database reading and `MultiSketch` host storage.
+- Trace full/subset loading, ordering, strides, legacy sketches and reloads.
+  Record malformed-file differences: the old full reader stopped on read
+  errors; the bulk reader requires file length to match metadata. Valid input
+  must produce identical words.
+- Compare generated sketch words/stable metadata and loaded words against the
+  baseline for supported DNA/AA and FASTA/FASTQ paths, whole collections and
+  reordered subsets. Run existing legacy-loading and metadata tests. Do not
+  change sketch algorithms or accept different sketches as a cleanup effect.
+- Save reproducible comparison commands/fixtures, baseline executable and
+  build settings for 1d. Save the current branch executable separately for
+  the final GPU performance comparison in Stage 6. Keep artifacts outside the
+  tracked source tree. Record discrepancies for review before any fixes.
+- Completion: findings and equivalence results recorded in this file, with
+  enough evidence to distinguish sequence processing from database loading.
+
+**1a results (2026-11-12): complete; user reviewed the findings and requested 1b.**
+
+- Compared isolated archives of `2a75b50` and `b80a34e` using the same lockfile,
+  CUDA 13.5, SM75 and release settings. Preserved executables, temporary harness
+  sources, commands, hashes and logs in `/tmp/sketchlib-premerge-stage1`.
+  `start-of-round-sketchlib` separately preserves the pre-merge GPU baseline
+  for Stage 6. Production code and tracked tests were not modified.
+- Source comparison confirms no changes to sequence processing in
+  `src/sketch/mod.rs`, hashing or `src/io.rs`. Changes are database reading and
+  the choice of final host allocation. Pinned loaders fill their final buffer
+  directly, without a full intermediate sketch Vec.
+- All 18 generation cases passed: nine settings at 1/4 requested threads,
+  covering DNA, multiple k-mers, strand selection, paired FASTQ filtering,
+  AA levels and concatenation. Exact per-sample words and stable metadata
+  match across revisions and thread counts.
+- Physical file bytes need not match because the unchanged parallel writer
+  writes samples in completion order. This occurs within the baseline too.
+  Comparisons therefore match samples by name and normalize only the physical
+  row index; all other sample metadata and sketch words remain exact. Raw
+  file equality results are retained rather than discarded.
+- All 42 loading cases passed full/subset word and metadata comparisons,
+  including reciprocal reads of generated databases, both legacy fixtures
+  and three existing databases. Subsets match full-load row oracles. Current
+  full/subset pinned loading also matches ordinary host loading exactly.
+- All 42 subset-to-full reload checks retained identical full words. The old
+  reader leaves the subset mapping in place; current clears it and matches a
+  fresh full load in sample count, names and lookup indices. This is an
+  existing correction in the branch, not a new change made during the audit.
+- Four malformed files (truncated byte/word, extra word and empty data) were
+  silently accepted by the old full reader and rejected by current. Current
+  checks the full file size against metadata; its CPU convenience wrapper
+  panics on the resulting error. Valid sketch values are unchanged.
+- Old reads already converted from little endian. The new helpers preserve
+  that interpretation when reading bytes directly into native words. This
+  audit ran on little-endian x86_64; no big-endian execution is claimed.
+- Both snapshots passed the existing eight sketch/metadata/legacy tests and
+  one reader alignment test. `summary.json`, `comparison-report.json`,
+  `unchanged-sequence-code.json` and the artifact README contain evidence and
+  replay instructions. Initial debug-build and raw-order diagnostics are
+  preserved separately; the successful comparisons used release builds.
+- Performance remains unassessed until 1d.
+
+#### 1b (revised). Revert bulk reading; retain direct pinned loading
+
+The earlier 1b attempt retained the bulk implementation and added comments and
+reader assertions. The user requested separating these changes instead: restore
+per-word reading now, and consider bulk I/O in a later, separate commit. This
+supersedes the earlier decision to retain the byte-view/endian helpers.
+
+**Implementation (planned; do not include 1c or the bulk follow-up):**
+
+- Restore CPU `read_all_from_skd` and `read_batch_from_skd` to the per-word
+  implementations on `gpu_cuda` at `2a75b50`: reserve the output Vec, read or
+  access eight bytes, convert with `u64::from_le_bytes`, and push the result.
+  Remove their bulk-reader delegation and zero-filled destination allocation.
+- Keep `read_all_into` and `read_batch_into` for direct pinned loading. These
+  must write each decoded word straight into the caller's destination slice,
+  without an intermediate full sketch Vec or a copy into pinned memory later.
+- Full pinned loading: retain the existing file-size check, then loop over
+  destination words, reading an eight-byte buffer with `read_exact` and
+  assigning `u64::from_le_bytes(buffer)`. Propagate read failures.
+- Subset pinned loading: retain destination-size, stride and mmap range checks.
+  Iterate the selected sample's words, decode each eight-byte range with
+  `u64::from_le_bytes` and assign it directly to its destination word.
+  Preserve requested sample order and existing fallible errors.
+- Remove `sketch_bytes_mut`, `decode_little_endian` and their comments, along
+  with the reader module's now-unused `aligned_sketch_vec_filled` import.
+  No unsafe byte view or host-endian special case is needed for these loops.
+- Keep `try_open`, pinned allocation/ownership, `SketchStorage`, CLI routing,
+  the subset-to-full mapping correction and GPU scheduling unchanged. Keep
+  the strengthened word/alignment test: its assertions apply to either I/O
+  implementation. Do not change sketch generation or the data format.
+
+**Behaviour and checks:**
+
+- CPU malformed-file handling returns to the original reader's behaviour,
+  including stopping on a failed/incomplete full-file word read. This is an
+  explicit consequence of restoring that code, not a new validation policy.
+  Fixed-size pinned reads retain their current size/bounds/read errors rather
+  than accepting partial data or silently leaving zero-filled words.
+- Run the known-word/alignment reader test and existing sketch/metadata/legacy
+  tests. Replay the valid 1a full/subset/reload comparisons against the baseline,
+  including reordered subsets and current CPU/pinned word equality.
+- Check malformed files separately: restored CPU behaviour must match the old
+  reader; pinned loading must reject incompatible sizes and invalid selections.
+  Preserve old 1a reports; put revised checks/results in a new artifact directory.
+- Confirm from the source that pinned allocation remains the final destination
+  and no full intermediate host copy has returned. No big-endian hardware
+  execution is implied; per-word `from_le_bytes` restores the original portable
+  decoding mechanism.
+- Save a post-rollback executable/hash for subsequent cleanup comparisons.
+  Keep the original bulk-reading executable and 1a snapshots for the deferred
+  optimization. Any slower loading than the bulk version is an intentional
+  tradeoff of this rollback, not a reason to restore bulk I/O in this patch.
+- Update the checklist/results, then stop for review and commit. No bulk I/O
+  work starts until this rollback is reviewed and committed.
+
+#### 1c. Remove the storage default independently
+
+- Remove `Default for SketchStorage`. Explicitly construct empty CPU storage
+  through one named helper used by constructors and the serde skipped-field
+  default. Metadata deserialization must not initialize CUDA or allocate
+  pinned memory. Do not add an empty/device enum variant merely to remove
+  `Default`.
+- Keep byte-order handling, allocation choices for loaded data and reading
+  algorithms unchanged. This edit does not depend on a particular outcome
+  from 1b.
+- Run existing constructor, metadata serialization/deserialization, loading
+  and storage-comparison tests; check that no implicit default use remains.
+- Completion: an initialization-only patch with unchanged metadata format
+  and loaded sketch values, followed by review and commit.
+
+#### 1d (deferred). Bulk database I/O as a separate optimization commit
+
+Do not implement this with the rollback or proceed to it automatically. Resume
+only when the user requests the bulk optimization. It is independent of sketch
+creation and must not absorb other cleanup changes.
+
+- Use the committed post-rollback per-word reader as the baseline. Reuse 1a's
+  fixtures and audit methods, and the saved bulk implementation as a reference.
+  Build matched baseline/candidate executables before timing.
+- Reintroduce bulk full/subset reads into existing destination allocations only
+  if measurements justify the change. A byte view and big-endian conversion
+  may return as part of that explicit optimization; they are not correctness
+  fixes for the original readers. Decide whether CPU wrappers should share the
+  implementation from measured results rather than requiring that reuse.
+- Keep the file format, per-sample sketch values, subset ordering and direct
+  pinned ownership unchanged. Do not silently bundle stricter CPU file-size or
+  read-error handling into an I/O optimization; any proposed difference must
+  be documented and reviewed explicitly before implementation.
+- Measure CPU and pinned loading separately from distance computation. Use
+  `100k_subset` and `1m` for full reads and ordered/reversed every-tenth-sample
+  subsets, with matched inputs, build settings and cache conditions. Use
+  warm-ups and five alternating runs; investigate repeatable regressions over
+  3%. Run pinned/GPU checks only while devices are idle.
+- Repeat exact word/metadata comparisons, known-word/alignment checks and
+  legacy/reload/error cases. If GPU distance timings change, distinguish file
+  loading from transfers, kernels and host result processing.
+- Keep only a measured, justified optimization; otherwise record the findings
+  without changing the reader. Stop for review and a separate commit.
+
+### 2. Make GPU support opt-in; document editor setup
+
+- Remove `gpu` from default Cargo features. Gate the GPU module and call sites
+  consistently so ordinary builds/tests require no toolkit or CUDA dependencies.
+- Retain the CLI's GPU arguments, but fail clearly and before database loading
+  if a CPU-only build is asked to use a GPU. Preserve CPU routing otherwise.
+- Document rust-analyzer's explicit `cargo.features = ["gpu"]` setting for GPU
+  work and how to turn it off on CPU-only machines. Keep toolkit paths local to
+  the developer's configuration. Explain that this enables feature-gated code
+  analysis without promising complete support for CUDA-specific code generation.
+- Update installation commands immediately: ordinary Cargo for CPU builds;
+  `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build --features gpu` for GPU builds.
+- Check CPU-only build/tests without CUDA environment variables, explicit GPU
+  build, CPU-only rejection of GPU requests and existing GPU CLI smoke cases.
+
+### 3. Unify architecture configuration
+
+- Use `.cargo/cuda-oxide.toml` as the single documented place for project target
+  defaults and any additional CUB native/PTX image targets. Generate nvcc flags
+  from those settings; remove literal architecture flags from `build.rs`.
+- Read the effective Rust target through `CUDA_OXIDE_TARGET`, which the locked
+  cargo-oxide forwards to build scripts. Explicit `--arch`/environment overrides
+  must affect CUB's primary target too. Do not use the auto-detected
+  `CUDA_OXIDE_DEVICE_ARCH` hint as an explicit target.
+- Preserve current default coverage: Rust SM75, CUB native SM75/80/120 and
+  SM75/80 PTX. Additional CUB images can remain declarative settings in that
+  same file: the Rust backend's single target and nvcc's multiple images are
+  different capabilities. Do not silently lose native Blackwell compatibility.
+- Track architecture environment inputs for rebuilds. Verify default and
+  explicit-target builds, inspect generated flags/images, and run the relevant
+  GPU smoke/context checks. Do not modify the external cuda-oxide dependency.
+
+### 4. Audit and minimise the CUB wrapper; review its hardware test
+
+- Classify helpers into host planning, device iterator/functor code and CUB
+  template dispatch. Explain chunk reductions, ping-pong storage, two selection
+  directions and the large-k fallback using the actual CUB limits.
+- Retain iterator/functor implementations instantiated inside CUB's C++ device
+  templates. Moving their formulas to Rust would require a different execution
+  interface; do not add device callbacks, materialized arrays or extra kernels.
+- Move purely host planning to Rust only where it removes C++ complexity without
+  duplicating formulas, widening the FFI substantially, repeating workspace
+  queries or adding per-tile calls/allocations. Leave templated dispatch and its
+  runtime error conversion behind the existing narrow FFI. If a proposed move
+  adds more glue than it removes, record the finding and keep that code in C++.
+- Keep the existing ignored three-GPU context test. It exercises runtime
+  context switching, foreign pinned-buffer cleanup and completion ownership;
+  it is hardware integration coverage rather than an ordinary CPU unit test.
+  Clarify that purpose and invocation, without creating a new test framework.
+- Check diagonal/off-diagonal and tail tiles, widths around 4096, k around the
+  batched limit 2048 and the DeviceTopK fallback. Reuse CPU/GPU comparisons,
+  memory-plan checks and writer failures; add only missing material coverage.
+  Benchmark any actual dispatch/planning change before accepting it.
+
+### 5. Resolve lint/compiler warnings and public API documentation
+
+- Inventory Clippy/compiler warnings for CPU and explicit GPU builds, including
+  relevant existing features/targets. Fix them in small related groups, without
+  reformatting unrelated files or changing algorithms to satisfy a style lint.
+- Document new public modules, functions, types and fields in plain language;
+  include their actual constraints and useful examples. Keep unavoidable
+  ABI/device-signature lint exceptions narrow and explained rather than adding
+  crate-wide suppressions. Preserve the regression placeholder.
+- Make the ordinary Clippy CI job check CPU code without requiring CUDA; run
+  GPU lint checks locally through the appropriate CUDA toolchain/backend.
+  Record reproducible commands and finish with warnings denied for the checked
+  configurations. Split a large warning inventory into reviewable substages
+  rather than one sweeping patch.
+
+### 6. Finish usage documentation and final validation
+
+- Reconcile README, CLI help and public examples with the final opt-in feature
+  and architecture setup. Show CPU/GPU installation, toolkit selection, dense
+  and kNN commands, `--gpu 0` and `--gpu 1,3`, and repeated GPU arguments.
+- Explain device numbering, target compatibility, per-device in-flight limits
+  and automatic multi-device memory sizing using direct, natural wording.
+  Remove stale default-feature claims and awkward generated phrasing.
+- Check documented commands and help against actual behaviour. Run the existing
+  CPU/GPU correctness, context, failure and memory-planning checks after linking
+  is complete. Confirm the checklist contains an outcome for every item.
+- Compare final GPU performance with the post-rollback executable saved in
+  revised 1b (not the older GPU algorithm on `gpu_cuda`), using the established
+  100k-sample single/three-device workload, warm-ups and five alternating
+  measurements. Run only on idle GPUs and investigate repeatable regressions
+  over 3%. Retain the pre-rollback bulk executable for the deferred optimization,
+  not as a gate that would undo the intentional rollback. Report remaining
+  limitations without claiming untested portability.
+- Review the final diff against `gpu_cuda` for accidental scope growth. Stop
+  for the user's final review/commit; do not merge or publish automatically.
+
+## Completed round: staged GPU distance cleanup
 
 Implement one stage at a time. After each stage, report checks and stop for the
 user to review and commit. Continue only after the user confirms that review
@@ -145,8 +420,8 @@ regressions above 3%. Run GPU measurements only with the devices idle.
   `/tmp/sketchlib-gpu-cleanup/stage4-performance-20261111T165436Z`.
 - `topk` and `tile_output` pass rustfmt (edition 2021); `git diff --check`
   passes. The measured final executable matches `target/release/sketchlib`.
-- **Stage 4 complete; awaiting the user's final review and commit. All four
-  implementation stages are complete; no commit was created automatically.**
+- Stage 4 reviewed and committed by the user as `b80a34e`. All four stages
+  are complete; no commit was created automatically.
 
 ## Current round: multi-device GPU self-distances
 

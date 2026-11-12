@@ -10,13 +10,15 @@ use anyhow::{ensure, Context, Error, Result};
 
 use super::{aligned_sketch_vec_filled, aligned_sketch_vec_with_capacity, SketchVec};
 
-/// Mutable byte view of initialized words for reading the on-disk representation.
+/// Byte view for reading directly into the final word allocation.
 fn sketch_bytes_mut(words: &mut [u64]) -> &mut [u8] {
     // SAFETY: u64 has no padding or invalid bit patterns. The byte slice covers
     // exactly the initialized allocation and exclusively borrows it.
     unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), mem::size_of_val(words)) }
 }
 
+/// Sketch files store little-endian words. Bulk reads need the same conversion
+/// as the old per-word `from_le_bytes` reads; little-endian hosts need no work.
 fn decode_little_endian(words: &mut [u64]) {
     #[cfg(target_endian = "big")]
     for word in words {
@@ -263,26 +265,40 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn skd_reads_are_64_byte_aligned() {
+    fn skd_reads_preserve_words_and_alignment() {
         let filename = std::env::temp_dir().join(format!(
             "sketchlib_skd_alignment_{}.skd",
             std::process::id()
         ));
         let filename = filename.to_str().expect("temporary path must be UTF-8");
+        let words = [
+            0_u64,
+            1,
+            u64::MAX,
+            0x0102_0304_0506_0708,
+            0x8000_0000_0000_0000,
+            0x8877_6655_4433_2211,
+            42,
+            0x00ff_00ff_00ff_00ff,
+        ];
 
         {
             let mut writer = SketchArrayWriter::new(filename, 1, 4, 4);
-            writer.write_sketch(&[1_u64, 2, 3, 4]);
+            for sample in words.chunks_exact(4) {
+                writer.write_sketch(sample);
+            }
             writer.flush().expect("failed to flush test sketch");
         }
 
         let mut reader = SketchArrayReader::open(filename, false, 1, 4, 4);
-        let all_sketches = reader.read_all_from_skd(4);
+        let all_sketches = reader.read_all_from_skd(words.len());
         assert_eq!(all_sketches.as_ptr() as usize % SKETCH_ALIGNMENT, 0);
+        assert_eq!(&all_sketches[..], &words);
 
         let reader = SketchArrayReader::open(filename, true, 1, 4, 4);
-        let batch_sketches = reader.read_batch_from_skd(&[0], 4);
+        let batch_sketches = reader.read_batch_from_skd(&[1, 0], 4);
         assert_eq!(batch_sketches.as_ptr() as usize % SKETCH_ALIGNMENT, 0);
+        assert_eq!(&batch_sketches[..], [&words[4..], &words[..4]].concat());
 
         drop(batch_sketches);
         drop(reader);
