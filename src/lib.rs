@@ -325,6 +325,7 @@ pub fn main() -> Result<(), Error> {
                     "GPU support is not enabled; rebuild with `cargo oxide build --features gpu`."
                 );
             }
+            let use_gpu = !gpu.is_empty() && query_db.is_none();
 
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
@@ -345,24 +346,21 @@ pub fn main() -> Result<(), Error> {
             log::info!("Loading sketch data from {ref_db_name}.skd");
             let subset_names = subset.as_ref().map(|file| read_subset_names(file));
             #[cfg(feature = "gpu")]
-            if !gpu.is_empty() && query_db.is_none() {
+            if use_gpu {
                 gpu::validate_devices(gpu)?;
+                let device = gpu[0];
+                match subset_names.as_deref() {
+                    Some(names) => {
+                        references.read_sketch_data_block_pinned(ref_db_name, names, device)?;
+                    }
+                    None => references.read_sketch_data_pinned(ref_db_name, device)?,
+                }
             }
-            match (
-                gpu.first().copied(),
-                query_db.is_none(),
-                subset_names.as_deref(),
-            ) {
-                #[cfg(feature = "gpu")]
-                (Some(device), true, Some(names)) => {
-                    references.read_sketch_data_block_pinned(ref_db_name, names, device)?;
+            if !use_gpu {
+                match subset_names.as_deref() {
+                    Some(names) => references.read_sketch_data_block(ref_db_name, names),
+                    None => references.read_sketch_data(ref_db_name),
                 }
-                #[cfg(feature = "gpu")]
-                (Some(device), true, None) => {
-                    references.read_sketch_data_pinned(ref_db_name, device)?;
-                }
-                (_, _, Some(names)) => references.read_sketch_data_block(ref_db_name, names),
-                (_, _, None) => references.read_sketch_data(ref_db_name),
             }
             log::info!("Read reference sketches:\n{references:?}");
             let n = references.number_samples_loaded();
@@ -407,8 +405,8 @@ pub fn main() -> Result<(), Error> {
                             nn
                         }
                     });
-                    if !gpu.is_empty() {
-                        #[cfg(feature = "gpu")]
+                    #[cfg(feature = "gpu")]
+                    if use_gpu {
                         gpu::self_dists_stream_multi(
                             &mut output_file,
                             &references,
@@ -422,7 +420,8 @@ pub fn main() -> Result<(), Error> {
                             *max_sketch_batch,
                             *max_in_flight_tiles,
                         )?;
-                    } else {
+                    }
+                    if !use_gpu {
                         match knn {
                             None => {
                                 log::info!("Calculating all ref vs ref distances");
