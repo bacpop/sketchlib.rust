@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sequential local CUDA smoke/CPU comparisons, run as a non-root user.
 
-Build first with CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build, then run:
+Build first with CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build --features gpu, then run:
   python3 scripts/validate_gpu_distances.py --dataset 1k_subset --gpu 0
 
 Outputs, fixtures, command logs and report.json stay in the printed temporary

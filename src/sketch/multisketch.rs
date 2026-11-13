@@ -349,60 +349,6 @@ impl MultiSketch {
         Ok((block_reindex, read_indices))
     }
 
-    /// Read all sketch data directly into pinned memory for GPU distances.
-    #[cfg(feature = "gpu")]
-    pub fn read_sketch_data_pinned(&mut self, file_prefix: &str, device_id: usize) -> Result<()> {
-        let mut words = with_cuda_context(device_id, |ctx| {
-            PinnedHostBuffer::zeroed(ctx, self.sample_stride * self.sketch_metadata.len())
-        })??;
-        let mut reader = SketchArrayReader::try_open(
-            &format!("{file_prefix}.skd"),
-            false,
-            self.bin_stride,
-            self.kmer_stride,
-            self.sample_stride,
-        )?;
-        reader.read_all_into(&mut words)?;
-        self.sketch_bins = SketchStorage::Pinned(Arc::new(words));
-        self.block_reindex = None;
-        Ok(())
-    }
-
-    /// Read selected sketches directly into pinned memory, preserving name order.
-    #[cfg(feature = "gpu")]
-    pub fn read_sketch_data_block_pinned(
-        &mut self,
-        file_prefix: &str,
-        names: &[String],
-        device_id: usize,
-    ) -> Result<()> {
-        let (block_reindex, read_indices) = self.subset_indices(names)?;
-        let mut words = with_cuda_context(device_id, |ctx| {
-            PinnedHostBuffer::zeroed(ctx, self.sample_stride * read_indices.len())
-        })??;
-
-        let filename = format!("{file_prefix}.skd");
-        let sketch_reader = SketchArrayReader::try_open(
-            &filename,
-            true,
-            self.bin_stride,
-            self.kmer_stride,
-            self.sample_stride,
-        )?;
-        sketch_reader.read_batch_into(&read_indices, self.sample_stride, &mut words)?;
-        self.sketch_bins = SketchStorage::Pinned(Arc::new(words));
-        self.block_reindex = Some(block_reindex);
-        Ok(())
-    }
-
-    #[cfg(feature = "gpu")]
-    pub(crate) fn pinned_sketches(&self) -> Option<&Arc<PinnedHostBuffer<u64>>> {
-        match &self.sketch_bins {
-            SketchStorage::Pinned(words) => Some(words),
-            SketchStorage::Cpu(_) => None,
-        }
-    }
-
     /// Get the bins for a given sketch index at a given k-mer index
     pub fn get_sketch_slice(&self, sketch_idx: usize, k_idx: usize) -> &[u64] {
         debug_assert!(sketch_idx < self.sketch_metadata.len());
@@ -562,6 +508,60 @@ impl MultiSketch {
     /// Get the (bin, kmer, sample) strides
     pub fn get_strides(&self) -> (usize, usize, usize) {
         (self.bin_stride, self.kmer_stride, self.sample_stride)
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl MultiSketch {
+    /// Read all sketch data directly into pinned memory for GPU distances.
+    pub fn read_sketch_data_pinned(&mut self, file_prefix: &str, device_id: usize) -> Result<()> {
+        let mut words = with_cuda_context(device_id, |ctx| {
+            PinnedHostBuffer::zeroed(ctx, self.sample_stride * self.sketch_metadata.len())
+        })??;
+        let mut reader = SketchArrayReader::try_open(
+            &format!("{file_prefix}.skd"),
+            false,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        )?;
+        reader.read_all_into(&mut words)?;
+        self.sketch_bins = SketchStorage::Pinned(Arc::new(words));
+        self.block_reindex = None;
+        Ok(())
+    }
+
+    /// Read selected sketches directly into pinned memory, preserving name order.
+    pub fn read_sketch_data_block_pinned(
+        &mut self,
+        file_prefix: &str,
+        names: &[String],
+        device_id: usize,
+    ) -> Result<()> {
+        let (block_reindex, read_indices) = self.subset_indices(names)?;
+        let mut words = with_cuda_context(device_id, |ctx| {
+            PinnedHostBuffer::zeroed(ctx, self.sample_stride * read_indices.len())
+        })??;
+
+        let filename = format!("{file_prefix}.skd");
+        let sketch_reader = SketchArrayReader::try_open(
+            &filename,
+            true,
+            self.bin_stride,
+            self.kmer_stride,
+            self.sample_stride,
+        )?;
+        sketch_reader.read_batch_into(&read_indices, self.sample_stride, &mut words)?;
+        self.sketch_bins = SketchStorage::Pinned(Arc::new(words));
+        self.block_reindex = Some(block_reindex);
+        Ok(())
+    }
+
+    pub(crate) fn pinned_sketches(&self) -> Option<&Arc<PinnedHostBuffer<u64>>> {
+        match &self.sketch_bins {
+            SketchStorage::Pinned(words) => Some(words),
+            SketchStorage::Cpu(_) => None,
+        }
     }
 }
 

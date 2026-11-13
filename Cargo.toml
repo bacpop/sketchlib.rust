@@ -31,8 +31,6 @@ categories = ["command-line-utilities", "science"]
 crate-type = ["cdylib", "lib"]
 
 [features]
-# TODO remove default gpu
-default = ["gpu"]
 gpu = [
     "dep:cc",
     "dep:cuda-device",
