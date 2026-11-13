@@ -69,6 +69,40 @@ GPUs. The CUB wrapper includes SM75, SM80 and SM120 native code, with SM75/SM80
 PTX fallbacks. An explicit `cargo oxide build --arch ...` overrides the Rust
 target; the resulting kernels must support every GPU selected at runtime.
 
+### GPU editor setup
+
+For rust-analyzer, enable the `gpu` feature explicitly to include GPU code in
+editor analysis. For example, add these local settings to VS Code's
+`.vscode/settings.json` (already ignored by git):
+
+```json
+{
+  "rust-analyzer.cargo.features": ["gpu"],
+  "rust-analyzer.cargo.extraEnv": {
+    "CUDA_HOME": "/usr/local/cuda-13.5",
+    "RUSTC_BOOTSTRAP": "1"
+  }
+}
+```
+
+Replace the toolkit path with your CUDA 13.5+ installation. An inherited
+`CUDA_TOOLKIT_PATH` takes precedence over `CUDA_HOME`. The current cuda-oxide
+dependencies use unstable macro features on the pinned Rust toolchain, so
+`RUSTC_BOOTSTRAP=1` is needed for Cargo checking; keep this setting in the local
+editor environment.
+
+For CPU-only development, set `rust-analyzer.cargo.features` to `[]` and remove
+the GPU environment entries. Avoid `"all"` on CPU-only machines because it also
+enables GPU dependencies. Check-on-save inherits the Cargo feature list by
+default; remove or align any explicit `rust-analyzer.check.features` override.
+See the [rust-analyzer configuration reference](https://rust-analyzer.github.io/book/configuration)
+for equivalent settings in other editors. Reload the rust-analyzer workspace
+after changing settings.
+
+These settings enable feature-gated analysis and ordinary Cargo checking;
+they do not provide full CUDA device-code validation. Build GPU kernels with
+`CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build --features gpu`.
+
 ### Multi-GPU self-distances
 
 Select visible CUDA device ordinals using commas or repeated arguments:

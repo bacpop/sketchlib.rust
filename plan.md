@@ -9,8 +9,8 @@ Implement only one stage at a time. Report changes, findings and checks, update
 this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
-Default. Further bulk-I/O work (1d) is deferred. Stage 2a is complete and ready
-for review and commit. Stage 2b (editor setup) has not started.
+Default. Further bulk-I/O work (1d) is deferred. Stage 2a is complete. Stage 2b
+(editor setup) is complete and ready for review and commit. Stage 3 has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -186,14 +186,24 @@ until requested.
   `/tmp/sketchlib-cli-gates`. Rustfmt and `git diff --check` passed.
 - **Complete; stop for manual review and commit. Stage 2b has not started.**
 
-#### 2b. GPU editor setup — planned
+#### 2b. GPU editor setup — complete
 
-- Document enabling the `gpu` feature explicitly for rust-analyzer and disabling
-  it on CPU-only machines. Keep toolkit paths local to developer configuration.
-- Check the instructions against the local setup. Explain the difference
-  between feature-gated analysis and CUDA-specific code generation; do not
-  promise full device-code analysis from enabling the feature alone.
-- Make no runtime/build-default changes. Stop for review and commit.
+- Added README guidance with a copyable local VS Code/rust-analyzer example:
+  explicit `gpu` feature, example CUDA 13.5 path and `RUSTC_BOOTSTRAP=1` for
+  the current cuda-oxide macro dependencies on the pinned Rust toolchain.
+- Documented CPU-only settings, inherited toolkit precedence, check-feature
+  overrides and the distinction between editor analysis and CUDA compilation.
+  Linked the upstream rust-analyzer configuration reference. No personal
+  editor settings, runtime behaviour or build defaults changed.
+- Parsed the JSON example successfully. Default `cargo check --locked` passed
+  with CUDA variables and `RUSTC_BOOTSTRAP` unset. The editor-equivalent
+  `RUSTC_BOOTSTRAP=1 CUDA_HOME=/usr/local/cuda-13.5 cargo check --features gpu --locked`
+  passed locally; enabling the GPU feature without bootstrap reproduced the
+  dependency's stable-channel macro error. Existing documentation warnings
+  remain. Interactive editor behaviour was not tested.
+- Logs: `/tmp/sketchlib-2b-{cpu-check,bootstrap-check,gpu-check}.log`.
+  `git diff --check` passed. Changes for this stage are documentation only.
+- **Complete; stop for manual review and commit. Stage 3 has not started.**
 
 ### 3. Unify architecture configuration
 
