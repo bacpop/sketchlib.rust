@@ -32,8 +32,7 @@ categories = ["command-line-utilities", "science"]
 crate-type = ["cdylib", "lib"]
 
 [features]
-# TODO remove default gpu
-default = ["gpu"]
+default = []
 3di = ["dep:pyo3", "dep:pyo3-build-config"]
 gpu = [
     "dep:cc",

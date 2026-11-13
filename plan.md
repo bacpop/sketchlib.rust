@@ -9,7 +9,8 @@ Implement only one stage at a time. Report changes, findings and checks, update
 this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
-Default. Further bulk-I/O work (1d) is deferred. Stage 2 is next and has not started.
+Default. Further bulk-I/O work (1d) is deferred. Stage 2a is complete and ready
+for review and commit. Stage 2b (editor setup) has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -117,7 +118,7 @@ sub-stage and should produce findings rather than unnecessary edits.
   This supersedes the earlier proposal to remove Default.
 - Validation: comment-only diff reviewed; `git diff --check` passed. No tests
   were rerun because implementation and serialization behaviour are unchanged.
-- Stage 1c is ready for review and commit. Do not begin Stage 2 automatically.
+- Stage 1c was reviewed and committed by the user as `73d1b71`.
 
 #### 1d. Revisit bulk database I/O — deferred
 
@@ -131,18 +132,54 @@ sub-stage and should produce findings rather than unnecessary edits.
 
 ### 2. Make GPU support opt-in; document editor setup
 
-- Remove `gpu` from default Cargo features. Gate the GPU module and call sites
-  consistently so ordinary builds/tests require no toolkit or CUDA dependencies.
-- Retain the CLI's GPU arguments, but fail clearly and before database loading
-  if a CPU-only build is asked to use a GPU. Preserve CPU routing otherwise.
-- Document rust-analyzer's explicit `cargo.features = ["gpu"]` setting for GPU
-  work and how to turn it off on CPU-only machines. Keep toolkit paths local to
-  the developer's configuration. Explain that this enables feature-gated code
-  analysis without promising complete support for CUDA-specific code generation.
-- Update installation commands immediately: ordinary Cargo for CPU builds;
-  `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build --features gpu` for GPU builds.
-- Check CPU-only build/tests without CUDA environment variables, explicit GPU
-  build, CPU-only rejection of GPU requests and existing GPU CLI smoke cases.
+Split into independent review/commit stops. Implement 2a first; do not begin 2b
+until requested.
+
+#### 2a. Opt-in GPU builds and CLI behaviour — complete
+
+- Changed default Cargo features to empty and gated the GPU module, pinned
+  loading and distance dispatch. CPU-only builds retain GPU arguments but
+  reject GPU requests with build instructions before thread setup, metadata
+  loading or output-file creation. CPU routing and explicit GPU execution
+  retain their existing behaviour.
+- Added a CPU-only CLI regression test for self/cross requests with nonexistent
+  databases, confirming the feature error and absence of an output file.
+- Updated basic README/validator build instructions to use explicit
+  `--features gpu`. Clippy CI now selects `3di` instead of `--all-features`,
+  covering the non-GPU optional feature without requiring CUDA on that runner.
+- Default release build and tests passed with CUDA environment variables unset:
+  77 tests plus one doctest. The default dependency graph excludes CUDA crates
+  and Tokio. CPU-only `cargo check --features 3di --locked` also passed.
+- Explicit local CUDA 13.5 release tests/build passed: 81 tests plus one
+  doctest; the hardware context test remains ignored by default. The existing
+  GPU CLI validator passed 12 CPU/GPU comparisons (max error 1.554e-7), seven
+  invalid-argument cases and both writer failures, including mixed/reversed
+  device lists, dense/kNN, subsets and the small-block stress case.
+- Logs, dependency/link evidence, frozen CPU/GPU executables, hashes and replay
+  commands: `/tmp/sketchlib-optin-gpu`. Formatting and `git diff --check` pass.
+  Existing missing-doc/3Di warnings remain for Stage 5. Hosted CI and
+  Windows/wasm builds were not executed locally.
+- Moved `read_sketch_data_pinned`, `read_sketch_data_block_pinned` and
+  `pinned_sketches` into one `#[cfg(feature = "gpu")] impl MultiSketch` block.
+  Their signatures, documentation and bodies are unchanged.
+- The method consolidation preserves GPU imports, storage variant/match gates,
+  shared distance attributes, argument bindings and CLI gates. It introduces
+  no new abstraction or behaviour change.
+- CPU-only `cargo check --locked` and all eight existing sketch/metadata tests
+  passed with CUDA environment variables unset. Explicit local CUDA 13.5
+  `cargo oxide build --features gpu` passed. Method-text comparison confirms
+  an unchanged implementation; rustfmt and `git diff --check` passed.
+- Logs: `/tmp/sketchlib-optin-gpu/method-gates-{cpu-check,cpu-tests,gpu-build}.log`.
+- **Complete; stop for manual review and commit. Stage 2b has not started.**
+
+#### 2b. GPU editor setup — planned
+
+- Document enabling the `gpu` feature explicitly for rust-analyzer and disabling
+  it on CPU-only machines. Keep toolkit paths local to developer configuration.
+- Check the instructions against the local setup. Explain the difference
+  between feature-gated analysis and CUDA-specific code generation; do not
+  promise full device-code analysis from enabling the feature alone.
+- Make no runtime/build-default changes. Stop for review and commit.
 
 ### 3. Unify architecture configuration
 

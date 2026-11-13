@@ -14,6 +14,31 @@ mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
 
+    #[cfg(not(feature = "gpu"))]
+    #[test]
+    fn gpu_request_requires_gpu_build_before_opening_files() {
+        let sandbox = TestSetup::setup();
+        for query in [None, Some("missing_query")] {
+            let mut command = Command::new(cmd::cargo_bin!("sketchlib"))
+                .current_dir(sandbox.get_wd())
+                .args([
+                    "dist",
+                    "--gpu",
+                    "0,1",
+                    "-o",
+                    "should-not-exist.tsv",
+                    "missing_reference",
+                ]);
+            if let Some(query) = query {
+                command = command.arg(query);
+            }
+            command.assert().failure().stderr_eq(
+                "Error: GPU support is not enabled; rebuild with `cargo oxide build --features gpu`.\n",
+            );
+            assert!(!sandbox.file_exists("should-not-exist.tsv"));
+        }
+    }
+
     // Assert function with tolerance for distances computed against the external
     // C++ sketchlib reference values. Some of these (e.g. very short sequences)
     // are known to diverge more than floating-point noise between implementations,

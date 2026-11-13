@@ -200,6 +200,7 @@ pub mod hashing;
 
 pub mod utils;
 
+#[cfg(feature = "gpu")]
 pub mod gpu;
 
 use crate::utils::get_progress_bar;
@@ -317,9 +318,19 @@ pub fn main() -> Result<(), Error> {
             query_completeness_file,
             completeness_cutoff,
             gpu,
+            #[cfg(feature = "gpu")]
             max_sketch_batch,
+            #[cfg(feature = "gpu")]
             max_in_flight_tiles,
+            ..
         } => {
+            #[cfg(not(feature = "gpu"))]
+            if !gpu.is_empty() {
+                bail!(
+                    "GPU support is not enabled; rebuild with `cargo oxide build --features gpu`."
+                );
+            }
+
             if knn.is_none() {
                 // Dense path streams output via an internal writer thread running
                 // concurrently with compute (mirrors Sketch/Append/Inverted Build/Query).
@@ -338,6 +349,7 @@ pub fn main() -> Result<(), Error> {
 
             log::info!("Loading sketch data from {ref_db_name}.skd");
             let subset_names = subset.as_ref().map(|file| read_subset_names(file));
+            #[cfg(feature = "gpu")]
             if !gpu.is_empty() && query_db.is_none() {
                 gpu::validate_devices(gpu)?;
             }
@@ -346,9 +358,11 @@ pub fn main() -> Result<(), Error> {
                 query_db.is_none(),
                 subset_names.as_deref(),
             ) {
+                #[cfg(feature = "gpu")]
                 (Some(device), true, Some(names)) => {
                     references.read_sketch_data_block_pinned(ref_db_name, names, device)?;
                 }
+                #[cfg(feature = "gpu")]
                 (Some(device), true, None) => {
                     references.read_sketch_data_pinned(ref_db_name, device)?;
                 }
@@ -399,6 +413,7 @@ pub fn main() -> Result<(), Error> {
                         }
                     });
                     if !gpu.is_empty() {
+                        #[cfg(feature = "gpu")]
                         gpu::self_dists_stream_multi(
                             &mut output_file,
                             &references,
