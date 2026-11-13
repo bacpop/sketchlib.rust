@@ -36,6 +36,8 @@ enum SketchStorage {
     Pinned(Arc<PinnedHostBuffer<u64>>),
 }
 
+// Serde uses this for MultiSketch's skipped sketch_bins field when loading
+// metadata. Reading sketch data later replaces it with CPU or pinned storage.
 impl Default for SketchStorage {
     fn default() -> Self {
         Self::Cpu(aligned_sketch_vec())

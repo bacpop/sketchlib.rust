@@ -7,9 +7,9 @@ Source checklist: `todo_before_pr_merge.txt`. Merge target inspected at
 
 Implement only one stage at a time. Report changes, findings and checks, update
 this record, then stop for manual review and commit. Continue only when the
-user requests the next stage. Do not commit automatically. Stage 1a is complete.
-The first 1b patch was not accepted; revised 1b below is planned, not implemented.
-Stage 1c and later work have not started.
+user requests the next stage. Do not commit automatically. Stage 1 is complete:
+1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
+Default. Further bulk-I/O work (1d) is deferred. Stage 2 is next and has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -84,106 +84,50 @@ sub-stage and should produce findings rather than unnecessary edits.
   `unchanged-sequence-code.json` and the artifact README contain evidence and
   replay instructions. Initial debug-build and raw-order diagnostics are
   preserved separately; the successful comparisons used release builds.
-- Performance remains unassessed until 1d.
+- Performance was not measured in this audit. Further bulk-I/O assessment is
+  deferred until requested; the current implementation is retained.
 
-#### 1b (revised). Revert bulk reading; retain direct pinned loading
+#### 1b. Retain bulk reading and direct pinned loading — complete
 
-The earlier 1b attempt retained the bulk implementation and added comments and
-reader assertions. The user requested separating these changes instead: restore
-per-word reading now, and consider bulk I/O in a later, separate commit. This
-supersedes the earlier decision to retain the byte-view/endian helpers.
+- The user decided to retain the existing bulk readers. The proposed rollback
+  was implemented experimentally, then its uncommitted changes were dropped.
+  It is abandoned and must not be implemented again without a new request.
+- Keep `sketch_bytes_mut` and `decode_little_endian`: they preserve the original
+  little-endian interpretation for bulk reads into native words. Main's old
+  per-word reader was already endian-correct; these helpers do not fix an old
+  byte-order bug. No big-endian hardware execution is claimed.
+- CPU and pinned loading retain the shared bulk implementation. Direct pinned
+  loading continues to avoid the full intermediate host copy. Sequence parsing,
+  hashing, sketch generation and database writing are unchanged.
+- Reader comments and the strengthened value/alignment test are retained in
+  commit `0caa183`. The previously recorded focused reader and eight existing
+  sketch/metadata/legacy tests passed; runtime reading logic was unchanged.
+- Rollback artifacts under `/tmp/sketchlib-premerge-rollback` are historical
+  only. Do not use its post-rollback executable as the current performance
+  baseline. The original bulk executable saved in 1a remains the active baseline.
 
-**Implementation (planned; do not include 1c or the bulk follow-up):**
+#### 1c. Clarify SketchStorage's Default — complete
 
-- Restore CPU `read_all_from_skd` and `read_batch_from_skd` to the per-word
-  implementations on `gpu_cuda` at `2a75b50`: reserve the output Vec, read or
-  access eight bytes, convert with `u64::from_le_bytes`, and push the result.
-  Remove their bulk-reader delegation and zero-filled destination allocation.
-- Keep `read_all_into` and `read_batch_into` for direct pinned loading. These
-  must write each decoded word straight into the caller's destination slice,
-  without an intermediate full sketch Vec or a copy into pinned memory later.
-- Full pinned loading: retain the existing file-size check, then loop over
-  destination words, reading an eight-byte buffer with `read_exact` and
-  assigning `u64::from_le_bytes(buffer)`. Propagate read failures.
-- Subset pinned loading: retain destination-size, stride and mmap range checks.
-  Iterate the selected sample's words, decode each eight-byte range with
-  `u64::from_le_bytes` and assign it directly to its destination word.
-  Preserve requested sample order and existing fallible errors.
-- Remove `sketch_bytes_mut`, `decode_little_endian` and their comments, along
-  with the reader module's now-unused `aligned_sketch_vec_filled` import.
-  No unsafe byte view or host-endian special case is needed for these loops.
-- Keep `try_open`, pinned allocation/ownership, `SketchStorage`, CLI routing,
-  the subset-to-full mapping correction and GPU scheduling unchanged. Keep
-  the strengthened word/alignment test: its assertions apply to either I/O
-  implementation. Do not change sketch generation or the data format.
+- Keep `Default for SketchStorage`. Serde uses it to initialize MultiSketch's
+  skipped `sketch_bins` field when metadata is deserialized.
+- Added a two-line comment above the implementation explaining that purpose
+  and that subsequent sketch loading replaces the empty storage with CPU or
+  pinned storage. No helper function, enum variant or behaviour change is needed.
+- The user agreed to retaining Default after its Serde purpose was clarified.
+  This supersedes the earlier proposal to remove Default.
+- Validation: comment-only diff reviewed; `git diff --check` passed. No tests
+  were rerun because implementation and serialization behaviour are unchanged.
+- Stage 1c is ready for review and commit. Do not begin Stage 2 automatically.
 
-**Behaviour and checks:**
+#### 1d. Revisit bulk database I/O — deferred
 
-- CPU malformed-file handling returns to the original reader's behaviour,
-  including stopping on a failed/incomplete full-file word read. This is an
-  explicit consequence of restoring that code, not a new validation policy.
-  Fixed-size pinned reads retain their current size/bounds/read errors rather
-  than accepting partial data or silently leaving zero-filled words.
-- Run the known-word/alignment reader test and existing sketch/metadata/legacy
-  tests. Replay the valid 1a full/subset/reload comparisons against the baseline,
-  including reordered subsets and current CPU/pinned word equality.
-- Check malformed files separately: restored CPU behaviour must match the old
-  reader; pinned loading must reject incompatible sizes and invalid selections.
-  Preserve old 1a reports; put revised checks/results in a new artifact directory.
-- Confirm from the source that pinned allocation remains the final destination
-  and no full intermediate host copy has returned. No big-endian hardware
-  execution is implied; per-word `from_le_bytes` restores the original portable
-  decoding mechanism.
-- Save a post-rollback executable/hash for subsequent cleanup comparisons.
-  Keep the original bulk-reading executable and 1a snapshots for the deferred
-  optimization. Any slower loading than the bulk version is an intentional
-  tradeoff of this rollback, not a reason to restore bulk I/O in this patch.
-- Update the checklist/results, then stop for review and commit. No bulk I/O
-  work starts until this rollback is reviewed and committed.
-
-#### 1c. Remove the storage default independently
-
-- Remove `Default for SketchStorage`. Explicitly construct empty CPU storage
-  through one named helper used by constructors and the serde skipped-field
-  default. Metadata deserialization must not initialize CUDA or allocate
-  pinned memory. Do not add an empty/device enum variant merely to remove
-  `Default`.
-- Keep byte-order handling, allocation choices for loaded data and reading
-  algorithms unchanged. This edit does not depend on a particular outcome
-  from 1b.
-- Run existing constructor, metadata serialization/deserialization, loading
-  and storage-comparison tests; check that no implicit default use remains.
-- Completion: an initialization-only patch with unchanged metadata format
-  and loaded sketch values, followed by review and commit.
-
-#### 1d (deferred). Bulk database I/O as a separate optimization commit
-
-Do not implement this with the rollback or proceed to it automatically. Resume
-only when the user requests the bulk optimization. It is independent of sketch
-creation and must not absorb other cleanup changes.
-
-- Use the committed post-rollback per-word reader as the baseline. Reuse 1a's
-  fixtures and audit methods, and the saved bulk implementation as a reference.
-  Build matched baseline/candidate executables before timing.
-- Reintroduce bulk full/subset reads into existing destination allocations only
-  if measurements justify the change. A byte view and big-endian conversion
-  may return as part of that explicit optimization; they are not correctness
-  fixes for the original readers. Decide whether CPU wrappers should share the
-  implementation from measured results rather than requiring that reuse.
-- Keep the file format, per-sample sketch values, subset ordering and direct
-  pinned ownership unchanged. Do not silently bundle stricter CPU file-size or
-  read-error handling into an I/O optimization; any proposed difference must
-  be documented and reviewed explicitly before implementation.
-- Measure CPU and pinned loading separately from distance computation. Use
-  `100k_subset` and `1m` for full reads and ordered/reversed every-tenth-sample
-  subsets, with matched inputs, build settings and cache conditions. Use
-  warm-ups and five alternating runs; investigate repeatable regressions over
-  3%. Run pinned/GPU checks only while devices are idle.
-- Repeat exact word/metadata comparisons, known-word/alignment checks and
-  legacy/reload/error cases. If GPU distance timings change, distinguish file
-  loading from transfers, kernels and host result processing.
-- Keep only a measured, justified optimization; otherwise record the findings
-  without changing the reader. Stop for review and a separate commit.
+- Bulk reading remains enabled. Do not revert, reintroduce or optimize it as
+  part of the current cleanup. Resume only when the user requests this work.
+- Reuse the 1a findings, snapshots and exact per-sample comparisons when
+  revisiting it. Base any future performance changes on matched builds and
+  measurements that separate database loading from distance computation.
+- Preserve direct pinned loading, sketch values, ordering semantics and the
+  file format. Review any proposed error-handling changes explicitly.
 
 ### 2. Make GPU support opt-in; document editor setup
 
@@ -265,13 +209,12 @@ creation and must not absorb other cleanup changes.
 - Check documented commands and help against actual behaviour. Run the existing
   CPU/GPU correctness, context, failure and memory-planning checks after linking
   is complete. Confirm the checklist contains an outcome for every item.
-- Compare final GPU performance with the post-rollback executable saved in
-  revised 1b (not the older GPU algorithm on `gpu_cuda`), using the established
+- Compare final GPU performance with the bulk-reading executable saved in 1a
+  (`/tmp/sketchlib-premerge-stage1/start-of-round-sketchlib`), using the established
   100k-sample single/three-device workload, warm-ups and five alternating
   measurements. Run only on idle GPUs and investigate repeatable regressions
-  over 3%. Retain the pre-rollback bulk executable for the deferred optimization,
-  not as a gate that would undo the intentional rollback. Report remaining
-  limitations without claiming untested portability.
+  over 3%. Do not use the abandoned rollback's executable as the baseline.
+  Report remaining limitations without claiming untested portability.
 - Review the final diff against `gpu_cuda` for accidental scope growth. Stop
   for the user's final review/commit; do not merge or publish automatically.
 
