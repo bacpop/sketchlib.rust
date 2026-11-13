@@ -170,6 +170,20 @@ until requested.
   `cargo oxide build --features gpu` passed. Method-text comparison confirms
   an unchanged implementation; rustfmt and `git diff --check` passed.
 - Logs: `/tmp/sketchlib-optin-gpu/method-gates-{cpu-check,cpu-tests,gpu-build}.log`.
+- Consolidated CLI dispatch in `src/lib.rs` around one `use_gpu` decision.
+  Device validation and full/subset pinned loading share one feature-gated
+  block; the complete GPU self-distance branch is also gated. CPU loading
+  and self-distance execution use complementary branches. Argument bindings,
+  early CPU-only rejection and common completion reporting remain unchanged.
+- Default release tests passed with CUDA environment variables unset: 77 tests
+  plus one doctest. Explicit CUDA 13.5 `cargo oxide build --features gpu`
+  passed. The existing validator passed all 12 CPU/GPU comparisons, seven
+  invalid-argument cases and two writer failures. Full/subset pinned loading
+  matched for dense/kNN results using unordered-pair and cutoff-tie semantics.
+  GPU-enabled cross-query dense/kNN results matched CPU routing with and
+  without `--gpu 99`, preserving the existing handling of that argument.
+- CLI cleanup validation logs and temporary comparison scripts:
+  `/tmp/sketchlib-cli-gates`. Rustfmt and `git diff --check` passed.
 - **Complete; stop for manual review and commit. Stage 2b has not started.**
 
 #### 2b. GPU editor setup — planned
