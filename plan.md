@@ -10,7 +10,8 @@ this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
 Default. Further bulk-I/O work (1d) is deferred. Stages 2a and 2b are complete.
-Stage 3 is complete and ready for review and commit. Stage 4 has not started.
+Stage 3 is complete. Stage 4a is complete and ready for review and commit.
+Stages 4b and 4c have not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -240,25 +241,68 @@ until requested.
 
 ### 4. Audit and minimise the CUB wrapper; review its hardware test
 
-- Classify helpers into host planning, device iterator/functor code and CUB
-  template dispatch. Explain chunk reductions, ping-pong storage, two selection
-  directions and the large-k fallback using the actual CUB limits.
-- Retain iterator/functor implementations instantiated inside CUB's C++ device
-  templates. Moving their formulas to Rust would require a different execution
-  interface; do not add device callbacks, materialized arrays or extra kernels.
-- Move purely host planning to Rust only where it removes C++ complexity without
-  duplicating formulas, widening the FFI substantially, repeating workspace
-  queries or adding per-tile calls/allocations. Leave templated dispatch and its
-  runtime error conversion behind the existing narrow FFI. If a proposed move
-  adds more glue than it removes, record the finding and keep that code in C++.
-- Keep the existing ignored three-GPU context test. It exercises runtime
-  context switching, foreign pinned-buffer cleanup and completion ownership;
-  it is hardware integration coverage rather than an ordinary CPU unit test.
-  Clarify that purpose and invocation, without creating a new test framework.
-- Check diagonal/off-diagonal and tail tiles, widths around 4096, k around the
-  batched limit 2048 and the DeviceTopK fallback. Reuse CPU/GPU comparisons,
-  memory-plan checks and writer failures; add only missing material coverage.
-  Benchmark any actual dispatch/planning change before accepting it.
+Implement each sub-stage independently; stop for review and commit after each.
+Keep device iterators/functors, CUB template dispatch and runtime error conversion
+behind the existing narrow C ABI. No move to Rust, new planning objects, kernels,
+callbacks, intermediate matrices or generic framework is needed. Repeated
+workspace planning during submission is deferred; changing that flow would be a
+separate optimisation requiring benchmarks.
+
+#### 4a. Selection contract and boundary baseline — complete
+
+- Added focused C++/Rust comments covering the four logical layouts, diagonal
+  self-pair exclusion, original block-local IDs, candidate output sections,
+  chunk-reduction correctness, unspecified cutoff ties, workspace ownership,
+  alternating intermediate buffers and sequential scratch reuse.
+- Documented null-workspace queries versus execution and the owning-context
+  requirement, including CUB configuration inspection during queries.
+- Checked the installed CCCL 3.5 headers: batched segments must fit one thread
+  block's resources; 4096 items and k=2048 are our wrapper's policy/annotation
+  bounds, not universal CUB limits. DeviceTopK handles larger effective k.
+- Audit classification: `mul`/`add`/`aligned`/`reduced` and workspace sizing are
+  host planning; `View` and iterator functors supply device access; `batch` and
+  `direction` coordinate CUB template calls. Moving planning across the ABI
+  would couple these pieces more tightly or duplicate formulas, so retain them.
+- Compiled the current wrapper into a fresh CUDA 13.5 shared library with the
+  existing native/PTX coverage. The reused temporary ABI oracle passed 26 cases
+  on each CUDA device 0/1/2 (78 total), checking every output row's values and
+  IDs, unique neighbours and self-pair exclusion against the CPU oracle.
+- Cases include rectangular/transposed and condensed diagonal layouts,
+  widths 4095/4096/4097, effective k=2047/2048/2049, repeated reductions at
+  width 20000/k=2048, the k=2500 fallback, clamped k, singleton/empty-diagonal
+  endpoints, non-full chunks and all-equal cutoff ties. Tie IDs may vary;
+  selected values must equal the CPU's smallest-k multiset.
+- Evidence: `/tmp/sketchlib-stage4a/{build.log,probe.py,device-0.log,device-1.log,device-2.log}`.
+  The probe loads `cub-current.so`, built from the current source rather than
+  an older library. Non-comment-line comparison against HEAD confirms no
+  executable source changes in either file (`comment-check.json`). Rustfmt
+  and `git diff --check` passed. No permanent tests or runtime changes added.
+- **Complete; stop for manual review and commit. Stage 4b has not started.**
+
+#### 4b. Wrapper readability — planned
+
+- Replace numeric layout modes with a private scoped C++ enum; use named
+  chunk/k constants in compile-time CUB bounds without changing their values.
+- Name the workspace alignment constant and add a compile-time assertion for
+  equal float/u32 element sizes. Expand compressed layout/workspace/error
+  statements only where readability improves.
+- Preserve indexing, workspace calculations, checks, FFI and error conversion,
+  plus the number/order of CUB calls, allocations and transfers.
+- Repeat 4a's boundary probes and existing CLI comparisons, memory accounting
+  and writer failures. Review dispatch and sizing for unchanged behaviour.
+  No benchmarks needed for structural cleanup; plan any actual optimisation
+  separately. Stop for review and commit.
+
+#### 4c. Hardware context test documentation — planned
+
+- Keep the existing ignored three-GPU test in `tile_output.rs`, including its
+  assertions and scheduling. Explain deliberate foreign-context interference,
+  preparation/submission binding and completion ownership through D2H.
+- Document its invocation and three-visible-GPU requirement in GPU development
+  instructions. Distinguish context/ownership coverage from 4a's boundaries.
+- Run `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release --features gpu --lib cub_and_raw_operations_bind_their_own_context -- --ignored --test-threads=1`.
+- Finish formatting/diff checks, mark Stage 4 complete, and stop for review
+  and commit before Stage 5. Do not relocate or generalise the test harness.
 
 ### 5. Resolve lint/compiler warnings and public API documentation
 

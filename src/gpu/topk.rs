@@ -10,6 +10,8 @@ use std::{
 };
 
 extern "C" {
+    // Null workspace queries size; execution uses caller-owned storage/stream.
+    // Both modes require the owning CUDA context to be current on this thread.
     fn sketchlib_tile_topk(
         workspace: *mut c_void,
         bytes: *mut usize,
@@ -67,6 +69,10 @@ impl SelectionCache {
     }
 }
 
+/// Candidate layout shared with C++ and the host merge: nr rows of ref_k pairs,
+/// followed by nq rows of query_k pairs. Diagonals exclude self-pairs and have
+/// no query section. IDs remain local to the opposite sketch block (the same
+/// block for diagonals); candidates are unsorted and cutoff ties unspecified.
 #[derive(Clone, Copy)]
 pub(super) struct Shape {
     nr: usize,
@@ -121,6 +127,7 @@ impl Shape {
     }
 
     pub fn query_on(mut self, context: &CudaContext) -> Result<Self> {
+        // Even a workspace query may inspect this device's CUB configuration.
         context.bind_to_thread()?;
         // Query mode never dereferences these device pointers or enqueues work.
         check(unsafe {
@@ -143,6 +150,8 @@ impl Shape {
 
 /// Enqueue selection on the caller's stream and return candidate storage.
 /// Allocation leases retain candidates and workspace through submission completion.
+/// The C++ wrapper reuses this workspace for both directions and all reduction
+/// passes; it performs no device allocations or stream synchronization.
 ///
 /// # Safety
 /// The execution context must be bound to the calling thread, and the distance
