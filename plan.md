@@ -10,8 +10,8 @@ this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
 Default. Further bulk-I/O work (1d) is deferred. Stages 2a and 2b are complete.
-Stage 3 and Stage 4a are complete. Stage 4b is complete and ready for review
-and commit. Stage 4c has not started.
+Stage 3 is complete. Stage 4 (4a–4c) is complete, with 4c ready for review
+and commit. Stage 5 has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -305,16 +305,24 @@ separate optimisation requiring benchmarks.
   Existing build warnings remain. No new tests or benchmarks were added.
 - **Complete; stop for manual review and commit. Stage 4c has not started.**
 
-#### 4c. Hardware context test documentation — planned
+#### 4c. Hardware context test documentation — complete
 
-- Keep the existing ignored three-GPU test in `tile_output.rs`, including its
-  assertions and scheduling. Explain deliberate foreign-context interference,
-  preparation/submission binding and completion ownership through D2H.
-- Document its invocation and three-visible-GPU requirement in GPU development
-  instructions. Distinguish context/ownership coverage from 4a's boundaries.
-- Run `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release --features gpu --lib cub_and_raw_operations_bind_their_own_context -- --ignored --test-threads=1`.
-- Finish formatting/diff checks, mark Stage 4 complete, and stop for review
-  and commit before Stage 5. Do not relocate or generalise the test harness.
+- Added focused comments to the existing ignored test in `tile_output.rs`:
+  foreign pinned-buffer cleanup disturbs the context before workspace queries;
+  transfer/submission context changes exercise device binding; completed D2H
+  results check storage ownership. Reference rows and query columns are checked
+  independently without requiring CUB output ordering.
+- Added README GPU development instructions with the exact invocation and
+  requirement for three compatible visible devices (0–2). Distinguished this
+  context/ownership test from the selection boundary validation in 4a.
+- The documented command passed locally:
+  `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release --features gpu --lib cub_and_raw_operations_bind_their_own_context -- --ignored --test-threads=1`.
+  Exactly one test ran and passed (21 filtered out).
+- Non-comment source comparison confirms executable statements, attributes,
+  assertions and scheduling are unchanged. Rustfmt and `git diff --check`
+  passed. Logs: `/tmp/sketchlib-stage4c/{context-test.log,comment-check.json}`.
+  No new tests, runtime changes, full-suite reruns or benchmarks were added.
+- **Stage 4 complete; stop for manual review and commit. Stage 5 has not started.**
 
 ### 5. Resolve lint/compiler warnings and public API documentation
 
