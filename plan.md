@@ -10,8 +10,8 @@ this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
 Default. Further bulk-I/O work (1d) is deferred. Stages 2a and 2b are complete.
-Stage 3 is complete. Stage 4 (4a–4c) is complete, with 4c ready for review
-and commit. Stage 5 has not started.
+Stage 3 is complete. Stage 4 (4a–4d) is complete, with the Rust selection
+orchestration change (4d) ready for review and commit. Stage 5 has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -243,10 +243,10 @@ until requested.
 
 Implement each sub-stage independently; stop for review and commit after each.
 Keep device iterators/functors, CUB template dispatch and runtime error conversion
-behind the existing narrow C ABI. No move to Rust, new planning objects, kernels,
-callbacks, intermediate matrices or generic framework is needed. Repeated
-workspace planning during submission is deferred; changing that flow would be a
-separate optimisation requiring benchmarks.
+behind a private C ABI. Stages 4a–4c clarify the existing implementation; 4d moves
+host orchestration into cached Rust plans as one coherent migration, with paired
+performance measurements. No new kernels, callbacks, intermediate matrices,
+generated bindings or generic GPU planning framework are needed.
 
 #### 4a. Selection contract and boundary baseline — complete
 
@@ -261,8 +261,8 @@ separate optimisation requiring benchmarks.
   bounds, not universal CUB limits. DeviceTopK handles larger effective k.
 - Audit classification: `mul`/`add`/`aligned`/`reduced` and workspace sizing are
   host planning; `View` and iterator functors supply device access; `batch` and
-  `direction` coordinate CUB template calls. Moving planning across the ABI
-  would couple these pieces more tightly or duplicate formulas, so retain them.
+  `direction` coordinate CUB template calls. This documentation stage retained
+  that implementation; the subsequent Rust orchestration change is in 4d.
 - Compiled the current wrapper into a fresh CUDA 13.5 shared library with the
   existing native/PTX coverage. The reused temporary ABI oracle passed 26 cases
   on each CUDA device 0/1/2 (78 total), checking every output row's values and
@@ -322,7 +322,61 @@ separate optimisation requiring benchmarks.
   assertions and scheduling are unchanged. Rustfmt and `git diff --check`
   passed. Logs: `/tmp/sketchlib-stage4c/{context-test.log,comment-check.json}`.
   No new tests, runtime changes, full-suite reruns or benchmarks were added.
-- **Stage 4 complete; stop for manual review and commit. Stage 5 has not started.**
+- **Complete; stop for manual review and commit before further work.**
+
+#### 4d. Rust selection orchestration and cached execution — complete
+
+- Migrated direction selection, reduction planning, checked workspace sizing,
+  buffer alternation and pass submission to `topk.rs`. C++ now provides one
+  batched-pass adapter, a DeviceTopK adapter with its short per-row loop, the
+  compiled chunk/k bounds and runtime error strings. Device iterators remain
+  beside CUB's templates. C++ fell from 267 to 162 lines; host planning and its
+  associated overflow/exception helpers were removed from that file.
+- `SelectionCache` stores device-local `Arc<PreparedSelection>` values. Each
+  immutable plan holds the copyable `Shape` summary and up to two direction
+  plans, with batched passes or the large-k fallback. Prepared metadata holds
+  no device pointers. Tile execution clones an Arc; plan vectors and scratch
+  queries occur only on cache misses, not per tile.
+- One private handwritten `repr(C)` view describes pointer-bearing inputs for
+  queries/submission. Rust reads the compiled bounds once per cache, avoiding
+  duplicate production policy constants. No generated bindings, callbacks,
+  additional GPU kernels or public interfaces were introduced.
+- Retained the same three leased device allocations, intermediate-buffer layout,
+  maximum scratch reuse, stream ordering, candidate layout, IDs and tie semantics.
+  Device memory estimates are unchanged. Host-side metadata is larger because
+  complete plans are now cached rather than recomputed during execution.
+- The temporary Rust boundary oracle checked all output rows for 26 cases on
+  each device (78 cases), including rectangular/transposed/diagonal layouts,
+  tails, ties, chunk/k boundaries and repeated reductions. Every workspace size
+  matched 4b exactly. Empty diagonal tiles were queried only, matching their
+  omission from application execution. Three permanent unit tests cover pass
+  construction/alternation, clamping and overflow rejection.
+- GPU-feature unit tests passed (24 passed, one ignored); the existing ignored
+  three-GPU context/completion test passed explicitly. CPU-only `cargo check
+  --locked` passed with CUDA/bootstrap environment variables unset. The local
+  CUDA 13.5 production build passed. CLI validation passed 18 CPU/GPU comparisons
+  (maximum absolute error 1.554e-7), seven invalid-argument cases and two writer
+  failures, including individual and mixed devices.
+- Performance used a temporary in-crate selection harness with reusable inputs,
+  host enqueue timing, CUDA events and completed wall timing; preparation was
+  measured separately. Compared ordinary 256x256/k50, repeated 3x20000/k2048
+  and large-k 3x5003/k2500 selections, plus both transposes, on all three GPUs.
+  Final measurements used six alternating baseline/after pairs, 250 ms warmup
+  per shape, 101 samples and fixed CPU affinity. Short-warmup/unpinned runs
+  showed unstable small-case host timings, so they were not used for acceptance.
+- Across the 15 final shape/device comparisons, host submission improved by
+  0.2–3.4%; GPU medians stayed within 1%; completed wall medians ranged from
+  2.3% faster to 0.8% slower. No persistent slowdown exceeded the 5% gate.
+  Fixed-iteration before/after Nsight traces have identical kernel types/counts
+  (1368 launches), allocations/frees (545 each), H2D copies (5) and stream
+  synchronizations (185). Source inspection confirms wrapper-level scratch
+  queries are absent from execution; transfers/completion remain in `Finish`.
+- Evidence: `/tmp/sketchlib-rust-topk` contains source/binary baselines, temporary
+  harnesses, boundary/workspace reports, paired timings (`performance.json`),
+  Nsight traces/CSVs, build/test logs and replay commands (`commands.txt`). All
+  temporary harness includes were removed. Rustfmt and `git diff --check` pass;
+  existing build warnings remain for Stage 5. No dependency/build changes.
+- **Complete; stop for manual review and commit. Stage 5 has not started.**
 
 ### 5. Resolve lint/compiler warnings and public API documentation
 

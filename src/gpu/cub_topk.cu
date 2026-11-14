@@ -8,10 +8,7 @@
 #include <cuda/argument>
 #include <cuda/std/execution>
 #include <cuda/stream_ref>
-#include <algorithm>
 #include <cstdint>
-#include <limits>
-#include <stdexcept>
 
 static_assert(CUDA_VERSION >= 13050 && CUB_VERSION >= 300500,
               "GPU kNN requires CUDA Toolkit 13.5+ and CCCL/CUB 3.5+");
@@ -19,13 +16,9 @@ static_assert(CUDA_VERSION >= 13050 && CUB_VERSION >= 300500,
 namespace {
 // Wrapper policy, not universal CUB limits: CCCL 3.5's batched implementation
 // requires each segment to fit one thread block's resources. These bounds and
-// the annotations in batch() select that implementation for our float/u32 pairs.
+// the annotations in the batched adapter select that implementation for our float/u32 pairs.
 constexpr size_t chunk_size = 4096;
 constexpr size_t batched_k = 2048;
-constexpr size_t workspace_alignment = 256;
-static_assert(sizeof(float) == sizeof(uint32_t),
-              "Intermediate key and ID buffers must have equal element sizes");
-
 enum class Layout : int {
     ReferenceRows = 0,
     QueryColumns = 1,
@@ -33,25 +26,6 @@ enum class Layout : int {
     IntermediateRows = 3,
 };
 using Count = thrust::counting_iterator<size_t>;
-
-size_t mul(size_t a, size_t b) {
-    if (b && a > std::numeric_limits<size_t>::max() / b) {
-        throw std::overflow_error("size");
-    }
-    return a * b;
-}
-size_t add(size_t a, size_t b) {
-    if (a > std::numeric_limits<size_t>::max() - b) {
-        throw std::overflow_error("size");
-    }
-    return a + b;
-}
-size_t aligned(size_t n) {
-    return add(n, workspace_alignment - 1) & ~(workspace_alignment - 1);
-}
-size_t reduced(size_t n, size_t k) {
-    return add(mul(n / chunk_size, k), std::min(n % chunk_size, k));
-}
 
 // Logical rows over existing storage; no transposed/full diagonal matrix is made.
 // width excludes the self-pair for DiagonalRows;
@@ -126,137 +100,58 @@ auto environment(cudaStream_t stream) {
         cuda::execution::tie_break::unspecified,
         cuda::execution::output_ordering::unsorted)};
 }
-cudaError_t batch(void* temp, size_t& bytes, View view, size_t rows, size_t k,
-                  float* out_keys, uint32_t* out_ids, cudaStream_t stream) {
-    size_t chunks = (view.width - 1) / chunk_size + 1;
-    size_t count = mul(rows, chunks);
-    if (count > size_t(std::numeric_limits<int>::max())) return cudaErrorInvalidValue;
-    size_t width = reduced(view.width, k);
-    return cub::DeviceBatchedTopK::MinPairs(temp, bytes,
-        thrust::make_transform_iterator(Count(0), KeyRows{view, chunks}),
-        thrust::make_transform_iterator(Count(0), Outputs<float>{out_keys, width, chunks, k}),
-        thrust::make_transform_iterator(Count(0), IdRows{view, chunks}),
-        thrust::make_transform_iterator(Count(0), Outputs<uint32_t>{out_ids, width, chunks, k}),
-        cuda::args::deferred_sequence{
-            thrust::make_transform_iterator(Count(0), Lengths{view.width, chunks}),
-            cuda::args::bounds<1, int(chunk_size)>()},
-        cuda::args::immediate{int(k), cuda::args::bounds<1, int(batched_k)>()},
-        int(count), environment(stream));
-}
-
-cudaError_t direction(void* workspace, size_t& required, View initial, size_t rows,
-                      size_t requested_k, float* out_keys, uint32_t* out_ids, cudaStream_t stream) {
-    const size_t k = std::min(requested_k, initial.width);
-    if (!rows || !k) {
-        required = 0;
-        return cudaSuccess;
-    }
-    size_t temp_bytes = 0;
-    // Larger effective k bypasses our batched bound. Rows reuse one DeviceTopK
-    // scratch allocation sequentially on the caller's stream.
-    if (k > batched_k) {
-        auto status = cub::DeviceTopK::MinPairs(nullptr, temp_bytes,
-            Keys(Count(0), KeyAt{initial, 0, 0}), out_keys,
-            Ids(Count(0), IdAt{initial, 0, 0}), out_ids,
-            initial.width, k, environment(stream));
-        if (status != cudaSuccess) return status;
-        required = std::max(size_t(1), temp_bytes);
-        if (!workspace) return cudaSuccess;
-        for (size_t row = 0; row < rows; ++row) {
-            size_t available = temp_bytes;
-            status = cub::DeviceTopK::MinPairs(workspace, available,
-                Keys(Count(0), KeyAt{initial, row, 0}), out_keys + row * k,
-                Ids(Count(0), IdAt{initial, row, 0}), out_ids + row * k,
-                initial.width, k, environment(stream));
-            if (status != cudaSuccess) return status;
-        }
-        return cudaSuccess;
-    }
-    // Keeping each chunk's smallest k preserves a valid smallest k for the
-    // whole row, including arbitrary choices among equal-valued cutoff ties.
-    // Repeat until one batched segment can select the row's final candidates.
-    //
-    // Workspace prefix: keys0, ids0, keys1, ids1, each buffer_bytes bytes and
-    // 256-byte aligned (float and uint32_t are both four bytes). The first
-    // reduction is the largest; later passes alternate these two buffer pairs.
-    // CUB scratch follows the prefix and is sized for the largest pass request.
-    const size_t buffer_bytes = initial.width > chunk_size
-        ? aligned(mul(mul(rows, reduced(initial.width, k)), sizeof(float))) : 0;
-    const size_t prefix = mul(4, buffer_bytes);
-    View query = initial;
-    for (;;) {
-        size_t bytes = 0;
-        auto status = batch(nullptr, bytes, query, rows, k, nullptr, nullptr, stream);
-        if (status != cudaSuccess) return status;
-        temp_bytes = std::max(temp_bytes, bytes);
-        if (query.width <= chunk_size) break;
-        query.width = reduced(query.width, k);
-        query.layout = Layout::IntermediateRows;
-    }
-    required = add(prefix, std::max(size_t(1), temp_bytes));
-    if (!workspace) return cudaSuccess;
-    auto* base = static_cast<unsigned char*>(workspace);
-    View view = initial;
-    size_t iteration = 0;
-    for (;;) {
-        bool final = view.width <= chunk_size;
-        size_t slot = iteration++ % 2;
-        // Final candidates go directly to the caller's output, not the prefix.
-        float* keys = final
-            ? out_keys
-            : reinterpret_cast<float*>(base + slot * 2 * buffer_bytes);
-        uint32_t* ids = final
-            ? out_ids
-            : reinterpret_cast<uint32_t*>(base + (slot * 2 + 1) * buffer_bytes);
-        size_t available = temp_bytes;
-        auto status = batch(base + prefix, available, view, rows, k, keys, ids, stream);
-        if (status != cudaSuccess) return status;
-        if (final) return cudaSuccess;
-        view = View{keys, ids, reduced(view.width, k), 0, 0, Layout::IntermediateRows};
-    }
-}
 } // namespace
 
-// The caller must bind the owning device before either mode. A null workspace
-// queries required bytes without dereferencing device pointers or enqueuing work.
-// Otherwise *bytes is the available workspace capacity; all storage belongs to
-// the caller and must remain valid until the supplied stream completes. This
-// wrapper neither allocates device memory nor synchronizes the stream.
-extern "C" int sketchlib_tile_topk(void* workspace, size_t* bytes, const float* distances,
-    float* out_keys, uint32_t* out_ids, size_t nr, size_t nq, size_t k, int diagonal, void* raw_stream) noexcept {
+// Trusted Rust callers validate dimensions and bind the owning device. Null
+// workspace queries CUB scratch; execution uses the supplied capacity directly.
+// All pointers/stream remain caller-owned, with no allocation or synchronization.
+extern "C" void sketchlib_topk_limits(size_t* chunk, size_t* k) noexcept {
+    *chunk = chunk_size;
+    *k = batched_k;
+}
+
+extern "C" int sketchlib_batched_topk(void* temp, size_t* bytes, const View* input,
+    size_t chunks, size_t output_width, int k, int segments,
+    float* out_keys, uint32_t* out_ids, void* raw_stream) noexcept {
     try {
-        if (!bytes || !nr || !nq || !k || nr > UINT32_MAX || nq > UINT32_MAX
-            || (diagonal && nr != nq)) {
-            return cudaErrorInvalidValue;
-        }
+        View view = *input;
+        return cub::DeviceBatchedTopK::MinPairs(temp, *bytes,
+            thrust::make_transform_iterator(Count(0), KeyRows{view, chunks}),
+            thrust::make_transform_iterator(Count(0), Outputs<float>{out_keys, output_width, chunks, size_t(k)}),
+            thrust::make_transform_iterator(Count(0), IdRows{view, chunks}),
+            thrust::make_transform_iterator(Count(0), Outputs<uint32_t>{out_ids, output_width, chunks, size_t(k)}),
+            cuda::args::deferred_sequence{
+                thrust::make_transform_iterator(Count(0), Lengths{view.width, chunks}),
+                cuda::args::bounds<1, int(chunk_size)>()},
+            cuda::args::immediate{k, cuda::args::bounds<1, int(batched_k)>()},
+            segments, environment(static_cast<cudaStream_t>(raw_stream)));
+    } catch (...) {
+        return cudaErrorUnknown;
+    }
+}
+
+extern "C" int sketchlib_rows_topk(void* temp, size_t* bytes, const View* input,
+    size_t rows, size_t k, float* out_keys, uint32_t* out_ids, void* raw_stream) noexcept {
+    try {
+        View view = *input;
         auto stream = static_cast<cudaStream_t>(raw_stream);
-        View refs{distances, nullptr, diagonal ? nr - 1 : nq, nq, nr,
-                  diagonal ? Layout::DiagonalRows : Layout::ReferenceRows};
-        View queries{distances, nullptr, nr, nq, nr, Layout::QueryColumns};
-        size_t ref_bytes = 0, query_bytes = 0;
-        auto status = direction(nullptr, ref_bytes, refs, nr, k, nullptr, nullptr, stream);
-        if (status != cudaSuccess) return status;
-        if (!diagonal) {
-            status = direction(nullptr, query_bytes, queries, nq, k, nullptr, nullptr, stream);
+        if (!temp) {
+            return cub::DeviceTopK::MinPairs(nullptr, *bytes,
+                Keys(Count(0), KeyAt{view, 0, 0}), out_keys,
+                Ids(Count(0), IdAt{view, 0, 0}), out_ids,
+                view.width, k, environment(stream));
+        }
+        // Keep this short loop beside CUB to avoid one FFI call per row. Each row
+        // reuses caller-provided scratch, ordered by the same stream.
+        for (size_t row = 0; row < rows; ++row) {
+            size_t available = *bytes;
+            auto status = cub::DeviceTopK::MinPairs(temp, available,
+                Keys(Count(0), KeyAt{view, row, 0}), out_keys + row * k,
+                Ids(Count(0), IdAt{view, row, 0}), out_ids + row * k,
+                view.width, k, environment(stream));
             if (status != cudaSuccess) return status;
         }
-        size_t needed = std::max(size_t(1), std::max(ref_bytes, query_bytes));
-        if (!workspace) {
-            *bytes = needed;
-            return cudaSuccess;
-        }
-        if (*bytes < needed || !distances || !out_keys || !out_ids) {
-            return cudaErrorInvalidValue;
-        }
-        // Both directions run on the same stream, so workspace is their maximum,
-        // not their sum. Outputs are unsorted rows of min(k, available neighbours):
-        // nr reference rows first, then nq query rows; diagonals need only refs.
-        status = direction(workspace, ref_bytes, refs, nr, k, out_keys, out_ids, stream);
-        if (status != cudaSuccess || diagonal) return status;
-        size_t offset = mul(nr, std::min(k, nq));
-        return direction(workspace, query_bytes, queries, nq, k, out_keys + offset, out_ids + offset, stream);
-    } catch (const std::overflow_error&) {
-        return cudaErrorInvalidValue;
+        return cudaSuccess;
     } catch (...) {
         return cudaErrorUnknown;
     }

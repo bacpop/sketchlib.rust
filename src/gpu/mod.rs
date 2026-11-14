@@ -265,7 +265,7 @@ impl DistTile {
         dist_type: DistType,
         k_vals: Option<(usize, f64)>,
         ani: bool,
-        selection: Option<topk::Shape>,
+        selection: Option<Arc<topk::PreparedSelection>>,
         completeness: Arc<DeviceBox<[f32]>>,
         correct_completeness: bool,
         completeness_cutoff: f32,
