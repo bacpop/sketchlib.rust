@@ -22,53 +22,72 @@ namespace {
 // the annotations in batch() select that implementation for our float/u32 pairs.
 constexpr size_t chunk_size = 4096;
 constexpr size_t batched_k = 2048;
+constexpr size_t workspace_alignment = 256;
+static_assert(sizeof(float) == sizeof(uint32_t),
+              "Intermediate key and ID buffers must have equal element sizes");
+
+enum class Layout : int {
+    ReferenceRows = 0,
+    QueryColumns = 1,
+    DiagonalRows = 2,
+    IntermediateRows = 3,
+};
 using Count = thrust::counting_iterator<size_t>;
 
 size_t mul(size_t a, size_t b) {
-    if (b && a > std::numeric_limits<size_t>::max() / b) throw std::overflow_error("size");
+    if (b && a > std::numeric_limits<size_t>::max() / b) {
+        throw std::overflow_error("size");
+    }
     return a * b;
 }
 size_t add(size_t a, size_t b) {
-    if (a > std::numeric_limits<size_t>::max() - b) throw std::overflow_error("size");
+    if (a > std::numeric_limits<size_t>::max() - b) {
+        throw std::overflow_error("size");
+    }
     return a + b;
 }
-size_t aligned(size_t n) { return add(n, 255) & ~size_t(255); }
+size_t aligned(size_t n) {
+    return add(n, workspace_alignment - 1) & ~(workspace_alignment - 1);
+}
 size_t reduced(size_t n, size_t k) {
     return add(mul(n / chunk_size, k), std::min(n % chunk_size, k));
 }
 
 // Logical rows over existing storage; no transposed/full diagonal matrix is made.
-// Modes: 0 reference rows, 1 query columns, 2 condensed diagonal rows,
-// 3 intermediate candidate rows. width excludes the self-pair in mode 2;
+// width excludes the self-pair for DiagonalRows;
 // columns is the original rectangular stride, samples the diagonal sample count.
 struct View {
     const float* keys;
     const uint32_t* ids;
     size_t width, columns, samples;
-    int mode;
+    Layout layout;
     __host__ __device__ size_t neighbour(size_t row, size_t q) const {
         // Expand the self-excluding logical position to its block-local ID.
-        return mode == 2 && q >= row ? q + 1 : q;
+        return layout == Layout::DiagonalRows && q >= row ? q + 1 : q;
     }
     __host__ __device__ size_t offset(size_t row, size_t q) const {
-        if (mode == 0) return row * columns + q;
-        if (mode == 1) return q * columns + row;
-        if (mode == 3) return row * width + q;
+        if (layout == Layout::ReferenceRows) return row * columns + q;
+        if (layout == Layout::QueryColumns) return q * columns + row;
+        if (layout == Layout::IntermediateRows) return row * width + q;
         size_t j = neighbour(row, q);
-        size_t a = row < j ? row : j, b = row < j ? j : row;
+        size_t a = row < j ? row : j;
+        size_t b = row < j ? j : row;
         return a * (2 * samples - a - 1) / 2 + b - a - 1;
     }
 };
 struct KeyAt {
     View view; size_t row, begin;
-    __host__ __device__ float operator()(size_t q) const { return view.keys[view.offset(row, begin + q)]; }
+    __host__ __device__ float operator()(size_t q) const {
+        return view.keys[view.offset(row, begin + q)];
+    }
 };
 struct IdAt {
     View view; size_t row, begin;
     __host__ __device__ uint32_t operator()(size_t q) const {
         // Reductions carry original neighbour IDs, not intermediate positions.
-        return view.mode == 3 ? view.ids[view.offset(row, begin + q)]
-                              : uint32_t(view.neighbour(row, begin + q));
+        return view.layout == Layout::IntermediateRows
+            ? view.ids[view.offset(row, begin + q)]
+            : uint32_t(view.neighbour(row, begin + q));
     }
 };
 using Keys = thrust::transform_iterator<KeyAt, Count>;
@@ -120,15 +139,18 @@ cudaError_t batch(void* temp, size_t& bytes, View view, size_t rows, size_t k,
         thrust::make_transform_iterator(Count(0), Outputs<uint32_t>{out_ids, width, chunks, k}),
         cuda::args::deferred_sequence{
             thrust::make_transform_iterator(Count(0), Lengths{view.width, chunks}),
-            cuda::args::bounds<1, 4096>()},
-        cuda::args::immediate{int(k), cuda::args::bounds<1, 2048>()},
+            cuda::args::bounds<1, int(chunk_size)>()},
+        cuda::args::immediate{int(k), cuda::args::bounds<1, int(batched_k)>()},
         int(count), environment(stream));
 }
 
 cudaError_t direction(void* workspace, size_t& required, View initial, size_t rows,
                       size_t requested_k, float* out_keys, uint32_t* out_ids, cudaStream_t stream) {
     const size_t k = std::min(requested_k, initial.width);
-    if (!rows || !k) { required = 0; return cudaSuccess; }
+    if (!rows || !k) {
+        required = 0;
+        return cudaSuccess;
+    }
     size_t temp_bytes = 0;
     // Larger effective k bypasses our batched bound. Rows reuse one DeviceTopK
     // scratch allocation sequentially on the caller's stream.
@@ -169,7 +191,7 @@ cudaError_t direction(void* workspace, size_t& required, View initial, size_t ro
         temp_bytes = std::max(temp_bytes, bytes);
         if (query.width <= chunk_size) break;
         query.width = reduced(query.width, k);
-        query.mode = 3;
+        query.layout = Layout::IntermediateRows;
     }
     required = add(prefix, std::max(size_t(1), temp_bytes));
     if (!workspace) return cudaSuccess;
@@ -180,13 +202,17 @@ cudaError_t direction(void* workspace, size_t& required, View initial, size_t ro
         bool final = view.width <= chunk_size;
         size_t slot = iteration++ % 2;
         // Final candidates go directly to the caller's output, not the prefix.
-        float* keys = final ? out_keys : reinterpret_cast<float*>(base + slot * 2 * buffer_bytes);
-        uint32_t* ids = final ? out_ids : reinterpret_cast<uint32_t*>(base + (slot * 2 + 1) * buffer_bytes);
+        float* keys = final
+            ? out_keys
+            : reinterpret_cast<float*>(base + slot * 2 * buffer_bytes);
+        uint32_t* ids = final
+            ? out_ids
+            : reinterpret_cast<uint32_t*>(base + (slot * 2 + 1) * buffer_bytes);
         size_t available = temp_bytes;
         auto status = batch(base + prefix, available, view, rows, k, keys, ids, stream);
         if (status != cudaSuccess) return status;
         if (final) return cudaSuccess;
-        view = View{keys, ids, reduced(view.width, k), 0, 0, 3};
+        view = View{keys, ids, reduced(view.width, k), 0, 0, Layout::IntermediateRows};
     }
 }
 } // namespace
@@ -200,10 +226,13 @@ extern "C" int sketchlib_tile_topk(void* workspace, size_t* bytes, const float* 
     float* out_keys, uint32_t* out_ids, size_t nr, size_t nq, size_t k, int diagonal, void* raw_stream) noexcept {
     try {
         if (!bytes || !nr || !nq || !k || nr > UINT32_MAX || nq > UINT32_MAX
-            || (diagonal && nr != nq)) return cudaErrorInvalidValue;
+            || (diagonal && nr != nq)) {
+            return cudaErrorInvalidValue;
+        }
         auto stream = static_cast<cudaStream_t>(raw_stream);
-        View refs{distances, nullptr, diagonal ? nr - 1 : nq, nq, nr, diagonal ? 2 : 0};
-        View queries{distances, nullptr, nr, nq, nr, 1};
+        View refs{distances, nullptr, diagonal ? nr - 1 : nq, nq, nr,
+                  diagonal ? Layout::DiagonalRows : Layout::ReferenceRows};
+        View queries{distances, nullptr, nr, nq, nr, Layout::QueryColumns};
         size_t ref_bytes = 0, query_bytes = 0;
         auto status = direction(nullptr, ref_bytes, refs, nr, k, nullptr, nullptr, stream);
         if (status != cudaSuccess) return status;
@@ -212,8 +241,13 @@ extern "C" int sketchlib_tile_topk(void* workspace, size_t* bytes, const float* 
             if (status != cudaSuccess) return status;
         }
         size_t needed = std::max(size_t(1), std::max(ref_bytes, query_bytes));
-        if (!workspace) { *bytes = needed; return cudaSuccess; }
-        if (*bytes < needed || !distances || !out_keys || !out_ids) return cudaErrorInvalidValue;
+        if (!workspace) {
+            *bytes = needed;
+            return cudaSuccess;
+        }
+        if (*bytes < needed || !distances || !out_keys || !out_ids) {
+            return cudaErrorInvalidValue;
+        }
         // Both directions run on the same stream, so workspace is their maximum,
         // not their sum. Outputs are unsorted rows of min(k, available neighbours):
         // nr reference rows first, then nq query rows; diagonals need only refs.
@@ -221,8 +255,11 @@ extern "C" int sketchlib_tile_topk(void* workspace, size_t* bytes, const float* 
         if (status != cudaSuccess || diagonal) return status;
         size_t offset = mul(nr, std::min(k, nq));
         return direction(workspace, query_bytes, queries, nq, k, out_keys + offset, out_ids + offset, stream);
-    } catch (const std::overflow_error&) { return cudaErrorInvalidValue; }
-      catch (...) { return cudaErrorUnknown; }
+    } catch (const std::overflow_error&) {
+        return cudaErrorInvalidValue;
+    } catch (...) {
+        return cudaErrorUnknown;
+    }
 }
 
 extern "C" const char* sketchlib_topk_error_string(int status) noexcept {

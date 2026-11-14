@@ -10,8 +10,8 @@ this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
 Default. Further bulk-I/O work (1d) is deferred. Stages 2a and 2b are complete.
-Stage 3 is complete. Stage 4a is complete and ready for review and commit.
-Stages 4b and 4c have not started.
+Stage 3 and Stage 4a are complete. Stage 4b is complete and ready for review
+and commit. Stage 4c has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -279,19 +279,31 @@ separate optimisation requiring benchmarks.
   and `git diff --check` passed. No permanent tests or runtime changes added.
 - **Complete; stop for manual review and commit. Stage 4b has not started.**
 
-#### 4b. Wrapper readability — planned
+#### 4b. Wrapper readability — complete
 
-- Replace numeric layout modes with a private scoped C++ enum; use named
-  chunk/k constants in compile-time CUB bounds without changing their values.
-- Name the workspace alignment constant and add a compile-time assertion for
-  equal float/u32 element sizes. Expand compressed layout/workspace/error
-  statements only where readability improves.
-- Preserve indexing, workspace calculations, checks, FFI and error conversion,
-  plus the number/order of CUB calls, allocations and transfers.
-- Repeat 4a's boundary probes and existing CLI comparisons, memory accounting
-  and writer failures. Review dispatch and sizing for unchanged behaviour.
-  No benchmarks needed for structural cleanup; plan any actual optimisation
-  separately. Stop for review and commit.
+- Replaced numeric modes with private `Layout : int` enum values 0–3 and
+  renamed `View::mode` to `layout`. The reference/query/diagonal/intermediate
+  indexing branches and formulas are unchanged.
+- Used `int(chunk_size)` and `int(batched_k)` in CUB's compile-time bounds,
+  preserving their original int argument types and values. Named the 256-byte
+  workspace alignment and added a static assertion for equal float/u32 sizes.
+- Expanded compressed indexing, workspace pointers and error-handling blocks
+  without a whole-file formatting rewrite. All source changes are confined to
+  `cub_topk.cu`; Rust interfaces, FFI, checks, errors and CUB query/dispatch
+  order, allocations and transfers remain unchanged.
+- A freshly compiled CUDA 13.5 shared library passed the same 26 boundary
+  cases on all three GPUs (78 checks), validating every output row against
+  the CPU oracle. Every queried workspace size matched the saved 4a result.
+- `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide build --features gpu` passed.
+  Existing CLI validation passed 18 CPU/GPU comparisons, seven invalid-argument
+  cases and two writer failures. Maximum absolute error was 1.554e-7.
+- The existing memory-accounting test passed via
+  `CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- --release --features gpu --locked --lib tile_memory_accounts_for_both_sketch_copies_and_selection`.
+- Evidence, workspace comparison report and replay commands:
+  `/tmp/sketchlib-stage4b`. Manual formula/dispatch review and `git diff --check`
+  passed. No C++ formatter is installed; formatting was reviewed locally.
+  Existing build warnings remain. No new tests or benchmarks were added.
+- **Complete; stop for manual review and commit. Stage 4c has not started.**
 
 #### 4c. Hardware context test documentation — planned
 
