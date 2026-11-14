@@ -142,6 +142,25 @@ requested block size and tile limit. Device errors stop the calculation; there
 is no silent device skipping or CPU fallback. Selected devices must support
 unified addressing and the compiled kernel targets.
 
+### GPU development checks
+
+The context regression test requires three visible CUDA GPUs compatible with
+the compiled kernels and uses visible devices 0–2. It is ignored during normal
+test runs; run it explicitly with:
+
+```bash
+CUDA_HOME=/usr/local/cuda-13.5 cargo oxide test -- \
+  --release --features gpu --lib \
+  cub_and_raw_operations_bind_their_own_context \
+  -- --ignored --test-threads=1
+```
+
+This hardware integration test deliberately switches contexts, including
+through foreign pinned-buffer cleanup. It checks context binding for workspace
+preparation and stream operations, plus resource ownership through selection
+and candidate transfers back to the host. Selection boundary cases were
+validated separately in the CUB wrapper audit recorded in `plan.md`.
+
 ## Citation
 
 Please cite:

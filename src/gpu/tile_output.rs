@@ -123,6 +123,9 @@ mod tests {
     use cuda_async::device_context::{global_policy, init_device_contexts, with_cuda_context};
     use std::ptr;
 
+    // Hardware integration coverage for context binding and completion ownership.
+    // Selection boundaries are checked separately; this small matrix makes both
+    // candidate directions easy to verify while deliberately disturbing contexts.
     #[test]
     #[ignore = "requires three CUDA GPUs; run explicitly for multi-GPU validation"]
     fn cub_and_raw_operations_bind_their_own_context() {
@@ -138,7 +141,9 @@ mod tests {
             let foreign = &contexts[(id + 1) % 3];
             let foreign_buffer = PinnedHostBuffer::<u32>::zeroed(foreign, 1).unwrap();
             context.bind_to_thread().unwrap();
-            drop(foreign_buffer); // Deliberately changes the current context.
+            // Foreign resource cleanup changes the current context. Workspace
+            // preparation must bind this device again, even for a size query.
+            drop(foreign_buffer);
             let mut selections = SelectionCache::default();
             selections.prepare(context, 5, 7, 3, false).unwrap();
             let shape = selections.get(5, 7, 3, false);
@@ -151,6 +156,7 @@ mod tests {
             assert_eq!(current, context.cu_ctx());
             let policy = global_policy(id).unwrap();
             let stream = policy.next_stream().unwrap();
+            // Transfer submission must tolerate a different device being current.
             foreign.bind_to_thread().unwrap();
             let distances = crate::gpu::operations::h2d(&data).sync_on(&stream).unwrap();
             let host = HostOutput::new(context, 0, Some(shape.count)).unwrap();
@@ -161,6 +167,8 @@ mod tests {
             }
             .schedule(policy.as_ref())
             .unwrap();
+            // Leave a foreign context current before driving the scheduled work;
+            // CUB and raw D2H operations must bind their owning device on execution.
             foreign.bind_to_thread().unwrap();
             jobs.push(job);
         }
@@ -170,10 +178,14 @@ mod tests {
                 pending.spawn(job);
             }
             while let Some(result) = pending.join_next().await {
+                // Completion must retain valid candidate/workspace/transfer storage
+                // through both D2H copies before the host reads these results.
                 let (host, _distances) = result.unwrap().unwrap();
                 let HostOutput::Candidates { keys, ids } = host else {
                     panic!("Expected candidates")
                 };
+                // Check reference rows and query columns independently. Sorting
+                // IDs avoids imposing an output order on CUB's selected pairs.
                 for row in 0..5 {
                     let mut chosen = Vec::new();
                     for j in 0..3 {
