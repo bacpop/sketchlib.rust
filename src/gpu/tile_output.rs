@@ -41,7 +41,7 @@ impl HostOutput {
 pub(super) struct Finish {
     pub distances: DeviceBox<[f32]>,
     pub host: HostOutput,
-    pub selection: Option<topk::Shape>,
+    pub selection: Option<Arc<topk::PreparedSelection>>,
 }
 
 /// Obtain the DMA pointer exclusively before retaining a second owner. No Rust
@@ -80,11 +80,12 @@ impl DeviceOperation for Finish {
                     )?;
                 }
             }
-            (HostOutput::Candidates { keys, ids }, Some(shape)) => {
+            (HostOutput::Candidates { keys, ids }, Some(plan)) => {
+                let shape = plan.shape;
                 let host_keys = destination(ctx, keys)?;
                 let host_ids = destination(ctx, ids)?;
                 let (device_keys, device_ids) =
-                    unsafe { topk::select(ctx, &self.distances, shape)? };
+                    unsafe { topk::select(ctx, &self.distances, plan)? };
                 unsafe {
                     memcpy_dtoh_async(
                         host_keys,
@@ -145,8 +146,8 @@ mod tests {
             // preparation must bind this device again, even for a size query.
             drop(foreign_buffer);
             let mut selections = SelectionCache::default();
-            selections.prepare(context, 5, 7, 3, false).unwrap();
-            let shape = selections.get(5, 7, 3, false);
+            let shape = selections.prepare(context, 5, 7, 3, false).unwrap();
+            let selection = selections.get(5, 7, 3, false);
             let mut current = ptr::null_mut();
             unsafe {
                 cuda_core::sys::cuCtxGetCurrent(&mut current)
@@ -163,7 +164,7 @@ mod tests {
             let job = Finish {
                 distances,
                 host,
-                selection: Some(shape),
+                selection: Some(selection),
             }
             .schedule(policy.as_ref())
             .unwrap();
