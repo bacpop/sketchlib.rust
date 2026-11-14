@@ -9,8 +9,8 @@ Implement only one stage at a time. Report changes, findings and checks, update
 this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
-Default. Further bulk-I/O work (1d) is deferred. Stage 2a is complete. Stage 2b
-(editor setup) is complete and ready for review and commit. Stage 3 has not started.
+Default. Further bulk-I/O work (1d) is deferred. Stages 2a and 2b are complete.
+Stage 3 is complete and ready for review and commit. Stage 4 has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -205,22 +205,38 @@ until requested.
   `git diff --check` passed. Changes for this stage are documentation only.
 - **Complete; stop for manual review and commit. Stage 3 has not started.**
 
-### 3. Unify architecture configuration
+### 3. Simplify CUB architecture handling — complete
 
-- Use `.cargo/cuda-oxide.toml` as the single documented place for project target
-  defaults and any additional CUB native/PTX image targets. Generate nvcc flags
-  from those settings; remove literal architecture flags from `build.rs`.
-- Read the effective Rust target through `CUDA_OXIDE_TARGET`, which the locked
-  cargo-oxide forwards to build scripts. Explicit `--arch`/environment overrides
-  must affect CUB's primary target too. Do not use the auto-detected
-  `CUDA_OXIDE_DEVICE_ARCH` hint as an explicit target.
-- Preserve current default coverage: Rust SM75, CUB native SM75/80/120 and
-  SM75/80 PTX. Additional CUB images can remain declarative settings in that
-  same file: the Rust backend's single target and nvcc's multiple images are
-  different capabilities. Do not silently lose native Blackwell compatibility.
-- Track architecture environment inputs for rebuilds. Verify default and
-  explicit-target builds, inspect generated flags/images, and run the relevant
-  GPU smoke/context checks. Do not modify the external cuda-oxide dependency.
+- Keep `.cargo/cuda-oxide.toml` unchanged with the portable Rust SM75 default.
+  Retain fixed CUB native SM75/80/120 images and SM75/80 PTX fallbacks.
+- Read cargo-oxide's resolved `CUDA_OXIDE_TARGET` in `build.rs`; add a native
+  CUB image when that target is not already included. Normalize `sm_`,
+  `compute_` and numeric spellings while retaining architecture suffixes.
+  Let nvcc validate architecture support. Ordinary Cargo checks without this
+  environment variable keep the fixed images; ignore `CUDA_OXIDE_DEVICE_ARCH`.
+- Track `CUDA_OXIDE_TARGET` for rebuilds. Add no configuration fields, parsing
+  dependencies, build wrapper or generic architecture abstraction.
+- Document CLI-over-environment-over-project-default precedence, additive CUB
+  images and the separate Rust minimum target. Explain PTX forward compatibility
+  and its driver-version requirement, including the reason for native SM120.
+- Validate CPU tests, default/explicit/environment-only CUDA builds, compiler
+  flags and archive images; restore the default build before individual/mixed
+  GPU dense/kNN comparisons and the existing context regression check.
+- Default CPU release tests passed with CUDA variables unset: 77 tests plus
+  one doctest. Local CUDA 13.5 default, explicit SM86 (over inherited SM80),
+  environment-only SM80 and restored-default builds all passed. Captured nvcc
+  commands and cuobjdump archive listings confirm the extra SM86 native image,
+  unchanged fixed native/PTX images and no duplicate target flag. The emitted
+  Rust target returned to SM75 after restoration. Cargo reported target-variable
+  changes as rebuild triggers for each transition.
+- Existing CLI validation passed 18 CPU/GPU comparisons, covering dense/kNN on
+  each device and mixed/reversed device lists, with maximum absolute error
+  1.554e-7. Seven invalid-argument cases and both writer failures passed. The
+  existing ignored three-GPU context regression test passed explicitly.
+- Logs, nvcc commands, archive listings and temporary validation scripts:
+  `/tmp/sketchlib-stage3`. Rustfmt and `git diff --check` passed. Existing
+  dependency/documentation warnings remain; no new tests or benchmarks added.
+- **Complete; stop for manual review and commit. Stage 4 has not started.**
 
 ### 4. Audit and minimise the CUB wrapper; review its hardware test
 
