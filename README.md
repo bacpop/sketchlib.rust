@@ -67,7 +67,17 @@ optional and must be enabled with `--features gpu`.
 The project defaults to the portable `sm_75` Rust target for Turing and newer
 GPUs. The CUB wrapper includes SM75, SM80 and SM120 native code, with SM75/SM80
 PTX fallbacks. An explicit `cargo oxide build --arch ...` overrides the Rust
-target; the resulting kernels must support every GPU selected at runtime.
+target and adds matching native CUB code if needed, retaining the fixed CUB
+images. Target precedence is `--arch`, then the `CUDA_OXIDE_TARGET` environment
+variable, then `default-arch` in `.cargo/cuda-oxide.toml`. Ordinary Cargo checks
+without `CUDA_OXIDE_TARGET` use the fixed CUB images.
+
+Raising the Rust target can exclude older GPUs even though CUB still includes
+their images; the resulting Rust kernels must support every GPU selected at
+runtime. PTX fallbacks allow the driver to compile CUB code for compatible
+newer GPUs, provided it understands the PTX version emitted by the toolkit.
+The native SM120 image also supports drivers that can execute native code but
+cannot JIT that toolkit's newer PTX.
 
 ### GPU editor setup
 
@@ -105,15 +115,15 @@ they do not provide full CUDA device-code validation. Build GPU kernels with
 
 ### Multi-GPU self-distances
 
-Select visible CUDA device ordinals using commas or repeated arguments:
+Select visible CUDA devices using commas or repeated arguments:
 
 ```bash
 target/release/sketchlib dist --gpu 0,1 --knn 50 database_prefix
 target/release/sketchlib dist --gpu 0 --gpu 1 database_prefix
 ```
 
-Omitting `--gpu` uses the CPU. Device ordinals follow CUDA visibility/order and
-may differ from `nvidia-smi` indices; verbose logs identify devices by name and
+Omitting `--gpu` uses the CPU. Device IDs follow CUDA visibility/order and may
+differ from `nvidia-smi` indices; verbose logs identify devices by name and
 UUID. GPU support covers dense and kNN self-distances with Jaccard/ANI.
 
 Devices share the pinned host sketches and take independent distance tiles as

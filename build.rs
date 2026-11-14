@@ -9,6 +9,7 @@ fn main() {
         "CUDA_HOME",
         "NVCC_CCBIN",
         "CUDAHOSTCXX",
+        "CUDA_OXIDE_TARGET",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
@@ -75,6 +76,20 @@ fn main() {
         // when the installed driver cannot JIT this toolkit's newer PTX.
         .flag("-gencode=arch=compute_120,code=sm_120")
         .file("src/gpu/cub_topk.cu");
+    // cargo-oxide forwards the effective Rust target, including --arch overrides.
+    // Keep the portable images above and add native CUB code for that target.
+    if let Ok(target) = env::var("CUDA_OXIDE_TARGET") {
+        let target = target.trim();
+        let capability = target
+            .strip_prefix("sm_")
+            .or_else(|| target.strip_prefix("compute_"))
+            .unwrap_or(target);
+        if !["75", "80", "120"].contains(&capability) {
+            build.flag(format!(
+                "-gencode=arch=compute_{capability},code=sm_{capability}"
+            ));
+        }
+    }
     if let Some(host) = env::var_os("NVCC_CCBIN").or_else(|| env::var_os("CUDAHOSTCXX")) {
         build.flag("-ccbin").flag(
             host.to_str()
