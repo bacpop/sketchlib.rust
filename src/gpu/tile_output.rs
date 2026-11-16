@@ -41,7 +41,7 @@ impl HostOutput {
 pub(super) struct Finish {
     pub distances: DeviceBox<[f32]>,
     pub host: HostOutput,
-    pub selection: Option<Arc<topk::PreparedSelection>>,
+    pub selection: Option<topk::PreparedSelection>,
 }
 
 /// Obtain the DMA pointer exclusively before retaining a second owner. No Rust
@@ -80,12 +80,12 @@ impl DeviceOperation for Finish {
                     )?;
                 }
             }
-            (HostOutput::Candidates { keys, ids }, Some(plan)) => {
-                let shape = plan.shape;
+            (HostOutput::Candidates { keys, ids }, Some(selection)) => {
+                let shape = selection.shape;
                 let host_keys = destination(ctx, keys)?;
                 let host_ids = destination(ctx, ids)?;
                 let (device_keys, device_ids) =
-                    unsafe { topk::select(ctx, &self.distances, plan)? };
+                    unsafe { topk::select(ctx, &self.distances, selection)? };
                 unsafe {
                     memcpy_dtoh_async(
                         host_keys,
