@@ -12,4 +12,7 @@ jobs:
       - uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features
+          # NOTE: this is a temporary way to exclude the "gpu" feature (which
+          # requires a CUDA toolkit etc) from the clippy job until we merge the
+          # 3di removal from main
+          args: --features 3di

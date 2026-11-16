@@ -19,6 +19,8 @@ pub const DEFAULT_SKETCHSIZE: u64 = 1000;
 pub const DEFAULT_KNN: usize = 50;
 /// Maximum sketches per GPU distance block
 pub const DEFAULT_MAX_SKETCH_BATCH: usize = 10_000;
+/// Maximum GPU distance tiles in flight by default
+pub const DEFAULT_MAX_IN_FLIGHT_TILES: usize = 4;
 
 /// Query types supported by bitvec operations
 #[derive(Clone, Debug, PartialEq, PartialOrd, ValueEnum, Default)]
@@ -243,13 +245,17 @@ pub enum Commands {
         #[arg(long, default_value_t = 0.64)]
         completeness_cutoff: f64,
 
-        /// The GPU to use. Uses CPU only if unspecified
-        #[arg(long)]
-        gpu: Option<usize>,
+        /// CUDA devices for GPU self-distances (comma separated or repeated). CPU if omitted
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        gpu: Vec<usize>,
 
         /// Maximum sketches per block for dense or kNN GPU self-distances
         #[arg(long, default_value_t = DEFAULT_MAX_SKETCH_BATCH, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         max_sketch_batch: usize,
+
+        /// Maximum tiles per GPU in execution or CPU consumption (multi-GPU limits may be reduced to fit memory)
+        #[arg(long, default_value_t = DEFAULT_MAX_IN_FLIGHT_TILES, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        max_in_flight_tiles: usize,
     },
 
     /// Building and querying with inverted indices (.ski)
