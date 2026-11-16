@@ -1,4 +1,4 @@
-//! Device-local CUB plans and stream-ordered selection; C++ supplies device iterators.
+//! Cached CUB workspace sizes and stream-ordered selection over existing distances.
 use super::operations::allocate;
 use anyhow::{ensure, Context, Result};
 use cuda_async::{device_box::DeviceBox, device_operation::ExecutionContext, error::DeviceError};
@@ -7,7 +7,6 @@ use std::{
     collections::HashMap,
     ffi::{c_char, c_int, c_void, CStr},
     mem, ptr,
-    sync::Arc,
 };
 
 // Handwritten C ABI: View matches C++'s iterator input, not a device allocation.
@@ -78,10 +77,10 @@ impl Limits {
     }
 }
 
-/// Plans are queried once per shape/device; tile execution shares them via Arc.
+/// Workspace sizes are queried once per shape/device; cache hits copy scalars.
 #[derive(Default)]
 pub(super) struct SelectionCache {
-    shapes: HashMap<(usize, usize, usize, bool), Arc<PreparedSelection>>,
+    shapes: HashMap<(usize, usize, usize, bool), PreparedSelection>,
     limits: Option<Limits>,
 }
 impl SelectionCache {
@@ -94,17 +93,17 @@ impl SelectionCache {
         diagonal: bool,
     ) -> Result<Shape> {
         let key = (nr, nq, k, diagonal);
-        if let Some(plan) = self.shapes.get(&key) {
-            return Ok(plan.shape);
+        if let Some(selection) = self.shapes.get(&key) {
+            return Ok(selection.shape);
         }
         let limits = *self.limits.get_or_insert_with(Limits::compiled);
-        let plan = PreparedSelection::new(Shape::new(nr, nq, k, diagonal)?, limits, context)?;
-        let shape = plan.shape;
-        self.shapes.insert(key, Arc::new(plan));
+        let selection = PreparedSelection::new(Shape::new(nr, nq, k, diagonal)?, limits, context)?;
+        let shape = selection.shape;
+        self.shapes.insert(key, selection);
         Ok(shape)
     }
-    pub fn get(&self, nr: usize, nq: usize, k: usize, diagonal: bool) -> Arc<PreparedSelection> {
-        Arc::clone(&self.shapes[&(nr, nq, k, diagonal)])
+    pub fn get(&self, nr: usize, nq: usize, k: usize, diagonal: bool) -> PreparedSelection {
+        self.shapes[&(nr, nq, k, diagonal)]
     }
 }
 /// Candidate layout shared with C++ and the host merge: nr rows of ref_k pairs,
@@ -163,27 +162,14 @@ impl Shape {
     }
 }
 
-struct Pass {
-    width: usize,
-    chunks: usize,
-    output_width: usize,
-    segments: c_int,
-    // None writes final candidates directly; otherwise use intermediate pair 0/1.
-    slot: Option<usize>,
-}
-enum Method {
-    Batched(Vec<Pass>),
-    Rows,
-}
+/// Initial row layout and scalar workspace requirements for one direction.
+#[derive(Clone, Copy)]
 struct Direction {
     layout: Layout,
     rows: usize,
     width: usize,
     k: usize,
     output_offset: usize,
-    columns: usize,
-    samples: usize,
-    method: Method,
     buffer_bytes: usize,
     scratch_bytes: usize,
 }
@@ -218,69 +204,46 @@ impl Direction {
                 0,
             )
         };
-        let mut buffer_bytes = 0;
-        let method = if k > limits.k {
-            Method::Rows
-        } else {
-            let mut passes = Vec::new();
-            let mut next = width;
-            loop {
-                let chunks = (next - 1) / limits.chunk + 1;
-                let segments = rows
-                    .checked_mul(chunks)
-                    .and_then(|n| c_int::try_from(n).ok())
-                    .context("CUB segment count exceeds int")?;
-                let output_width = reduced(next, k, limits.chunk)?;
-                let final_pass = next <= limits.chunk;
-                let slot = if final_pass {
-                    None
-                } else {
-                    Some(passes.len() % 2)
-                };
-                passes.push(Pass {
-                    width: next,
-                    chunks,
-                    output_width,
-                    segments,
-                    slot,
-                });
-                if final_pass {
-                    break;
-                }
-                next = output_width;
-            }
-            if width > limits.chunk {
-                buffer_bytes = aligned(
-                    rows.checked_mul(passes[0].output_width)
-                        .and_then(|n| n.checked_mul(mem::size_of::<f32>()))
-                        .context("CUB intermediate buffer size overflow")?,
-                )?;
-            }
-            Method::Batched(passes)
-        };
-        let direction = Self {
+        let mut direction = Self {
             layout,
             rows,
             width,
             k,
             output_offset,
-            columns: shape.nq,
-            samples: shape.nr,
-            method,
-            buffer_bytes,
+            buffer_bytes: 0,
             scratch_bytes: 0,
         };
+        if k <= limits.k {
+            let (_, output_width, _) = direction.batch_dimensions(width, limits)?;
+            if width > limits.chunk {
+                // The first reduction is largest; two key/ID pairs hold every pass.
+                direction.buffer_bytes = aligned(
+                    rows.checked_mul(output_width)
+                        .and_then(|n| n.checked_mul(mem::size_of::<f32>()))
+                        .context("CUB intermediate buffer size overflow")?,
+                )?;
+            }
+        }
         direction.workspace_bytes()?;
         Ok(direction)
     }
-    fn view(&self, keys: *const f32, ids: *const u32, width: usize, layout: Layout) -> View {
+    fn batch_dimensions(&self, width: usize, limits: Limits) -> Result<(usize, usize, c_int)> {
+        let chunks = (width - 1) / limits.chunk + 1;
+        let segments = self
+            .rows
+            .checked_mul(chunks)
+            .and_then(|n| c_int::try_from(n).ok())
+            .context("CUB segment count exceeds int")?;
+        Ok((chunks, reduced(width, self.k, limits.chunk)?, segments))
+    }
+    fn view(&self, shape: Shape) -> View {
         View {
-            keys,
-            ids,
-            width,
-            columns: self.columns,
-            samples: self.samples,
-            layout,
+            keys: ptr::null(),
+            ids: ptr::null(),
+            width: self.width,
+            columns: shape.nq,
+            samples: shape.nr,
+            layout: self.layout,
         }
     }
     fn workspace_bytes(&self) -> Result<usize> {
@@ -289,83 +252,86 @@ impl Direction {
             .and_then(|n| n.checked_add(self.scratch_bytes.max(1)))
             .context("CUB workspace size overflow")
     }
-    fn query(&mut self) -> Result<()> {
-        match &self.method {
-            Method::Rows => {
-                let view = self.view(ptr::null(), ptr::null(), self.width, self.layout);
-                check(unsafe {
-                    sketchlib_rows_topk(
-                        ptr::null_mut(),
-                        &mut self.scratch_bytes,
-                        &view,
-                        self.rows,
-                        self.k,
-                        ptr::null_mut(),
-                        ptr::null_mut(),
-                        ptr::null_mut(),
-                    )
-                })?;
+    fn query(&mut self, shape: Shape, limits: Limits) -> Result<()> {
+        let mut view = self.view(shape);
+        if self.k > limits.k {
+            check(unsafe {
+                sketchlib_rows_topk(
+                    ptr::null_mut(),
+                    &mut self.scratch_bytes,
+                    &view,
+                    self.rows,
+                    self.k,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            })?;
+            return Ok(());
+        }
+        loop {
+            let (chunks, output_width, segments) = self.batch_dimensions(view.width, limits)?;
+            let mut bytes = 0;
+            check(unsafe {
+                sketchlib_batched_topk(
+                    ptr::null_mut(),
+                    &mut bytes,
+                    &view,
+                    chunks,
+                    output_width,
+                    self.k as c_int,
+                    segments,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            })?;
+            self.scratch_bytes = self.scratch_bytes.max(bytes);
+            if view.width <= limits.chunk {
+                break;
             }
-            Method::Batched(passes) => {
-                for (i, pass) in passes.iter().enumerate() {
-                    let layout = if i == 0 {
-                        self.layout
-                    } else {
-                        Layout::IntermediateRows
-                    };
-                    let view = self.view(ptr::null(), ptr::null(), pass.width, layout);
-                    let mut bytes = 0;
-                    check(unsafe {
-                        sketchlib_batched_topk(
-                            ptr::null_mut(),
-                            &mut bytes,
-                            &view,
-                            pass.chunks,
-                            pass.output_width,
-                            self.k as c_int,
-                            pass.segments,
-                            ptr::null_mut(),
-                            ptr::null_mut(),
-                            ptr::null_mut(),
-                        )
-                    })?;
-                    self.scratch_bytes = self.scratch_bytes.max(bytes);
-                }
-            }
+            view.width = output_width;
+            view.layout = Layout::IntermediateRows;
         }
         Ok(())
     }
 }
 
-/// Immutable, device-specific execution metadata, shared by all matching tiles.
-/// No device pointers are kept here, and execution allocates no host plan storage.
+/// Device-specific workspace sizes and initial layouts, without stored pass plans.
+/// Copying this record needs no allocation or shared ownership of host metadata.
+#[derive(Clone, Copy)]
 pub(super) struct PreparedSelection {
     pub shape: Shape,
-    directions: Vec<Direction>,
+    limits: Limits,
+    directions: [Option<Direction>; 2],
 }
 impl PreparedSelection {
     fn new(mut shape: Shape, limits: Limits, context: &CudaContext) -> Result<Self> {
-        let mut directions = Vec::with_capacity(2);
+        let mut directions = [None, None];
         if shape.ref_k != 0 {
             let layout = if shape.diagonal {
                 Layout::DiagonalRows
             } else {
                 Layout::ReferenceRows
             };
-            directions.push(Direction::new(shape, layout, limits)?);
+            directions[0] = Some(Direction::new(shape, layout, limits)?);
         }
         if shape.query_k != 0 {
-            directions.push(Direction::new(shape, Layout::QueryColumns, limits)?);
+            directions[1] = Some(Direction::new(shape, Layout::QueryColumns, limits)?);
         }
         // Queries may inspect device properties, even with null input pointers.
         context.bind_to_thread()?;
         shape.bytes = 1;
-        for direction in &mut directions {
-            direction.query()?;
+        for direction in directions.iter_mut().flatten() {
+            direction.query(shape, limits)?;
             shape.bytes = shape.bytes.max(direction.workspace_bytes()?);
         }
         shape.device_bytes()?;
-        Ok(Self { shape, directions })
+        Ok(Self {
+            shape,
+            limits,
+            directions,
+        })
     }
 }
 
@@ -373,77 +339,80 @@ impl PreparedSelection {
 ///
 /// # Safety
 /// The execution context must be current, distances retained through completion,
-/// and the plan prepared on this device for the supplied distance layout.
+/// and selection must have been prepared on this device for the distance layout.
 pub(super) unsafe fn select(
     ctx: &ExecutionContext,
     distances: &DeviceBox<[f32]>,
-    plan: Arc<PreparedSelection>,
+    selection: PreparedSelection,
 ) -> Result<(DeviceBox<[f32]>, DeviceBox<[u32]>), DeviceError> {
-    let device_keys = unsafe { allocate::<f32>(ctx, plan.shape.count)? };
-    let device_ids = unsafe { allocate::<u32>(ctx, plan.shape.count)? };
-    let workspace = unsafe { allocate::<u8>(ctx, plan.shape.bytes)? };
+    let device_keys = unsafe { allocate::<f32>(ctx, selection.shape.count)? };
+    let device_ids = unsafe { allocate::<u32>(ctx, selection.shape.count)? };
+    let workspace = unsafe { allocate::<u8>(ctx, selection.shape.bytes)? };
     let base = workspace.cu_deviceptr() as *mut u8;
     let stream = ctx.get_cuda_stream().cu_stream().cast();
-    for direction in &plan.directions {
+    let limits = selection.limits;
+    for direction in selection.directions.iter().flatten() {
         let keys = unsafe { (device_keys.cu_deviceptr() as *mut f32).add(direction.output_offset) };
         let ids = unsafe { (device_ids.cu_deviceptr() as *mut u32).add(direction.output_offset) };
-        let mut view = direction.view(
-            distances.cu_deviceptr() as *const f32,
-            ptr::null(),
-            direction.width,
-            direction.layout,
-        );
-        match &direction.method {
-            Method::Rows => {
-                let mut bytes = direction.scratch_bytes;
-                check(unsafe {
-                    sketchlib_rows_topk(
-                        base.cast(),
-                        &mut bytes,
-                        &view,
-                        direction.rows,
-                        direction.k,
-                        keys,
-                        ids,
-                        stream,
+        let mut view = direction.view(selection.shape);
+        view.keys = distances.cu_deviceptr() as *const f32;
+        if direction.k > limits.k {
+            let mut bytes = direction.scratch_bytes;
+            check(unsafe {
+                sketchlib_rows_topk(
+                    base.cast(),
+                    &mut bytes,
+                    &view,
+                    direction.rows,
+                    direction.k,
+                    keys,
+                    ids,
+                    stream,
+                )
+            })?;
+            continue;
+        }
+        let scratch = unsafe { base.add(4 * direction.buffer_bytes) }.cast();
+        let mut slot = 0;
+        loop {
+            let (chunks, output_width, segments) =
+                direction
+                    .batch_dimensions(view.width, limits)
+                    .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            let final_pass = view.width <= limits.chunk;
+            let (out_keys, out_ids) = if final_pass {
+                (keys, ids)
+            } else {
+                unsafe {
+                    (
+                        base.add(slot * 2 * direction.buffer_bytes).cast(),
+                        base.add((slot * 2 + 1) * direction.buffer_bytes).cast(),
                     )
-                })?;
-            }
-            Method::Batched(passes) => {
-                let scratch = unsafe { base.add(4 * direction.buffer_bytes) }.cast();
-                for pass in passes {
-                    let (out_keys, out_ids) = match pass.slot {
-                        None => (keys, ids),
-                        Some(slot) => unsafe {
-                            (
-                                base.add(slot * 2 * direction.buffer_bytes).cast(),
-                                base.add((slot * 2 + 1) * direction.buffer_bytes).cast(),
-                            )
-                        },
-                    };
-                    let mut bytes = direction.scratch_bytes;
-                    check(unsafe {
-                        sketchlib_batched_topk(
-                            scratch,
-                            &mut bytes,
-                            &view,
-                            pass.chunks,
-                            pass.output_width,
-                            direction.k as c_int,
-                            pass.segments,
-                            out_keys,
-                            out_ids,
-                            stream,
-                        )
-                    })?;
-                    view = direction.view(
-                        out_keys,
-                        out_ids,
-                        pass.output_width,
-                        Layout::IntermediateRows,
-                    );
                 }
+            };
+            let mut bytes = direction.scratch_bytes;
+            check(unsafe {
+                sketchlib_batched_topk(
+                    scratch,
+                    &mut bytes,
+                    &view,
+                    chunks,
+                    output_width,
+                    direction.k as c_int,
+                    segments,
+                    out_keys,
+                    out_ids,
+                    stream,
+                )
+            })?;
+            if final_pass {
+                break;
             }
+            view.keys = out_keys;
+            view.ids = out_ids;
+            view.width = output_width;
+            view.layout = Layout::IntermediateRows;
+            slot ^= 1;
         }
     }
     Ok((device_keys, device_ids))
@@ -466,36 +435,21 @@ mod tests {
     }
 
     #[test]
-    fn reductions_cache_widths_and_alternate_only_intermediate_buffers() {
+    fn reduction_dimensions_and_workspace_sizes() {
         let d = direction(20000, 2048);
-        let Method::Batched(passes) = &d.method else {
-            panic!()
-        };
-        assert_eq!(
-            passes
-                .iter()
-                .map(|p| (p.width, p.output_width, p.slot))
-                .collect::<Vec<_>>(),
-            vec![
-                (20000, 10240, Some(0)),
-                (10240, 6144, Some(1)),
-                (6144, 4096, Some(0)),
-                (4096, 2048, None)
-            ]
-        );
+        assert_eq!(d.batch_dimensions(20000, LIMITS).unwrap(), (5, 10240, 15));
+        assert_eq!(d.batch_dimensions(10240, LIMITS).unwrap(), (3, 6144, 9));
+        assert_eq!(d.batch_dimensions(6144, LIMITS).unwrap(), (2, 4096, 6));
+        assert_eq!(d.batch_dimensions(4096, LIMITS).unwrap(), (1, 2048, 3));
         assert_eq!(d.buffer_bytes, 3 * 10240 * 4);
         assert_eq!(d.workspace_bytes().unwrap(), 4 * d.buffer_bytes + 1);
         for width in [4095, 4096] {
             let d = direction(width, 50);
-            let Method::Batched(passes) = d.method else {
-                panic!()
-            };
-            assert_eq!(passes.len(), 1);
-            assert_eq!(passes[0].slot, None);
+            assert_eq!(d.batch_dimensions(width, LIMITS).unwrap(), (1, 50, 3));
             assert_eq!(d.buffer_bytes, 0);
         }
-        assert!(matches!(direction(5003, 2048).method, Method::Batched(_)));
-        assert!(matches!(direction(5003, 2049).method, Method::Rows));
+        assert!(direction(5003, 2048).buffer_bytes > 0);
+        assert_eq!(direction(5003, 2049).buffer_bytes, 0);
     }
     #[test]
     fn shapes_clamp_each_direction_and_exclude_diagonal_self_pairs() {

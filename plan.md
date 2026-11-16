@@ -10,8 +10,8 @@ this record, then stop for manual review and commit. Continue only when the
 user requests the next stage. Do not commit automatically. Stage 1 is complete:
 1a audited behaviour, 1b retains bulk reading, and 1c clarifies the storage
 Default. Further bulk-I/O work (1d) is deferred. Stages 2a and 2b are complete.
-Stage 3 is complete. Stage 4 (4a–4d) is complete, with the Rust selection
-orchestration change (4d) ready for review and commit. Stage 5 has not started.
+Stage 3 is complete. Stage 4 (4a–4e) is complete, with the direct-loop selection
+simplification (4e) ready for review and commit. Stage 5 has not started.
 
 Prefer small changes or justified reverts toward `gpu_cuda`. Interface
 compatibility is not required. Preserve sketch values, on-disk formats and GPU
@@ -244,9 +244,10 @@ until requested.
 Implement each sub-stage independently; stop for review and commit after each.
 Keep device iterators/functors, CUB template dispatch and runtime error conversion
 behind a private C ABI. Stages 4a–4c clarify the existing implementation; 4d moves
-host orchestration into cached Rust plans as one coherent migration, with paired
-performance measurements. No new kernels, callbacks, intermediate matrices,
-generated bindings or generic GPU planning framework are needed.
+host orchestration into Rust; 4e simplifies that implementation into direct loops
+with cached workspace sizes. Both changes have paired performance measurements.
+No new kernels, callbacks, intermediate matrices, generated bindings or generic
+GPU planning framework are needed.
 
 #### 4a. Selection contract and boundary baseline — complete
 
@@ -376,6 +377,50 @@ generated bindings or generic GPU planning framework are needed.
   Nsight traces/CSVs, build/test logs and replay commands (`commands.txt`). All
   temporary harness includes were removed. Rustfmt and `git diff --check` pass;
   existing build warnings remain for Stage 5. No dependency/build changes.
+- **Complete; stop for manual review and commit. Stage 5 has not started.**
+
+#### 4e. Direct selection loops and scalar caching — complete
+
+- Replaced stored pass lists and method dispatch with direct reduction loops in
+  preparation and execution. A shared `batch_dimensions` helper handles chunk
+  counts, reduced widths and checked CUB segment counts; loop-local input views
+  and a buffer slot express repeated reduction and final output directly.
+- Removed `Pass`, `Method`, plan vectors and selection-metadata Arcs. Retained
+  useful `View`/`Layout`, `Limits`, `Shape`, `Direction` and `PreparedSelection`
+  records. Prepared values now contain two optional direction records and are
+  copyable; `SelectionCache` stores/returns them directly. Matrix stride/sample
+  count come from `Shape` instead of being duplicated in each direction.
+- Cached device-specific scratch sizes remain queried only on cache misses.
+  Execution recomputes cheap arithmetic without plan construction, workspace
+  queries or host metadata allocation. Resource-owning Arcs remain unchanged.
+  No C++/FFI, bounds, algorithm or call-strategy changes were needed. Rust
+  `topk.rs` decreased from 530 to 484 lines, including the adapted tests.
+- All 26 full-row boundary cases passed on each GPU (78 total), with candidate
+  counts and workspace sizes unchanged. Empty diagonal cases are query-only,
+  as the application skips those tiles. The existing tests now check arithmetic
+  and workspace sizing rather than stored pass descriptions; GPU unit tests
+  passed (24 passed, one ignored). The three-GPU context test passed explicitly.
+- Production CUDA 13.5 build and CPU-only `cargo check --locked` passed (CUDA
+  and bootstrap variables unset for CPU). CLI validation passed 18 CPU/GPU
+  comparisons (maximum absolute error 1.554e-7), seven invalid-argument cases
+  and two writer failures, including individual/mixed devices and dense/kNN.
+- Reused a frozen baseline executable after verifying its non-comment sources
+  match the pre-change implementation. Temporary Rust timing used fixed CPU
+  affinity, 250 ms warmup per shape, 101 samples and six alternating pairs per
+  GPU for ordinary, repeated-reduction and large-k cases, including transposes.
+  Host/GPU medians stayed within 1.9%/0.6% respectively. No completed-wall
+  slowdown exceeded 0.5%; one ordinary 5090 case was substantially faster,
+  treated as timing variability rather than a claimed algorithmic speedup.
+- Before/after Nsight traces of the existing context/selection/completion test
+  have identical kernel types/counts (6), async device allocations/frees (12
+  each), H2D/D2H copies (3/6) and stream synchronizations (3). GPU memory layout,
+  candidate ordering/ties, checked size handling and completion leases remain
+  unchanged. No performance threshold was exceeded.
+- Evidence and replay instructions: `/tmp/sketchlib-topk-loops`, including
+  `boundary-report.json`, `performance.json`, `trace-counts.json`, build/test
+  logs, source/binary snapshots and `commands.txt`. Temporary harness includes
+  were removed. Rustfmt and `git diff --check` pass; existing warnings remain
+  for Stage 5. No new dependencies, public APIs or permanent tests were added.
 - **Complete; stop for manual review and commit. Stage 5 has not started.**
 
 ### 5. Resolve lint/compiler warnings and public API documentation
