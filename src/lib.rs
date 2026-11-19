@@ -39,6 +39,13 @@
 //!     - Three columns (fastq input): sample name and two read files
 //! - To set the k-mer size in the sketch database you can either give a list of sizes with `--k-vals`
 //!   or a sequence `--k-seq` with start,stop,step. e.g. `--k-seq 17,29,4` would sketch at k=17, 21, 25 and 29.
+//! - Some k-mer ranges we have found to work for various genomes:
+//!   | Domain/pathogen    | Typical genome size | Core distance π | min-k | max-k |
+//!   |--------------------|---------------------|-----------------|-------|-------|
+//!   | Beta-coronaviruses | 20kb                | 0.1             | 6     | 15    |
+//!   | Bacteria           | 2-5Mb               | ~0.01-0.04      | 13    | 29    |
+//!   | Fungi              | 16Mb                | ~0.01           | 15    | 31    |
+//!   | Plasmodium         | 23Mb                | 0.0005          | 17    | 31    |
 //! - Set the sketch size with `-s`. Typically 1000 is enough for species level resolution, 10000 for within-species/strain
 //!   resolution and 100000-1000000 for SNP level resolution.
 //! - To sketch amino acid sequences use `--seq-type aa --concat-fasta` if you have the typical case
