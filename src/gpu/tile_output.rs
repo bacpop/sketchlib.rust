@@ -8,15 +8,23 @@ use cuda_async::{
 use cuda_core::{memory::memcpy_dtoh_async, Context as CudaContext, DriverError, PinnedHostBuffer};
 use std::{future::IntoFuture, mem, sync::Arc};
 
-pub(super) enum HostOutput {
+/// Pinned buffers, with a candidate layout only after a tile fills them.
+pub(super) enum TileOutput<L> {
     Dense(Arc<PinnedHostBuffer<f32>>),
-    Candidates {
-        keys: Arc<PinnedHostBuffer<f32>>,
-        ids: Arc<PinnedHostBuffer<u32>>,
-    },
+    Candidates(CandidateOutput<L>),
 }
 
-impl HostOutput {
+pub(super) struct CandidateOutput<L> {
+    pub keys: Arc<PinnedHostBuffer<f32>>,
+    pub ids: Arc<PinnedHostBuffer<u32>>,
+    pub layout: L,
+}
+
+pub(super) type HostOutput = TileOutput<()>;
+pub(super) type CompletedOutput = TileOutput<topk::CandidateLayout>;
+pub(super) type CompletedCandidates = CandidateOutput<topk::CandidateLayout>;
+
+impl TileOutput<()> {
     pub fn new(
         ctx: &Arc<CudaContext>,
         max_distances: usize,
@@ -24,17 +32,22 @@ impl HostOutput {
     ) -> Result<Self, DriverError> {
         Ok(match candidates {
             None => Self::Dense(Arc::new(PinnedHostBuffer::zeroed(ctx, max_distances)?)),
-            Some(n) => Self::Candidates {
+            Some(n) => Self::Candidates(CandidateOutput {
                 keys: Arc::new(PinnedHostBuffer::zeroed(ctx, n)?),
                 ids: Arc::new(PinnedHostBuffer::zeroed(ctx, n)?),
-            },
+                layout: (),
+            }),
         })
     }
-    pub fn dense(&self) -> &[f32] {
-        match self {
-            Self::Dense(data) => data,
-            _ => unreachable!("dense consumer received candidates"),
-        }
+}
+
+impl CandidateOutput<topk::CandidateLayout> {
+    pub fn into_buffers(self) -> HostOutput {
+        HostOutput::Candidates(CandidateOutput {
+            keys: self.keys,
+            ids: self.ids,
+            layout: (),
+        })
     }
 }
 
@@ -58,19 +71,19 @@ fn destination<T: cuda_core::DeviceCopy + Send + Sync + 'static>(
 }
 
 impl DeviceOperation for Finish {
-    type Output = (HostOutput, DeviceBox<[f32]>);
+    type Output = (CompletedOutput, DeviceBox<[f32]>);
     unsafe fn execute(
-        mut self,
+        self,
         ctx: &ExecutionContext,
-    ) -> Result<(HostOutput, DeviceBox<[f32]>), DeviceError> {
+    ) -> Result<(CompletedOutput, DeviceBox<[f32]>), DeviceError> {
         // Runtime CUB uses the thread's current Driver API context, not just
         // the stream argument. Resource cleanup may have changed that context.
         ctx.context().bind_to_thread()?;
         let stream = ctx.get_cuda_stream().cu_stream();
         ctx.retain_buffer(self.distances.storage().clone(), false)?;
-        match (&mut self.host, self.selection) {
-            (HostOutput::Dense(host), None) => {
-                let pointer = destination(ctx, host)?;
+        let output = match (self.host, self.selection) {
+            (HostOutput::Dense(mut host), None) => {
+                let pointer = destination(ctx, &mut host)?;
                 unsafe {
                     memcpy_dtoh_async(
                         pointer,
@@ -79,11 +92,17 @@ impl DeviceOperation for Finish {
                         stream,
                     )?;
                 }
+                CompletedOutput::Dense(host)
             }
-            (HostOutput::Candidates { keys, ids }, Some(selection)) => {
+            (
+                HostOutput::Candidates(CandidateOutput {
+                    mut keys, mut ids, ..
+                }),
+                Some(selection),
+            ) => {
                 let count = selection.layout.count;
-                let host_keys = destination(ctx, keys)?;
-                let host_ids = destination(ctx, ids)?;
+                let host_keys = destination(ctx, &mut keys)?;
+                let host_ids = destination(ctx, &mut ids)?;
                 let (device_keys, device_ids) =
                     unsafe { topk::select(ctx, &self.distances, selection)? };
                 unsafe {
@@ -102,16 +121,22 @@ impl DeviceOperation for Finish {
                 }
                 // Leases keep these allocations alive until the entire stream
                 // submission, including both D2H copies, has completed.
+                CompletedOutput::Candidates(CompletedCandidates {
+                    keys,
+                    ids,
+                    layout: selection.layout,
+                })
             }
             _ => return Err(DeviceError::Internal("Tile output mode mismatch".into())),
-        }
-        Ok((self.host, self.distances))
+        };
+        Ok((output, self.distances))
     }
 }
 
 impl IntoFuture for Finish {
-    type Output = Result<(HostOutput, DeviceBox<[f32]>), DeviceError>;
-    type IntoFuture = <BoxedDeviceOp<(HostOutput, DeviceBox<[f32]>)> as IntoFuture>::IntoFuture;
+    type Output = Result<(CompletedOutput, DeviceBox<[f32]>), DeviceError>;
+    type IntoFuture =
+        <BoxedDeviceOp<(CompletedOutput, DeviceBox<[f32]>)> as IntoFuture>::IntoFuture;
     fn into_future(self) -> Self::IntoFuture {
         self.boxed().into_future()
     }
@@ -131,7 +156,8 @@ mod tests {
         let policy = global_policy(0).unwrap();
         let limits = topk::Limits::compiled();
         let nr = 3;
-        for (nq, k, expected_stride) in [(8192, 50, 50), (8193, 50, 51), (8193, 2049, 2049)] {
+        let mut host = HostOutput::new(&context, 0, Some(nr * (2049 + 8193))).unwrap();
+        for (nq, k, expected_stride) in [(8193, 2049, 2049), (8192, 50, 50), (8193, 50, 51)] {
             let selection =
                 topk::PreparedSelection::new(nr, nq, k, false, limits, &context).unwrap();
             assert_eq!(selection.layout.ref_stride, expected_stride);
@@ -139,17 +165,18 @@ mod tests {
             let data: Vec<_> = (0..nr * nq).map(|index| index as f32).collect();
             let stream = policy.next_stream().unwrap();
             let distances = crate::gpu::operations::h2d(&data).sync_on(&stream).unwrap();
-            let host = HostOutput::new(&context, 0, Some(selection.layout.count)).unwrap();
-            let (host, _) = Finish {
+            let (output, _) = Finish {
                 distances,
                 host,
                 selection: Some(selection),
             }
             .sync_on(&stream)
             .unwrap();
-            let HostOutput::Candidates { keys, ids } = host else {
+            let CompletedOutput::Candidates(candidates) = output else {
                 panic!("Expected candidates")
             };
+            assert_eq!(candidates.layout, selection.layout);
+            let CompletedCandidates { keys, ids, .. } = &candidates;
             let mut expected: Vec<_> = (0..k as u32).collect();
             if expected_stride > k {
                 expected.push(8192);
@@ -173,6 +200,7 @@ mod tests {
                     assert_eq!(keys[offset], data[ids[offset] as usize * nq + column]);
                 }
             }
+            host = candidates.into_buffers();
         }
         for (samples, stride) in [(8193, 50), (8194, 51)] {
             let selection =
@@ -194,9 +222,11 @@ mod tests {
             }
             .sync_on(&stream)
             .unwrap();
-            let HostOutput::Candidates { keys, ids } = host else {
+            let CompletedOutput::Candidates(CompletedCandidates { keys, ids, layout }) = host
+            else {
                 panic!("Expected candidates")
             };
+            assert_eq!(layout, selection.layout);
             for row in 0..samples {
                 let offsets = row * stride..(row + 1) * stride;
                 let mut chosen: Vec<_> =
@@ -271,9 +301,19 @@ mod tests {
                 // Completion must retain valid candidate/workspace/transfer storage
                 // through both D2H copies before the host reads these results.
                 let (host, _distances) = result.unwrap().unwrap();
-                let HostOutput::Candidates { keys, ids } = host else {
+                let CompletedOutput::Candidates(CompletedCandidates { keys, ids, layout }) = host
+                else {
                     panic!("Expected candidates")
                 };
+                assert_eq!(
+                    (
+                        layout.k,
+                        layout.ref_stride,
+                        layout.query_stride,
+                        layout.count
+                    ),
+                    (3, 3, 3, 36)
+                );
                 // Check reference rows and query columns independently. Sorting
                 // IDs avoids imposing an output order on CUB's selected pairs.
                 for row in 0..5 {

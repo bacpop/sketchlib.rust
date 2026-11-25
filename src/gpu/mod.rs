@@ -34,7 +34,7 @@ mod tile_output;
 mod topk;
 use distance_devices::{DistanceDevice, MemoryPlan, TileKind, TileQueue};
 use operations::{h2d, retain, zeroed};
-use tile_output::HostOutput;
+use tile_output::{CompletedCandidates, CompletedOutput, HostOutput};
 
 const BBITS: u64 = BIN_BITS as u64;
 const DENSE_CHUNK_SIZE: usize = 1000;
@@ -270,8 +270,10 @@ impl DistTile {
         correct_completeness: bool,
         completeness_cutoff: f32,
         host_output: HostOutput,
-    ) -> Result<impl DeviceOperation<Output = (HostOutput, impl Send), IntoFuture: Send> + '_, Error>
-    {
+    ) -> Result<
+        impl DeviceOperation<Output = (CompletedOutput, impl Send), IntoFuture: Send> + '_,
+        Error,
+    > {
         // Prepare contracts before any device work is submitted, so failures
         // propagate normally rather than panicking inside a pipeline closure.
         let prepared_ref = module.prepare_interleave_sketches(self.interleave_ref_cfg)?;
@@ -374,11 +376,11 @@ impl DistTile {
                                             selection,
                                         }
                                         .and_then(
-                                            move |(host, output)| {
+                                            move |(completed, output)| {
                                                 // Submission leases independently retain these
                                                 // resources through completion or cancellation.
                                                 value((
-                                                    host,
+                                                    completed,
                                                     (
                                                         ref_input,
                                                         ref_interleaved,
@@ -403,14 +405,11 @@ impl DistTile {
 
     fn merge_candidates(
         &self,
-        host: &HostOutput,
-        layout: topk::CandidateLayout,
-        k: usize,
+        candidates: &CompletedCandidates,
         heaps: &mut [BinaryHeap<SparseJaccard>],
     ) -> Result<(), Error> {
-        let HostOutput::Candidates { keys, ids } = host else {
-            return Err(anyhow!("Expected CUB candidates"));
-        };
+        let CompletedCandidates { keys, ids, layout } = candidates;
+        let k = layout.k;
         let ref_count = self.ref_samples.len() * layout.ref_stride;
         let merge_direction = |heaps: &mut [BinaryHeap<SparseJaccard>],
                                start: usize,
@@ -736,10 +735,10 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                                     completeness, correct_completeness, completeness_cutoff as f32,
                                     host_output,
                                 )?;
-                                let (host, device_buffers) = operation.schedule(policy.as_ref())?.await?;
+                                let (output, device_buffers) = operation.schedule(policy.as_ref())?.await?;
                                 // Device buffers are dropped on the GPU dispatch thread.
                                 drop(device_buffers);
-                                Ok::<_, Error>((device_index, tile, host, selection.map(|s| s.layout)))
+                                Ok::<_, Error>((device_index, tile, output))
                             }.await.with_context(|| format!("GPU {id}, tile {:?} x {:?}", ranges.0, ranges.1))
                         });
                     }
@@ -758,18 +757,20 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                             tiles.release(device_index, host);
                         }
                         Some(completed) = gpu_jobs.join_next(), if !gpu_jobs.is_empty() => {
-                            let (device_index, tile, host, candidates) = completed.context("GPU tile task failed")??;
+                            let (device_index, tile, output) = completed.context("GPU tile task failed")??;
                             devices[device_index].tiles += 1;
                             devices[device_index].pairs += tile.n_distances;
-                            if let Some(k) = knn {
-                                let candidates = candidates.context("Missing CUB candidate layout")?;
-                                let start = std::time::Instant::now();
-                                tile.merge_candidates(&host, candidates, k, &mut heaps)?;
-                                merge_time += start.elapsed();
-                                progress.inc(tile.n_distances as u64);
-                                tiles.release(device_index, host);
-                                continue;
-                            }
+                            let distances = match output {
+                                CompletedOutput::Dense(distances) => distances,
+                                CompletedOutput::Candidates(candidates) => {
+                                    let start = std::time::Instant::now();
+                                    tile.merge_candidates(&candidates, &mut heaps)?;
+                                    merge_time += start.elapsed();
+                                    progress.inc(tile.n_distances as u64);
+                                    tiles.release(device_index, candidates.into_buffers());
+                                    continue;
+                                }
+                            };
                             let (done_tx, done_rx) = oneshot::channel();
                             let (written_tx, written_rx) = oneshot::channel();
                             let text_tx = text_tx.clone();
@@ -778,10 +779,10 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                             scope.spawn(move |_| {
                                 let result = catch_unwind(AssertUnwindSafe(|| {
                                     tile.consume_dense(
-                                        &host.dense()[..tile.n_distances], names,
+                                        &distances[..tile.n_distances], names,
                                         &text_tx, written_tx, cancelled,
                                     )?;
-                                    Ok(host)
+                                    Ok(HostOutput::Dense(distances))
                                 })).unwrap_or_else(|_| Err(anyhow!("GPU tile consumer panicked")));
                                 let _ = done_tx.send(result);
                             });

@@ -75,8 +75,9 @@ impl Limits {
 }
 
 /// Candidate rows are packed by direction. IDs are local to the opposite block.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CandidateLayout {
+    pub k: usize,
     pub ref_stride: usize,
     pub query_stride: usize,
     pub count: usize,
@@ -198,6 +199,7 @@ impl PreparedSelection {
             .context("CUB candidate count overflow")?;
         let selection = Self {
             layout: CandidateLayout {
+                k,
                 ref_stride,
                 query_stride,
                 count,
