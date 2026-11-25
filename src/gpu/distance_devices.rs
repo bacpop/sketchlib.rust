@@ -184,7 +184,7 @@ fn geometries(n: usize, block: usize) -> Vec<Geometry> {
     out
 }
 
-fn footprint(geometry: Geometry, sketch_bytes: usize, shape: Option<topk::Shape>) -> Result<usize> {
+fn footprint(geometry: Geometry, sketch_bytes: usize, selection_bytes: usize) -> Result<usize> {
     let sketches = geometry
         .refs
         .checked_add(geometry.queries)
@@ -195,13 +195,9 @@ fn footprint(geometry: Geometry, sketch_bytes: usize, shape: Option<topk::Shape>
         .distances()?
         .checked_mul(4)
         .context("GPU distance byte size overflow")?;
-    let selection = match shape {
-        Some(s) => s.device_bytes()?,
-        None => 0,
-    };
     sketches
         .checked_add(distances)
-        .and_then(|n| n.checked_add(selection))
+        .and_then(|n| n.checked_add(selection_bytes))
         .context("GPU tile byte size overflow")
 }
 
@@ -262,27 +258,26 @@ impl MemoryPlan {
                 let mut worst = 0;
                 let mut device_selections = [None; TileKind::COUNT];
                 for &geometry in &geometries {
-                    let shape = if let Some((k, limits)) = knn {
-                        let selection = topk::Shape::new(
+                    let selection_bytes = if let Some((k, limits)) = knn {
+                        let selection = topk::PreparedSelection::new(
                             geometry.refs,
                             geometry.queries,
                             k,
                             geometry.kind.is_diagonal(),
+                            limits,
+                            &device.context,
                         )
-                        .and_then(|shape| {
-                            topk::PreparedSelection::new(shape, limits, &device.context)
-                        })
                         .with_context(|| {
                             format!("GPU {}: CUB workspace query failed", device.id)
                         })?;
                         device_selections[geometry.kind as usize] = Some(selection);
-                        max_candidates = max_candidates.max(selection.shape.count);
-                        Some(selection.shape)
+                        max_candidates = max_candidates.max(selection.layout.count);
+                        selection.device_bytes()?
                     } else {
-                        None
+                        0
                     };
                     max_distances = max_distances.max(geometry.distances()?);
-                    worst = worst.max(footprint(geometry, sketch_bytes, shape)?);
+                    worst = worst.max(footprint(geometry, sketch_bytes, selection_bytes)?);
                 }
                 footprints.push(worst);
                 if let Some(selections) = &mut selections {
@@ -497,13 +492,12 @@ mod tests {
             queries: 5,
             kind: TileKind::EdgeOffDiagonal,
         };
-        assert_eq!(footprint(g, 16, None).unwrap(), 2 * 12 * 16 + 35 * 4);
-        let shape = topk::Shape::new(7, 5, 3, false).unwrap();
+        assert_eq!(footprint(g, 16, 0).unwrap(), 2 * 12 * 16 + 35 * 4);
         assert_eq!(
-            footprint(g, 16, Some(shape)).unwrap(),
+            footprint(g, 16, 36 * 8).unwrap(),
             2 * 12 * 16 + 35 * 4 + 36 * 8
         );
-        assert!(footprint(g, usize::MAX, None).is_err());
+        assert!(footprint(g, usize::MAX, 0).is_err());
         assert!(Geometry {
             refs: usize::MAX,
             queries: 2,

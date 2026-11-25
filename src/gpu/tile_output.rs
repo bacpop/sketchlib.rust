@@ -81,7 +81,7 @@ impl DeviceOperation for Finish {
                 }
             }
             (HostOutput::Candidates { keys, ids }, Some(selection)) => {
-                let shape = selection.shape;
+                let count = selection.layout.count;
                 let host_keys = destination(ctx, keys)?;
                 let host_ids = destination(ctx, ids)?;
                 let (device_keys, device_ids) =
@@ -90,13 +90,13 @@ impl DeviceOperation for Finish {
                     memcpy_dtoh_async(
                         host_keys,
                         device_keys.cu_deviceptr(),
-                        shape.count * mem::size_of::<f32>(),
+                        count * mem::size_of::<f32>(),
                         stream,
                     )?;
                     memcpy_dtoh_async(
                         host_ids,
                         device_ids.cu_deviceptr(),
-                        shape.count * mem::size_of::<u32>(),
+                        count * mem::size_of::<u32>(),
                         stream,
                     )?;
                 }
@@ -123,6 +123,97 @@ mod tests {
     use cuda_async::device_context::{global_policy, init_device_contexts, with_cuda_context};
     use std::ptr;
 
+    #[test]
+    #[ignore = "requires a CUDA GPU"]
+    fn cub_returns_chunk_winners_and_fallback_rows() {
+        init_device_contexts(0, 1).unwrap();
+        let context = with_cuda_context(0, Arc::clone).unwrap();
+        let policy = global_policy(0).unwrap();
+        let limits = topk::Limits::compiled();
+        let nr = 3;
+        for (nq, k, expected_stride) in [(8192, 50, 50), (8193, 50, 51), (8193, 2049, 2049)] {
+            let selection =
+                topk::PreparedSelection::new(nr, nq, k, false, limits, &context).unwrap();
+            assert_eq!(selection.layout.ref_stride, expected_stride);
+            assert_eq!(selection.layout.query_stride, nr);
+            let data: Vec<_> = (0..nr * nq).map(|index| index as f32).collect();
+            let stream = policy.next_stream().unwrap();
+            let distances = crate::gpu::operations::h2d(&data).sync_on(&stream).unwrap();
+            let host = HostOutput::new(&context, 0, Some(selection.layout.count)).unwrap();
+            let (host, _) = Finish {
+                distances,
+                host,
+                selection: Some(selection),
+            }
+            .sync_on(&stream)
+            .unwrap();
+            let HostOutput::Candidates { keys, ids } = host else {
+                panic!("Expected candidates")
+            };
+            let mut expected: Vec<_> = (0..k as u32).collect();
+            if expected_stride > k {
+                expected.push(8192);
+            }
+            for row in 0..nr {
+                let offsets = row * expected_stride..(row + 1) * expected_stride;
+                let mut chosen = ids[offsets.clone()].to_vec();
+                chosen.sort_unstable();
+                assert_eq!(chosen, expected);
+                for offset in offsets {
+                    assert_eq!(keys[offset], data[row * nq + ids[offset] as usize]);
+                }
+            }
+            let ref_count = nr * expected_stride;
+            for column in 0..nq {
+                let offsets = ref_count + column * nr..ref_count + (column + 1) * nr;
+                let mut chosen = ids[offsets.clone()].to_vec();
+                chosen.sort_unstable();
+                assert_eq!(chosen, [0, 1, 2]);
+                for offset in offsets {
+                    assert_eq!(keys[offset], data[ids[offset] as usize * nq + column]);
+                }
+            }
+        }
+        for (samples, stride) in [(8193, 50), (8194, 51)] {
+            let selection =
+                topk::PreparedSelection::new(samples, samples, 50, true, limits, &context).unwrap();
+            assert_eq!(selection.layout.ref_stride, stride);
+            assert_eq!(selection.layout.query_stride, 0);
+            let distances: Vec<_> = (0..samples)
+                .flat_map(|row| ((row + 1)..samples).map(move |column| (row + column) as f32))
+                .collect();
+            let stream = policy.next_stream().unwrap();
+            let distances = crate::gpu::operations::h2d(&distances)
+                .sync_on(&stream)
+                .unwrap();
+            let host = HostOutput::new(&context, 0, Some(selection.layout.count)).unwrap();
+            let (host, _) = Finish {
+                distances,
+                host,
+                selection: Some(selection),
+            }
+            .sync_on(&stream)
+            .unwrap();
+            let HostOutput::Candidates { keys, ids } = host else {
+                panic!("Expected candidates")
+            };
+            for row in 0..samples {
+                let offsets = row * stride..(row + 1) * stride;
+                let mut chosen: Vec<_> =
+                    ids[offsets.clone()].iter().map(|&id| id as usize).collect();
+                chosen.sort_unstable();
+                let mut expected: Vec<_> = (0..samples).filter(|&id| id != row).take(50).collect();
+                if stride > 50 {
+                    expected.push(samples - 1 - usize::from(row == samples - 1));
+                }
+                assert_eq!(chosen, expected);
+                for offset in offsets {
+                    assert_eq!(keys[offset], (row + ids[offset] as usize) as f32);
+                }
+            }
+        }
+    }
+
     // Hardware integration coverage for context binding and completion ownership.
     // Selection boundaries are checked separately; this small matrix makes both
     // candidate directions easy to verify while deliberately disturbing contexts.
@@ -136,7 +227,6 @@ mod tests {
             .map(|id| with_cuda_context(id, Arc::clone).unwrap())
             .collect();
         let data: Vec<_> = (0..35).map(|i| i as f32 / 100.0).collect();
-        let shape = topk::Shape::new(5, 7, 3, false).unwrap();
         let limits = topk::Limits::compiled();
         let mut jobs = Vec::new();
         for (id, context) in contexts.iter().enumerate() {
@@ -146,7 +236,7 @@ mod tests {
             // Foreign resource cleanup changes the current context. Workspace
             // preparation must bind this device again, even for a size query.
             drop(foreign_buffer);
-            let selection = topk::PreparedSelection::new(shape, limits, context).unwrap();
+            let selection = topk::PreparedSelection::new(5, 7, 3, false, limits, context).unwrap();
             let mut current = ptr::null_mut();
             unsafe {
                 cuda_core::sys::cuCtxGetCurrent(&mut current)
@@ -159,7 +249,7 @@ mod tests {
             // Transfer submission must tolerate a different device being current.
             foreign.bind_to_thread().unwrap();
             let distances = crate::gpu::operations::h2d(&data).sync_on(&stream).unwrap();
-            let host = HostOutput::new(context, 0, Some(shape.count)).unwrap();
+            let host = HostOutput::new(context, 0, Some(selection.layout.count)).unwrap();
             let job = Finish {
                 distances,
                 host,

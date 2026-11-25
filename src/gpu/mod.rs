@@ -404,47 +404,53 @@ impl DistTile {
     fn merge_candidates(
         &self,
         host: &HostOutput,
+        layout: topk::CandidateLayout,
         k: usize,
         heaps: &mut [BinaryHeap<SparseJaccard>],
     ) -> Result<(), Error> {
-        let shape = topk::Shape::new(
-            self.ref_samples.len(),
-            self.query_samples.len(),
-            k,
-            self.kind.is_diagonal(),
-        )?;
         let HostOutput::Candidates { keys, ids } = host else {
             return Err(anyhow!("Expected CUB candidates"));
         };
-        let ref_count = self.ref_samples.len() * shape.ref_k;
-        for (offset, (&distance, &id)) in keys[..shape.count]
-            .iter()
-            .zip(&ids[..shape.count])
-            .enumerate()
-        {
-            let (row, neighbour, limit) = if offset < ref_count {
-                (
-                    self.ref_samples.start + offset / shape.ref_k,
-                    self.query_samples.start,
-                    self.query_samples.len(),
-                )
-            } else {
-                (
-                    self.query_samples.start + (offset - ref_count) / shape.query_k,
-                    self.ref_samples.start,
-                    self.ref_samples.len(),
-                )
-            };
-            if id as usize >= limit {
-                return Err(anyhow!("CUB returned an invalid neighbour ID"));
+        let ref_count = self.ref_samples.len() * layout.ref_stride;
+        let merge_direction = |heaps: &mut [BinaryHeap<SparseJaccard>],
+                               start: usize,
+                               stride: usize,
+                               neighbours: &Range<usize>|
+         -> Result<(), Error> {
+            if stride == 0 {
+                return Ok(());
             }
-            push_heap(
-                &mut heaps[row],
-                SparseJaccard(neighbour + id as usize, distance),
-                k,
-            );
-        }
-        Ok(())
+            let end = start + heaps.len() * stride;
+            let keys = &keys[start..end];
+            let ids = &ids[start..end];
+            let merge_row =
+                |(heap, (keys, ids)): (&mut BinaryHeap<SparseJaccard>, (&[f32], &[u32]))| {
+                    for (&distance, &id) in keys.iter().zip(ids) {
+                        let id = id as usize;
+                        if id >= neighbours.len() {
+                            return Err(anyhow!("CUB returned an invalid neighbour ID"));
+                        }
+                        push_heap(heap, SparseJaccard(neighbours.start + id, distance), k);
+                    }
+                    Ok(())
+                };
+            heaps
+                .iter_mut()
+                .zip(keys.chunks_exact(stride).zip(ids.chunks_exact(stride)))
+                .try_for_each(merge_row)
+        };
+        merge_direction(
+            &mut heaps[self.ref_samples.clone()],
+            0,
+            layout.ref_stride,
+            &self.query_samples,
+        )?;
+        merge_direction(
+            &mut heaps[self.query_samples.clone()],
+            ref_count,
+            layout.query_stride,
+            &self.ref_samples,
+        )
     }
 
     fn consume_dense(
@@ -705,7 +711,7 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                 // on the bounded channel, including with --threads 1.
                 writer_started_rx.await.context("GPU distance writer failed to start")?;
             }
-            let mut gpu_jobs = JoinSet::<Result<(usize, DistTile, HostOutput), Error>>::new();
+            let mut gpu_jobs = JoinSet::<Result<_, Error>>::new();
             let mut consumers = JoinSet::<Result<(usize, HostOutput), Error>>::new();
             let result = async {
                 loop {
@@ -733,7 +739,7 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                                 let (host, device_buffers) = operation.schedule(policy.as_ref())?.await?;
                                 // Device buffers are dropped on the GPU dispatch thread.
                                 drop(device_buffers);
-                                Ok::<_, Error>((device_index, tile, host))
+                                Ok::<_, Error>((device_index, tile, host, selection.map(|s| s.layout)))
                             }.await.with_context(|| format!("GPU {id}, tile {:?} x {:?}", ranges.0, ranges.1))
                         });
                     }
@@ -752,12 +758,13 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                             tiles.release(device_index, host);
                         }
                         Some(completed) = gpu_jobs.join_next(), if !gpu_jobs.is_empty() => {
-                            let (device_index, tile, host) = completed.context("GPU tile task failed")??;
+                            let (device_index, tile, host, candidates) = completed.context("GPU tile task failed")??;
                             devices[device_index].tiles += 1;
                             devices[device_index].pairs += tile.n_distances;
                             if let Some(k) = knn {
+                                let candidates = candidates.context("Missing CUB candidate layout")?;
                                 let start = std::time::Instant::now();
-                                tile.merge_candidates(&host, k, &mut heaps)?;
+                                tile.merge_candidates(&host, candidates, k, &mut heaps)?;
                                 merge_time += start.elapsed();
                                 progress.inc(tile.n_distances as u64);
                                 tiles.release(device_index, host);

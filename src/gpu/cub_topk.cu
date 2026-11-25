@@ -17,13 +17,12 @@ namespace {
 // Wrapper policy, not universal CUB limits: CCCL 3.5's batched implementation
 // requires each segment to fit one thread block's resources. These bounds and
 // the annotations in the batched adapter select that implementation for our float/u32 pairs.
-constexpr size_t chunk_size = 4096;
+constexpr size_t chunk_size = 8192;
 constexpr size_t batched_k = 2048;
 enum class Layout : int {
     ReferenceRows = 0,
     QueryColumns = 1,
     DiagonalRows = 2,
-    IntermediateRows = 3,
 };
 using Count = thrust::counting_iterator<size_t>;
 
@@ -32,7 +31,6 @@ using Count = thrust::counting_iterator<size_t>;
 // columns is the original rectangular stride, samples the diagonal sample count.
 struct View {
     const float* keys;
-    const uint32_t* ids;
     size_t width, columns, samples;
     Layout layout;
     __host__ __device__ size_t neighbour(size_t row, size_t q) const {
@@ -42,7 +40,6 @@ struct View {
     __host__ __device__ size_t offset(size_t row, size_t q) const {
         if (layout == Layout::ReferenceRows) return row * columns + q;
         if (layout == Layout::QueryColumns) return q * columns + row;
-        if (layout == Layout::IntermediateRows) return row * width + q;
         size_t j = neighbour(row, q);
         size_t a = row < j ? row : j;
         size_t b = row < j ? j : row;
@@ -58,10 +55,7 @@ struct KeyAt {
 struct IdAt {
     View view; size_t row, begin;
     __host__ __device__ uint32_t operator()(size_t q) const {
-        // Reductions carry original neighbour IDs, not intermediate positions.
-        return view.layout == Layout::IntermediateRows
-            ? view.ids[view.offset(row, begin + q)]
-            : uint32_t(view.neighbour(row, begin + q));
+        return uint32_t(view.neighbour(row, begin + q));
     }
 };
 using Keys = thrust::transform_iterator<KeyAt, Count>;
