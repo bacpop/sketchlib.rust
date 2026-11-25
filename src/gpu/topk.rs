@@ -1,10 +1,9 @@
-//! Cached CUB workspace sizes and stream-ordered selection over existing distances.
+//! CUB workspace sizing and stream-ordered selection over existing distances.
 use super::operations::allocate;
 use anyhow::{ensure, Context, Result};
 use cuda_async::{device_box::DeviceBox, device_operation::ExecutionContext, error::DeviceError};
 use cuda_core::Context as CudaContext;
 use std::{
-    collections::HashMap,
     ffi::{c_char, c_int, c_void, CStr},
     mem, ptr,
 };
@@ -65,47 +64,18 @@ fn check(status: c_int) -> Result<(), DeviceError> {
     )))
 }
 #[derive(Clone, Copy)]
-struct Limits {
+pub(super) struct Limits {
     chunk: usize,
     k: usize,
 }
 impl Limits {
-    fn compiled() -> Self {
+    pub fn compiled() -> Self {
         let mut limits = Self { chunk: 0, k: 0 };
         unsafe { sketchlib_topk_limits(&mut limits.chunk, &mut limits.k) };
         limits
     }
 }
 
-/// Workspace sizes are queried once per shape/device; cache hits copy scalars.
-#[derive(Default)]
-pub(super) struct SelectionCache {
-    shapes: HashMap<(usize, usize, usize, bool), PreparedSelection>,
-    limits: Option<Limits>,
-}
-impl SelectionCache {
-    pub fn prepare(
-        &mut self,
-        context: &CudaContext,
-        nr: usize,
-        nq: usize,
-        k: usize,
-        diagonal: bool,
-    ) -> Result<Shape> {
-        let key = (nr, nq, k, diagonal);
-        if let Some(selection) = self.shapes.get(&key) {
-            return Ok(selection.shape);
-        }
-        let limits = *self.limits.get_or_insert_with(Limits::compiled);
-        let selection = PreparedSelection::new(Shape::new(nr, nq, k, diagonal)?, limits, context)?;
-        let shape = selection.shape;
-        self.shapes.insert(key, selection);
-        Ok(shape)
-    }
-    pub fn get(&self, nr: usize, nq: usize, k: usize, diagonal: bool) -> PreparedSelection {
-        self.shapes[&(nr, nq, k, diagonal)]
-    }
-}
 /// Candidate layout shared with C++ and the host merge: nr rows of ref_k pairs,
 /// followed by nq rows of query_k pairs. Diagonals exclude self-pairs and have
 /// no query section. IDs remain local to the opposite sketch block (the same
@@ -306,7 +276,7 @@ pub(super) struct PreparedSelection {
     directions: [Option<Direction>; 2],
 }
 impl PreparedSelection {
-    fn new(mut shape: Shape, limits: Limits, context: &CudaContext) -> Result<Self> {
+    pub fn new(mut shape: Shape, limits: Limits, context: &CudaContext) -> Result<Self> {
         let mut directions = [None, None];
         if shape.ref_k != 0 {
             let layout = if shape.diagonal {
@@ -335,7 +305,7 @@ impl PreparedSelection {
     }
 }
 
-/// Enqueue cached selection on the tile stream, with three leased allocations.
+/// Enqueue prepared selection on the tile stream, with three leased allocations.
 ///
 /// # Safety
 /// The execution context must be current, distances retained through completion,

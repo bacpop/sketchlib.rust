@@ -120,7 +120,6 @@ impl IntoFuture for Finish {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::topk::SelectionCache;
     use cuda_async::device_context::{global_policy, init_device_contexts, with_cuda_context};
     use std::ptr;
 
@@ -137,6 +136,8 @@ mod tests {
             .map(|id| with_cuda_context(id, Arc::clone).unwrap())
             .collect();
         let data: Vec<_> = (0..35).map(|i| i as f32 / 100.0).collect();
+        let shape = topk::Shape::new(5, 7, 3, false).unwrap();
+        let limits = topk::Limits::compiled();
         let mut jobs = Vec::new();
         for (id, context) in contexts.iter().enumerate() {
             let foreign = &contexts[(id + 1) % 3];
@@ -145,9 +146,7 @@ mod tests {
             // Foreign resource cleanup changes the current context. Workspace
             // preparation must bind this device again, even for a size query.
             drop(foreign_buffer);
-            let mut selections = SelectionCache::default();
-            let shape = selections.prepare(context, 5, 7, 3, false).unwrap();
-            let selection = selections.get(5, 7, 3, false);
+            let selection = topk::PreparedSelection::new(shape, limits, context).unwrap();
             let mut current = ptr::null_mut();
             unsafe {
                 cuda_core::sys::cuCtxGetCurrent(&mut current)

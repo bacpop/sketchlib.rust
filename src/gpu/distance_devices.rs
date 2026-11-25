@@ -16,15 +16,42 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct Geometry {
-    pub refs: usize,
-    pub queries: usize,
-    pub diagonal: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TileKind {
+    FullDiagonal,
+    FullOffDiagonal,
+    TailDiagonal,
+    EdgeOffDiagonal,
+}
+
+impl TileKind {
+    const COUNT: usize = 4;
+
+    pub fn new(diagonal: bool, queries: usize, block: usize) -> Self {
+        // In the upper-triangular traversal, only the query block can be
+        // shorter than `block` on an off-diagonal tile.
+        match (diagonal, queries < block) {
+            (true, false) => Self::FullDiagonal,
+            (false, false) => Self::FullOffDiagonal,
+            (true, true) => Self::TailDiagonal,
+            (false, true) => Self::EdgeOffDiagonal,
+        }
+    }
+
+    pub fn is_diagonal(self) -> bool {
+        matches!(self, Self::FullDiagonal | Self::TailDiagonal)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Geometry {
+    refs: usize,
+    queries: usize,
+    kind: TileKind,
 }
 impl Geometry {
     fn distances(self) -> Result<usize> {
-        let count = if self.diagonal {
+        let count = if self.kind.is_diagonal() {
             self.refs.checked_mul(self.refs - 1).map(|v| v / 2)
         } else {
             self.refs.checked_mul(self.queries)
@@ -64,7 +91,7 @@ pub(super) fn validate(ids: &[usize]) -> Result<()> {
     Ok(())
 }
 
-/// Per-device distance kernels, sketch metadata, selection cache and counters.
+/// Per-device distance kernels, sketch metadata and counters.
 pub(super) struct DistanceDevice {
     pub id: usize,
     pub context: Arc<CudaContext>,
@@ -72,7 +99,6 @@ pub(super) struct DistanceDevice {
     pub module: kernels::LoadedModule,
     pub kmers: Arc<DeviceBox<[usize]>>,
     pub completeness: Arc<DeviceBox<[f32]>>,
-    pub selections: topk::SelectionCache,
     pub tiles: usize,
     pub pairs: usize,
 }
@@ -119,7 +145,6 @@ impl DistanceDevice {
             module,
             kmers,
             completeness,
-            selections: topk::SelectionCache::default(),
             tiles: 0,
             pairs: 0,
         })
@@ -137,33 +162,24 @@ fn geometries(n: usize, block: usize) -> Vec<Geometry> {
     let full = n / block;
     let tail = n % block;
     let mut out = Vec::new();
-    if full > 0 && block > 1 {
+    let mut push = |refs, queries, diagonal| {
         out.push(Geometry {
-            refs: block,
-            queries: block,
-            diagonal: true,
+            refs,
+            queries,
+            kind: TileKind::new(diagonal, queries, block),
         });
+    };
+    if full > 0 && block > 1 {
+        push(block, block, true);
     }
     if full > 1 {
-        out.push(Geometry {
-            refs: block,
-            queries: block,
-            diagonal: false,
-        });
+        push(block, block, false);
     }
     if tail > 1 {
-        out.push(Geometry {
-            refs: tail,
-            queries: tail,
-            diagonal: true,
-        });
+        push(tail, tail, true);
     }
     if full > 0 && tail > 0 {
-        out.push(Geometry {
-            refs: block,
-            queries: tail,
-            diagonal: false,
-        });
+        push(block, tail, false);
     }
     out
 }
@@ -195,15 +211,26 @@ pub(super) struct MemoryPlan {
     pub max_distances: usize,
     pub max_candidates: Option<usize>,
     pub nonempty_tiles: usize,
+    selections: Option<Vec<[Option<topk::PreparedSelection>; TileKind::COUNT]>>,
 }
 impl MemoryPlan {
+    pub fn selection(
+        &self,
+        device_index: usize,
+        kind: TileKind,
+    ) -> Option<topk::PreparedSelection> {
+        self.selections.as_ref().map(|by_device| {
+            by_device[device_index][kind as usize].expect("missing top-k plan for a nonempty tile")
+        })
+    }
+
     pub fn new(
         n: usize,
         requested_block: usize,
         requested_slots: usize,
         sketch_words: usize,
         knn: Option<usize>,
-        devices: &mut [DistanceDevice],
+        devices: &[DistanceDevice],
     ) -> Result<Self> {
         ensure!(
             n >= 2 && requested_block > 0 && requested_slots > 0 && !devices.is_empty(),
@@ -223,38 +250,44 @@ impl MemoryPlan {
                 }
             })
             .collect::<Result<_>>()?;
+        let knn = knn.map(|k| (k, topk::Limits::compiled()));
         let mut block = n.min(requested_block);
         loop {
             let geometries = geometries(n, block);
             let mut footprints = Vec::new();
             let mut max_distances = 0;
-            let mut max_candidates = knn.map(|_| 0);
-            for device in devices.iter_mut() {
+            let mut max_candidates = 0;
+            let mut selections = knn.map(|_| Vec::with_capacity(devices.len()));
+            for device in devices {
                 let mut worst = 0;
+                let mut device_selections = [None; TileKind::COUNT];
                 for &geometry in &geometries {
-                    let shape = knn
-                        .map(|k| {
-                            device
-                                .selections
-                                .prepare(
-                                    &device.context,
-                                    geometry.refs,
-                                    geometry.queries,
-                                    k,
-                                    geometry.diagonal,
-                                )
-                                .with_context(|| {
-                                    format!("GPU {}: CUB workspace query failed", device.id)
-                                })
+                    let shape = if let Some((k, limits)) = knn {
+                        let selection = topk::Shape::new(
+                            geometry.refs,
+                            geometry.queries,
+                            k,
+                            geometry.kind.is_diagonal(),
+                        )
+                        .and_then(|shape| {
+                            topk::PreparedSelection::new(shape, limits, &device.context)
                         })
-                        .transpose()?;
+                        .with_context(|| {
+                            format!("GPU {}: CUB workspace query failed", device.id)
+                        })?;
+                        device_selections[geometry.kind as usize] = Some(selection);
+                        max_candidates = max_candidates.max(selection.shape.count);
+                        Some(selection.shape)
+                    } else {
+                        None
+                    };
                     max_distances = max_distances.max(geometry.distances()?);
-                    if let (Some(max), Some(s)) = (&mut max_candidates, shape) {
-                        *max = (*max).max(s.count);
-                    }
                     worst = worst.max(footprint(geometry, sketch_bytes, shape)?);
                 }
                 footprints.push(worst);
+                if let Some(selections) = &mut selections {
+                    selections.push(device_selections);
+                }
             }
             let decision = if multi {
                 admission(
@@ -300,8 +333,9 @@ impl MemoryPlan {
                 block,
                 limits,
                 max_distances,
-                max_candidates,
+                max_candidates: knn.map(|_| max_candidates),
                 nonempty_tiles,
+                selections,
             });
         }
     }
@@ -423,41 +457,48 @@ mod tests {
 
     #[test]
     fn geometries_cover_remainders_and_ignore_empty_diagonals() {
-        let g = geometries(257, 64);
-        assert_eq!(g.len(), 3);
-        assert!(g.contains(&Geometry {
-            refs: 64,
-            queries: 1,
-            diagonal: false
-        }));
-        assert!(!g.iter().any(|g| g.diagonal && g.refs == 1));
+        use TileKind::*;
+
+        let planned_tiles = |n, block| {
+            geometries(n, block)
+                .into_iter()
+                .map(|g| (g.kind, g.refs, g.queries))
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            geometries(256, 1),
-            vec![Geometry {
-                refs: 1,
-                queries: 1,
-                diagonal: false
-            }]
+            planned_tiles(261, 64),
+            [
+                (FullDiagonal, 64, 64),
+                (FullOffDiagonal, 64, 64),
+                (TailDiagonal, 5, 5),
+                (EdgeOffDiagonal, 64, 5),
+            ]
         );
         assert_eq!(
-            geometries(256, 256),
-            vec![Geometry {
-                refs: 256,
-                queries: 256,
-                diagonal: true
-            }]
+            planned_tiles(256, 64),
+            [(FullDiagonal, 64, 64), (FullOffDiagonal, 64, 64)]
         );
+        assert_eq!(
+            planned_tiles(257, 64),
+            [
+                (FullDiagonal, 64, 64),
+                (FullOffDiagonal, 64, 64),
+                (EdgeOffDiagonal, 64, 1),
+            ]
+        );
+        assert_eq!(planned_tiles(256, 1), [(FullOffDiagonal, 1, 1)]);
+        assert_eq!(planned_tiles(256, 256), [(FullDiagonal, 256, 256)]);
     }
 
     #[test]
     fn tile_memory_accounts_for_both_sketch_copies_and_selection() {
         let g = Geometry {
-            refs: 5,
-            queries: 7,
-            diagonal: false,
+            refs: 7,
+            queries: 5,
+            kind: TileKind::EdgeOffDiagonal,
         };
         assert_eq!(footprint(g, 16, None).unwrap(), 2 * 12 * 16 + 35 * 4);
-        let shape = topk::Shape::new(5, 7, 3, false).unwrap();
+        let shape = topk::Shape::new(7, 5, 3, false).unwrap();
         assert_eq!(
             footprint(g, 16, Some(shape)).unwrap(),
             2 * 12 * 16 + 35 * 4 + 36 * 8
@@ -466,7 +507,7 @@ mod tests {
         assert!(Geometry {
             refs: usize::MAX,
             queries: 2,
-            diagonal: false
+            kind: TileKind::EdgeOffDiagonal,
         }
         .distances()
         .is_err());

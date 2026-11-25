@@ -32,7 +32,7 @@ mod distance_devices;
 mod operations;
 mod tile_output;
 mod topk;
-use distance_devices::{DistanceDevice, MemoryPlan, TileQueue};
+use distance_devices::{DistanceDevice, MemoryPlan, TileKind, TileQueue};
 use operations::{h2d, retain, zeroed};
 use tile_output::HostOutput;
 
@@ -201,7 +201,7 @@ struct DistTile {
     n_kmers: usize,
     n_bins: usize,
     sketchsize64: u64,
-    diagonal: bool,
+    kind: TileKind,
     n_distances: usize,
     interleave_ref_cfg: LaunchConfig1D,
     interleave_query_cfg: LaunchConfig1D,
@@ -251,7 +251,7 @@ impl DistTile {
             n_kmers: sketches.kmer_lengths().len(),
             n_bins,
             sketchsize64: sketches.sketchsize64,
-            diagonal,
+            kind: TileKind::new(diagonal, n_query, max_sketch_batch),
             n_distances,
         }
     }
@@ -282,7 +282,7 @@ impl DistTile {
         let n_kmers = self.n_kmers;
         let n_bins = self.n_bins;
         let sketchsize64 = self.sketchsize64;
-        let diagonal = self.diagonal;
+        let diagonal = self.kind.is_diagonal();
         let n_distances = self.n_distances;
         let sample_offsets = (self.ref_samples.start, self.query_samples.start);
         let query_slice = &self.sketches[self.query_bins.clone()];
@@ -411,7 +411,7 @@ impl DistTile {
             self.ref_samples.len(),
             self.query_samples.len(),
             k,
-            self.diagonal,
+            self.kind.is_diagonal(),
         )?;
         let HostOutput::Candidates { keys, ids } = host else {
             return Err(anyhow!("Expected CUB candidates"));
@@ -457,6 +457,7 @@ impl DistTile {
     ) -> Result<(), Error> {
         let n_ref = self.ref_samples.len();
         let n_query = self.query_samples.len();
+        let diagonal = self.kind.is_diagonal();
         distances
             .par_chunks(DENSE_CHUNK_SIZE)
             .enumerate()
@@ -465,7 +466,7 @@ impl DistTile {
                     return Err(anyhow!("GPU distance calculation cancelled"));
                 }
                 let (mut i, mut j) =
-                    dist_pair_indices(chunk_idx * DENSE_CHUNK_SIZE, n_ref, n_query, self.diagonal);
+                    dist_pair_indices(chunk_idx * DENSE_CHUNK_SIZE, n_ref, n_query, diagonal);
                 let mut text = String::with_capacity(chunk.len() * 24);
                 for &distance in chunk {
                     writeln!(
@@ -477,7 +478,7 @@ impl DistTile {
                     j += 1;
                     if j == n_query {
                         i += 1;
-                        j = if self.diagonal { i + 1 } else { 0 };
+                        j = if diagonal { i + 1 } else { 0 };
                     }
                 }
                 text_tx
@@ -610,7 +611,7 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
         max_in_flight_tiles,
         sketches.get_strides().2,
         knn,
-        &mut devices,
+        &devices,
     )?;
     let correct_completeness = completeness_vec.is_some();
     let mut heaps = if let Some(knn) = knn {
@@ -717,9 +718,7 @@ pub fn self_dists_stream_multi<W: IoWrite + Send>(
                         let device = &devices[device_index];
                         let id = device.id;
                         let ranges = (tile.ref_samples.clone(), tile.query_samples.clone());
-                        let selection = knn.map(|k| device.selections.get(
-                            tile.ref_samples.len(), tile.query_samples.len(), k, tile.diagonal,
-                        ));
+                        let selection = layout.selection(device_index, tile.kind);
                         let module = device.module.clone();
                         let policy = Arc::clone(&device.policy);
                         let kmers = Arc::clone(&device.kmers);
